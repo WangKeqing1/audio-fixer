@@ -6,7 +6,7 @@
         android:maxSdkVersion="32" />
 
     <application
-        android:label="Audio Fixer"
+        android:label="${audioFixerLabel}"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
