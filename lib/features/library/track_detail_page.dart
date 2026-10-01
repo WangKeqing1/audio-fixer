@@ -185,9 +185,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                   )
                 : FilledButton.icon(
                     onPressed:
-                        controller.canOperate &&
-                            track.needsCompletion &&
-                            controller.settings.enabledFields.isNotEmpty
+                        controller.canOperate && controller.canQueryTrack(track)
                         ? () async {
                             await controller.complete(track: track);
                             final task = controller.taskForTrack(track.id);

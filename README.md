@@ -21,7 +21,7 @@
 
 当前按需标签读取的单文件上限为 512 MiB，超限会明确提示；歌曲仍可出现在系统音乐库列表中。
 
-## 本轮边界
+## 功能范围
 
 在线查询已接入三个公开服务：MusicBrainz、LRCLIB、Cover Art Archive，无需配置 API Key。候选需要逐项确认后才可写入新副本；不会自动覆盖原文件。尚未实现直接覆盖原音频、全盘扫描和系统后台调度。`CompletionService` 只查询候选，不修改音频；独立 `SafeAudioCopyExporter` 负责复制、填入缺失项、核对标签与音频数据、保存。第三方资料缺失、同名版本无法区分、网络错误会明确显示结果。
 
@@ -44,6 +44,16 @@ flutter run -d <安卓设备ID>
 ```powershell
 flutter build apk --debug
 ```
+
+用于独立安装验证的优化 ARM64 QA 包（Linux/macOS shell）：
+
+```sh
+ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi --target-platform android-arm64
+```
+
+产物为 `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。QA 开关适用于所有构建模式，使用独立包名 `com.audiofixer.audio_fixer.qa`、显示名 `Audio Fixer QA` 和 `-qa` 版本后缀，可与正常应用并存。未设置开关时保留原包名与名称。
+
+这是 AOT 优化、测试签名的 QA 包，不是正式发布签名。签名不同的 APK 无法覆盖更新旧版；不要为绕过签名冲突而直接卸载旧应用，以免丢失本地目录/私有副本。自动质量流程见 [CI 说明](docs/CI.md)。
 
 产物：`build/app/outputs/flutter-apk/app-debug.apk`。Android 宿主使用 Kotlin，包名暂为 `com.audiofixer.audio_fixer`。发布前应确认包名并配置正式签名；模板中的 release 签名仍为调试签名。
 

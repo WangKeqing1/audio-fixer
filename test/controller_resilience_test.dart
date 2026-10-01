@@ -134,6 +134,36 @@ void main() {
     },
   );
 
+  test('batch count excludes gaps in disabled fields', () async {
+    final track = fixtureTrack().withDetails(
+      title: 'Known',
+      artist: 'Known',
+      album: null,
+      year: null,
+      durationMs: 60000,
+      lyrics: 'Existing lyrics',
+      artworkPath: null,
+    );
+    final source = _Source();
+    final controller = testController(
+      store: MemoryStore(
+        LibrarySnapshot(
+          tracks: [track],
+          settings: const AppSettings(metadata: false, artwork: false),
+        ),
+      ),
+      completion: CompletionService(sources: [source]),
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    expect(controller.incompleteCount, 1);
+    expect(controller.pendingCompletionCount, 0);
+    expect(controller.canQueryTrack(track), isFalse);
+    await controller.complete();
+    expect(source.calls, 0);
+    expect(controller.tasks, isEmpty);
+  });
+
   test('recovered catalog skips prune on load and all later commits', () async {
     final store = MemoryStore(
       LibrarySnapshot(tracks: [fixtureTrack()], recoveredFromBackup: true),

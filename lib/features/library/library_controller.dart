@@ -329,7 +329,7 @@ class LibraryController extends ChangeNotifier {
     final targets = track == null
         ? tracks
               .where(
-                (item) => item.needsCompletion && !_hasReviewableResult(item),
+                (item) => canQueryTrack(item) && !_hasReviewableResult(item),
               )
               .toList()
         : [?trackById(track.id)];
@@ -446,8 +446,14 @@ class LibraryController extends ChangeNotifier {
             task.status == TaskStatus.exported);
   }
 
+  bool canQueryTrack(AudioTrack track) =>
+      track.readError == null &&
+      settings.enabledFields.isNotEmpty &&
+      (!track.detailsLoaded ||
+          track.missingFields.intersection(settings.enabledFields).isNotEmpty);
+
   int get pendingCompletionCount => tracks
-      .where((track) => track.needsCompletion && !_hasReviewableResult(track))
+      .where((track) => canQueryTrack(track) && !_hasReviewableResult(track))
       .length;
 
   bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
