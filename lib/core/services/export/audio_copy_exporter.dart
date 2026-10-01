@@ -90,6 +90,7 @@ class SafeAudioCopyExporter implements AudioCopyExporter {
         extension: extension,
         values: values,
         artwork: artwork,
+        expectedTrack: track,
       );
       return await channel.invokeMethod<String>('exportAudioCopy', {
         'path': output,
@@ -129,6 +130,7 @@ Future<void> prepareTaggedCopy({
   required String extension,
   required Map<AudioField, String> values,
   Uint8List? artwork,
+  AudioTrack? expectedTrack,
 }) => Isolate.run(() async {
   if (!SafeAudioCopyExporter.supportedExtensions.contains(
     extension.toLowerCase(),
@@ -152,6 +154,19 @@ Future<void> prepareTaggedCopy({
   if (extension.toLowerCase() == 'mp3') {
     original.trackNumber ??= legacyMp3TrackNumber(source);
     if (!hasText(original.lyrics)) original.lyrics = customMp3Lyrics(source);
+  }
+  if (expectedTrack != null && expectedTrack.detailsLoaded) {
+    String? normalized(String? value) => hasText(value) ? value!.trim() : null;
+    if (normalized(original.title) != normalized(expectedTrack.title) ||
+        normalized(original.artist) != normalized(expectedTrack.artist) ||
+        normalized(original.album) != normalized(expectedTrack.album) ||
+        (original.duration != null &&
+            expectedTrack.durationMs != null &&
+            (original.duration!.inMilliseconds - expectedTrack.durationMs!)
+                    .abs() >
+                1000)) {
+      throw const ExportException('原文件资料已变化，请重新读取并查询后再导出。');
+    }
   }
   for (final entry in values.entries) {
     if (!hasText(entry.value)) throw const ExportException('候选内容不能为空。');

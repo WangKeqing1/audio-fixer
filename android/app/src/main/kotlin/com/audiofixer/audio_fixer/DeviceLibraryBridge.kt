@@ -311,7 +311,18 @@ class DeviceLibraryBridge(
             } catch (error: Exception) {
                 // This URI is a new document from ACTION_CREATE_DOCUMENT only.
                 // Remove partial output if the provider supports deletion.
-                try { DocumentsContract.deleteDocument(activity.contentResolver, target) } catch (_: Exception) { }
+                val removed = try {
+                    DocumentsContract.deleteDocument(activity.contentResolver, target)
+                } catch (_: Exception) {
+                    false
+                }
+                if (!removed) {
+                    throw BridgeException(
+                        "export_cleanup_failed",
+                        "Audio export failed and the incomplete new document could not be removed. " +
+                            "Delete the incomplete copy manually; the original is unchanged.",
+                    )
+                }
                 throw IOException("Audio export failed; the original is unchanged.", error)
             }
         }

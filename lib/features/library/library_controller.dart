@@ -41,6 +41,7 @@ class LibraryController extends ChangeNotifier {
   AudioLibraryPermission libraryPermission =
       AudioLibraryPermission.notRequested;
   String? libraryError;
+  String? get recoveryNotice => _snapshot.recoveryNotice;
   bool isCompleting = false;
   bool completionStopRequested = false;
   final Map<String, String> sourceConnections = {};
@@ -78,6 +79,7 @@ class LibraryController extends ChangeNotifier {
     try {
       _snapshot = await store.load();
       await _pruneUnusedFiles();
+      if (_snapshot.recoveryNotice case final message?) _announce(message);
       if (usesDeviceLibrary) await _syncDeviceLibrary(autoRequest: true);
     } catch (error, stack) {
       debugPrint('Library load failed: $error\n$stack');
@@ -155,8 +157,16 @@ class LibraryController extends ChangeNotifier {
       _notify();
       final discovered = await library.querySongs();
       final cached = {for (final track in _snapshot.tracks) track.id: track};
+      final changedIds = <String>{};
       final refreshed = discovered.map((track) {
         final old = cached[track.id];
+        if (old != null &&
+            (old.dateModifiedMs != track.dateModifiedMs ||
+                old.sizeBytes != track.sizeBytes ||
+                old.fileName != track.fileName ||
+                old.contentUri != track.contentUri)) {
+          changedIds.add(track.id);
+        }
         if (old == null ||
             !old.detailsLoaded ||
             old.dateModifiedMs != track.dateModifiedMs ||
@@ -181,6 +191,7 @@ class LibraryController extends ChangeNotifier {
           ...refreshed,
           ..._snapshot.tracks.where((track) => !track.isDeviceTrack),
         ],
+        tasks: _invalidateTasks(changedIds),
       );
     } on PlatformException catch (error) {
       if (error.code == 'permission_denied') {
@@ -209,10 +220,19 @@ class LibraryController extends ChangeNotifier {
         _notify();
         try {
           final updated = await deviceLibrary!.readDetails(track);
+          final changed =
+              track.title != updated.title ||
+              track.artist != updated.artist ||
+              track.album != updated.album ||
+              track.durationMs != updated.durationMs ||
+              track.lyrics != updated.lyrics ||
+              track.artworkPath != updated.artworkPath ||
+              updated.readError != null;
           await _commit(
             tracks: _snapshot.tracks
                 .map((item) => item.id == id ? updated : item)
                 .toList(),
+            tasks: changed ? _invalidateTasks({id}) : null,
           );
         } on PlatformException catch (error) {
           if (error.code != 'permission_denied') rethrow;
@@ -222,6 +242,7 @@ class LibraryController extends ChangeNotifier {
       });
 
   Future<void> _pruneUnusedFiles() async {
+    if (_snapshot.recoveredFromBackup) return;
     try {
       await importer.prune(_snapshot.tracks.map((track) => track.id).toSet());
     } catch (error, stack) {
@@ -239,6 +260,7 @@ class LibraryController extends ChangeNotifier {
       tracks: tracks ?? _snapshot.tracks,
       tasks: tasks ?? _snapshot.tasks,
       settings: settings ?? _snapshot.settings,
+      recoveredFromBackup: _snapshot.recoveredFromBackup,
     );
     await store.save(next);
     _snapshot = next;
@@ -305,10 +327,18 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> complete({AudioTrack? track}) => _operate(() async {
     final targets = track == null
-        ? tracks.where((item) => item.needsCompletion).toList()
-        : [track];
+        ? tracks
+              .where(
+                (item) => item.needsCompletion && !_hasReviewableResult(item),
+              )
+              .toList()
+        : [?trackById(track.id)];
     if (targets.isEmpty || settings.enabledFields.isEmpty) {
-      _announce('当前没有需要补全的歌曲。');
+      _announce(
+        settings.enabledFields.isEmpty
+            ? '请先在设置中选择要补全的内容。'
+            : '没有新的待查询歌曲，已有候选可在补全任务中确认。',
+      );
       return;
     }
     isCompleting = true;
@@ -348,6 +378,15 @@ class LibraryController extends ChangeNotifier {
                 : '查询失败，请检查网络或稍后重试。',
           );
         }
+        task = CompletionTask(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          createdAt: task.createdAt,
+          status: task.status,
+          message: task.message,
+          suggestions: task.suggestions,
+          queriedFields: settings.enabledFields,
+        );
         await _commit(
           tracks: _snapshot.tracks
               .map((current) => current.id == item.id ? item : current)
@@ -368,6 +407,49 @@ class LibraryController extends ChangeNotifier {
     }
   });
 
+  List<CompletionTask> _invalidateTasks(Set<String> trackIds) =>
+      tasks.map((task) {
+        if (!trackIds.contains(task.trackId) ||
+            task.status == TaskStatus.outdated) {
+          return task;
+        }
+        return CompletionTask(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          createdAt: task.createdAt,
+          status: TaskStatus.outdated,
+          message: '原文件或已读取资料已变化，请重新查询后再确认。原先导出的副本不受影响。',
+          suggestions: task.suggestions,
+          exportedCopyUri: task.exportedCopyUri,
+          queriedFields: task.queriedFields,
+        );
+      }).toList();
+
+  bool isTaskCurrent(CompletionTask task) {
+    final current = taskForTrack(task.trackId);
+    final track = trackById(task.trackId);
+    return current != null &&
+        current.createdAt == task.createdAt &&
+        current.status != TaskStatus.outdated &&
+        track != null &&
+        track.detailsLoaded &&
+        track.readError == null;
+  }
+
+  bool _hasReviewableResult(AudioTrack track) {
+    final task = taskForTrack(track.id);
+    return task != null &&
+        isTaskCurrent(task) &&
+        task.suggestions.isNotEmpty &&
+        task.queriedFields.containsAll(settings.enabledFields) &&
+        (task.status == TaskStatus.needsReview ||
+            task.status == TaskStatus.exported);
+  }
+
+  int get pendingCompletionCount => tracks
+      .where((track) => track.needsCompletion && !_hasReviewableResult(track))
+      .length;
+
   bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
 
   CompletionTask? taskForTrack(String id) {
@@ -385,9 +467,7 @@ class LibraryController extends ChangeNotifier {
     await _operate(() async {
       final track = trackById(task.trackId);
       final current = taskForTrack(task.trackId);
-      if (track == null ||
-          current == null ||
-          current.createdAt != task.createdAt) {
+      if (track == null || current == null || !isTaskCurrent(task)) {
         _announce('歌曲或候选已更新，请返回重新打开结果。');
         return;
       }
@@ -424,6 +504,7 @@ class LibraryController extends ChangeNotifier {
           message: '已将所选资料写入新副本，并通过音频完整性和标签校验。原音频未修改。',
           suggestions: current.suggestions,
           exportedCopyUri: uri,
+          queriedFields: current.queriedFields,
         );
         try {
           await _commit(
@@ -441,8 +522,12 @@ class LibraryController extends ChangeNotifier {
         _announce('音频校验未通过：${error.message} 原音频未修改。');
       } on TimeoutException {
         _announce('封面下载超时，未导出副本。请稍后重试。');
-      } on PlatformException {
-        _announce('保存未完成。原音频未修改，请检查保存位置和可用空间后重试。');
+      } on PlatformException catch (error) {
+        _announce(
+          error.code == 'export_cleanup_failed'
+              ? '保存未完成，所选位置可能留有不完整副本，请删除该副本后重试。原音频未修改。'
+              : '保存未完成。原音频未修改，请检查保存位置和可用空间后重试。',
+        );
       }
     });
     return saved;

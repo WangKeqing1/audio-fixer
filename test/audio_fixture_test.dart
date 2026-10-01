@@ -528,6 +528,36 @@ void main() {
     });
 
     test(
+      'source metadata changes after review refuse export without output',
+      () async {
+        final source = File(
+          p.join(fixtures.path, 'cover_without_lyrics_mp3.mp3'),
+        );
+        final output = File(p.join(workspace.path, 'stale_refused.mp3'));
+        final before = await _hash(source);
+        await expectLater(
+          prepareTaggedCopy(
+            sourcePath: source.path,
+            outputPath: output.path,
+            extension: 'mp3',
+            values: {AudioField.lyrics: 'Synthetic only'},
+            expectedTrack: AudioTrack(
+              id: 'stale',
+              fileName: 'stale.mp3',
+              sizeBytes: await source.length(),
+              importedAt: DateTime(2026),
+              title: 'A different song from an old query',
+              artist: 'Different artist',
+            ),
+          ),
+          throwsA(isA<ExportException>()),
+        );
+        expect(await output.exists(), isFalse);
+        expect(await _hash(source), before);
+      },
+    );
+
+    test(
       'system save cancel and repeated save clean temporary exports',
       () async {
         const channel = MethodChannel('audio_fixer/fixture_export');
@@ -543,7 +573,12 @@ void main() {
           () async => cache,
           channel: channel,
         );
+        final sourceMetadata = readMetadata(source, getImage: false);
         final track = AudioTrack(
+          title: sourceMetadata.title,
+          artist: sourceMetadata.artist,
+          album: sourceMetadata.album,
+          durationMs: sourceMetadata.duration?.inMilliseconds,
           id: 'fixture',
           fileName: 'synthetic.MP3',
           localPath: source.path,
@@ -622,7 +657,12 @@ void main() {
           () async => cache,
           channel: channel,
         );
+        final sourceMetadata = readMetadata(source, getImage: false);
         final track = AudioTrack(
+          title: sourceMetadata.title,
+          artist: sourceMetadata.artist,
+          album: sourceMetadata.album,
+          durationMs: sourceMetadata.duration?.inMilliseconds,
           id: 'media:1',
           fileName: 'device.mp3',
           contentUri: 'content://fixture/audio/1',

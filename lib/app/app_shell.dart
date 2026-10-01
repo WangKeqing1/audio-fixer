@@ -114,14 +114,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 tooltip: '补全全部缺失信息',
                 onPressed:
                     controller.canOperate &&
-                        controller.incompleteCount > 0 &&
+                        controller.pendingCompletionCount > 0 &&
                         controller.settings.enabledFields.isNotEmpty
                     ? () async {
                         final confirmed = await showDialog<bool>(
                           context: context,
                           builder: (context) => AlertDialog(
                             title: Text(
-                              '查询 ${controller.incompleteCount} 首歌曲？',
+                              '查询 ${controller.pendingCompletionCount} 首歌曲？',
                             ),
                             content: SingleChildScrollView(
                               child: Text(
@@ -155,6 +155,24 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           bottom: wide,
           child: Column(
             children: [
+              if (controller.recoveryNotice case final recovery?)
+                TextButton.icon(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('本地目录已恢复'),
+                      content: Text(recovery),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('知道了'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  icon: const Icon(Icons.restore),
+                  label: const Text('已从备份恢复目录 · 查看说明'),
+                ),
               if (controller.isBusy && !controller.isLoading) ...[
                 const LinearProgressIndicator(),
                 if (controller.progress != null)

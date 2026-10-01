@@ -5,6 +5,7 @@ import 'package:audio_fixer/core/services/export/audio_copy_exporter.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 import 'support/fakes.dart';
 
@@ -18,6 +19,7 @@ class FakeExporter implements AudioCopyExporter {
   String? result = 'content://documents/new-copy';
   int calls = 0;
   bool fail = false;
+  PlatformException? nativeFailure;
   @override
   bool supports(AudioTrack track) => track.extension == 'MP3';
   @override
@@ -26,6 +28,7 @@ class FakeExporter implements AudioCopyExporter {
     List<FieldSuggestion> selected,
   ) async {
     calls++;
+    if (nativeFailure case final error?) throw error;
     if (fail) throw const ExportException('Verification failed');
     return result;
   }
@@ -91,6 +94,14 @@ void main() {
       expect(controller.tasks.single.status, TaskStatus.needsReview);
     },
   );
+  test('failed native cleanup reports the residual file explicitly', () async {
+    exporter.nativeFailure = PlatformException(code: 'export_cleanup_failed');
+    expect(await controller.exportCandidates(task, [candidate]), isFalse);
+    expect(controller.notice, contains('不完整副本'));
+    expect(controller.notice, contains('原音频未修改'));
+    expect(controller.tasks.single.status, TaskStatus.needsReview);
+  });
+
   test('empty or altered candidates never invoke writer', () async {
     expect(await controller.exportCandidates(task, []), isFalse);
     expect(

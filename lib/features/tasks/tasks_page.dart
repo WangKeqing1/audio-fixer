@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/completion_task.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
+import '../../shared/widgets/notice_panel.dart';
 import '../library/library_controller.dart';
 import 'candidate_review_page.dart';
 
@@ -19,7 +20,11 @@ class TasksPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final reviewCount = controller.tasks
-        .where((task) => task.status == TaskStatus.needsReview)
+        .where(
+          (task) =>
+              task.status == TaskStatus.needsReview &&
+              controller.isTaskCurrent(task),
+        )
         .length;
     return ListView(
       key: const PageStorageKey('tasks'),
@@ -37,6 +42,18 @@ class TasksPage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
+        if (controller.settings.enabledFields.isEmpty) ...[
+          NoticePanel(
+            icon: Icons.tune_outlined,
+            title: '尚未选择补全内容',
+            message: '在设置中启用至少一项资料后，即可重新查询。已有结果仍可查看。',
+            action: TextButton(
+              onPressed: onOpenSettings,
+              child: const Text('选择补全内容'),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (controller.completion.sources.isEmpty)
           Card(
             color: theme.colorScheme.secondaryContainer,
@@ -65,6 +82,7 @@ class TasksPage extends StatelessWidget {
         else
           for (final task in controller.tasks)
             Card(
+              key: ValueKey('task-${task.trackId}'),
               margin: const EdgeInsets.only(bottom: 12),
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -83,6 +101,7 @@ class TasksPage extends StatelessWidget {
                             TaskStatus.noMatch => Icons.search_off,
                             TaskStatus.skipped => Icons.check_circle_outline,
                             TaskStatus.failed => Icons.error_outline,
+                            TaskStatus.outdated => Icons.update_outlined,
                           },
                           color: task.status == TaskStatus.failed
                               ? theme.colorScheme.error
@@ -112,13 +131,43 @@ class TasksPage extends StatelessWidget {
                     const SizedBox(height: 12),
                     Text(
                       task.message,
-                      maxLines: 4,
-                      overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                     const SizedBox(height: 8),
+                    if (controller.trackById(task.trackId) == null) ...[
+                      const Text('原歌曲当前不可访问。请返回音乐库刷新或重新授权；历史结果仍可查看。'),
+                      const SizedBox(height: 8),
+                    ] else if (task.suggestions.isNotEmpty &&
+                        !controller.canExportTrack(
+                          controller.trackById(task.trackId)!,
+                        )) ...[
+                      Text(
+                        controller.exporter == null
+                            ? '当前仅可预览候选资料，尚未启用安全导出。'
+                            : '${controller.trackById(task.trackId)!.extension} 仅可预览；安全导出支持 MP3、FLAC 和 M4A/MP4。',
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (task.exportedCopyUri case final uri?) ...[
+                      ExpansionTile(
+                        key: PageStorageKey('export-location-${task.trackId}'),
+                        tilePadding: EdgeInsets.zero,
+                        title: const Text('查看副本保存位置'),
+                        childrenPadding: const EdgeInsets.only(bottom: 12),
+                        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('系统文档位置；副本是否出现在音乐库取决于保存位置与系统索引。'),
+                          const SizedBox(height: 8),
+                          SelectableText(
+                            uri,
+                            key: PageStorageKey('export-uri-${task.trackId}'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
@@ -135,15 +184,23 @@ class TasksPage extends StatelessWidget {
                             ),
                             icon: const Icon(Icons.fact_check_outlined),
                             label: Text(
-                              task.status == TaskStatus.exported
+                              !controller.isTaskCurrent(task)
+                                  ? '查看历史候选'
+                                  : task.status == TaskStatus.exported
                                   ? '查看候选资料'
+                                  : !controller.canExportTrack(
+                                      controller.trackById(task.trackId)!,
+                                    )
+                                  ? '预览 ${task.suggestions.length} 项候选'
                                   : '确认 ${task.suggestions.length} 项候选',
                             ),
                           ),
                         if (controller.trackById(task.trackId)
                             case final track?)
                           TextButton.icon(
-                            onPressed: controller.canOperate
+                            onPressed:
+                                controller.canOperate &&
+                                    controller.settings.enabledFields.isNotEmpty
                                 ? () => controller.complete(track: track)
                                 : null,
                             icon: const Icon(Icons.refresh),

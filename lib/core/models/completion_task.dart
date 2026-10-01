@@ -4,6 +4,7 @@ enum TaskStatus {
   waitingForSource('等待数据源'),
   needsReview('候选待确认'),
   exported('已导出副本'),
+  outdated('资料已变化'),
   noMatch('未找到结果'),
   skipped('无需补全'),
   failed('处理失败');
@@ -54,6 +55,7 @@ class CompletionTask {
     required this.message,
     this.suggestions = const [],
     this.exportedCopyUri,
+    this.queriedFields = const {},
   });
 
   final String trackId;
@@ -63,6 +65,7 @@ class CompletionTask {
   final String message;
   final List<FieldSuggestion> suggestions;
   final String? exportedCopyUri;
+  final Set<AudioField> queriedFields;
 
   Map<String, Object?> toJson() => {
     'trackId': trackId,
@@ -72,6 +75,7 @@ class CompletionTask {
     'message': message,
     'suggestions': suggestions.map((item) => item.toJson()).toList(),
     'exportedCopyUri': exportedCopyUri,
+    'queriedFields': queriedFields.map((field) => field.name).toList(),
   };
 
   factory CompletionTask.fromJson(Map<String, dynamic> json) => CompletionTask(
@@ -80,6 +84,9 @@ class CompletionTask {
     createdAt: DateTime.parse(json['createdAt'] as String),
     status: TaskStatus.values.byName(json['status'] as String),
     exportedCopyUri: json['exportedCopyUri'] as String?,
+    queriedFields: (json['queriedFields'] as List? ?? const [])
+        .map((field) => AudioField.values.byName(field as String))
+        .toSet(),
     message: json['message'] as String,
     suggestions: (json['suggestions'] as List)
         .map((item) => FieldSuggestion.fromJson(item as Map<String, dynamic>))
