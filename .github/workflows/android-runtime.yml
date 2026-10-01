@@ -1,0 +1,157 @@
+name: Audio Fixer Android native runtime
+
+on:
+  push:
+    branches: [dev/audio-fixer-quality]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-fixer-native-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic-native-flow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+
+    steps:
+      - name: Verify existing KVM access without changing permissions
+        run: |
+          python3 - <<'PY'
+          import fcntl
+          import os
+          import sys
+          try:
+              fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
+              try:
+                  version = fcntl.ioctl(fd, 0xAE00)  # KVM_GET_API_VERSION
+                  assert version == 12, f'Unexpected KVM API version {version}'
+              finally:
+                  os.close(fd)
+          except (OSError, AssertionError) as error:
+              print(f'::error::Hosted KVM is inaccessible: {error}. No permissions or security settings were changed; native runtime did not run.')
+              sys.exit(1)
+          print('Existing /dev/kvm access verified; KVM API version 12')
+          PY
+
+      - name: Check out the event commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare isolated Gradle and evidence directories
+        run: |
+          mkdir -p build/android_runtime "$RUNNER_TEMP/audio-fixer-runtime-gradle"
+          printf 'GRADLE_USER_HOME=%s\n' "$RUNNER_TEMP/audio-fixer-runtime-gradle" >> "$GITHUB_ENV"
+          printf '%s\n' 'android.builder.sdkDownload=false' 'org.gradle.daemon=false' \
+            'org.gradle.workers.max=2' 'org.gradle.jvmargs=-Xmx3G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=256m' \
+            > "$RUNNER_TEMP/audio-fixer-runtime-gradle/gradle.properties"
+          git rev-parse HEAD
+
+      - name: Set up the full Java 21 JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          java-package: jdk
+          architecture: x64
+
+      - name: Set up Flutter 3.47.2
+        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+          architecture: x64
+          cache: false
+
+      - name: Install official synthetic-media tools
+        timeout-minutes: 10
+        run: |
+          test -s /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          sources="$RUNNER_TEMP/audio-fixer-runtime-ubuntu.list"
+          cat > "$sources" <<'APT_SOURCES'
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble-updates main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://security.ubuntu.com/ubuntu noble-security main universe
+          APT_SOURCES
+          apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+                       -o 'Acquire::Retries=3' -o 'Acquire::http::Timeout=30'
+                       -o 'Acquire::https::Timeout=30' -o 'APT::Update::Error-Mode=any')
+          sudo apt-get "${apt_options[@]}" update -qq
+          sudo apt-get "${apt_options[@]}" install --no-install-recommends -y python3 ffmpeg
+          test -x "$JAVA_HOME/bin/javac"
+          test -f "$JAVA_HOME/jmods/java.base.jmod"
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Restore locked dependencies and verify native test code
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed integration_test
+          flutter analyze --no-pub integration_test
+          python3 -m py_compile tool/android_runtime_*.py
+          python3 tool/android_runtime_driver_test.py
+          bash -n tool/android_runtime_setup.sh tool/android_runtime_boot.sh
+
+      - name: Prepare approved SDK packages and AOSP emulator image
+        timeout-minutes: 12
+        run: bash tool/android_runtime_setup.sh
+
+      - name: Boot one accelerated disposable AOSP device
+        timeout-minutes: 6
+        run: bash tool/android_runtime_boot.sh
+
+      - name: Exercise actual native dialogs and independently verify exported audio
+        timeout-minutes: 24
+        run: python3 tool/android_runtime_ci.py
+
+      - name: Build the normal optimized x86_64 QA app without publishing it
+        timeout-minutes: 12
+        env:
+          ORG_GRADLE_PROJECT_audioFixerQa: 'true'
+        run: |
+          flutter build apk --release --target lib/main.dart --target-platform android-x64 --no-pub </dev/null
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > build/android_runtime/packaged-apk-local.txt
+          grep -q "^package: name='com.audiofixer.audio_fixer.qa' " build/android_runtime/packaged-apk-local.txt
+          grep -q "^native-code: 'x86_64'$" build/android_runtime/packaged-apk-local.txt
+          if grep -q '^application-debuggable' build/android_runtime/packaged-apk-local.txt; then
+            echo '::error::Packaged normal-entrypoint smoke requires a non-debuggable optimized QA build.'
+            exit 1
+          fi
+
+      - name: Launch the normal packaged app without querying online providers
+        timeout-minutes: 4
+        run: python3 tool/android_runtime_smoke.py
+
+      - name: Prepare allowlisted synthetic visual evidence
+        if: ${{ !cancelled() && hashFiles('build/android_runtime/generated/manifest.json') != '' }}
+        run: python3 tool/android_runtime_evidence.py
+
+      - name: Retain synthetic screenshots and check summaries for one day
+        if: ${{ !cancelled() && hashFiles('build/android_runtime/evidence/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: android-native-synthetic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/android_runtime/evidence/
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Stop the disposable emulator
+        if: ${{ always() }}
+        run: |
+          if command -v adb >/dev/null && [[ -f build/android_runtime/emulator.pid ]]; then
+            timeout 15s adb -s emulator-5554 emu kill || true
+          fi

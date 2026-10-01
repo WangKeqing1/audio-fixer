@@ -110,7 +110,10 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                           ),
                       ],
                     ),
-                  if (track.readError != null && track.isDeviceTrack)
+                  // MediaStore can lag an external tag edit. A successful
+                  // cached read must not make the real file impossible to
+                  // inspect again after the exporter detects a change.
+                  if (track.detailsLoaded && track.isDeviceTrack)
                     TextButton.icon(
                       onPressed: controller.canOperate
                           ? () => controller.readDetails(track.id, force: true)
