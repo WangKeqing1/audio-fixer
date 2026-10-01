@@ -1,0 +1,26 @@
+name: audio_fixer
+description: "Android 音频元数据、歌词和封面补全工具的 Flutter 基础框架。"
+publish_to: 'none'
+version: 0.1.2+3
+
+environment:
+  sdk: ^3.13.2
+
+dependencies:
+  audio_metadata_reader: 1.8.0
+  crypto: 3.0.7
+  file_picker: 13.1.0
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  path: 1.9.1
+  path_provider: 2.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
