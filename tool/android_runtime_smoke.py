@@ -30,7 +30,8 @@ def main() -> None:
     pid = runtime.adb('shell', 'pidof', PACKAGE).stdout.strip()
     assert re.fullmatch(r'\d+', pid), 'Packaged app process did not survive launch'
     activity = runtime.adb('shell', 'dumpsys', 'activity', 'activities').stdout
-    assert any(PACKAGE in line and 'mResumedActivity' in line for line in activity.splitlines()), \
+    assert any(PACKAGE in line and ('mResumedActivity' in line or 'topResumedActivity' in line)
+               for line in activity.splitlines()), \
         'Normal app is not the resumed activity'
     native_logs = runtime.adb('logcat', '-d', '--pid=' + pid, '-t', '300').stdout
     assert 'FATAL EXCEPTION' not in native_logs and 'Unhandled Exception:' not in native_logs, \

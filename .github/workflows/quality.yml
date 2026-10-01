@@ -206,8 +206,11 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_audioFixerQa: 'true'
         run: |
+          # Release-mode plugin regeneration excludes dev-only integration_test.
+          # --no-pub would incorrectly reuse the registrant from the test phase.
           flutter build apk --release --split-per-abi --target-platform android-arm64 \
-            --no-pub </dev/null 2>&1 | tee build/ci/android-build.txt
+            --pub </dev/null 2>&1 | tee build/ci/android-build.txt
+          git diff --exit-code -- pubspec.lock
 
       - name: Verify optimized QA identity, ARM64, TEST signature and checksum
         id: apk

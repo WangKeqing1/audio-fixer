@@ -160,18 +160,43 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   onPressed: () => showDialog<void>(
                     context: context,
                     builder: (context) => AlertDialog(
-                      title: const Text('本地目录已恢复'),
-                      content: Text(recovery),
+                      title: Text(
+                        controller.exportRecoveryNotice == null
+                            ? '本地目录已恢复'
+                            : '恢复提醒',
+                      ),
+                      content: SingleChildScrollView(
+                        child: SelectableText(recovery),
+                      ),
                       actions: [
+                        if (controller.exportRecoveryNotice != null)
+                          TextButton(
+                            onPressed: controller.canOperate
+                                ? () async {
+                                    await controller
+                                        .acknowledgeExportRecovery();
+                                    if (context.mounted) Navigator.pop(context);
+                                  }
+                                : null,
+                            child: const Text('已查看保存结果'),
+                          ),
                         TextButton(
                           onPressed: () => Navigator.pop(context),
-                          child: const Text('知道了'),
+                          child: Text(
+                            controller.exportRecoveryNotice == null
+                                ? '知道了'
+                                : '关闭',
+                          ),
                         ),
                       ],
                     ),
                   ),
                   icon: const Icon(Icons.restore),
-                  label: const Text('已从备份恢复目录 · 查看说明'),
+                  label: Text(
+                    controller.exportRecoveryNotice == null
+                        ? '已从备份恢复目录 · 查看说明'
+                        : '恢复提醒 · 查看说明',
+                  ),
                 ),
               if (controller.isBusy && !controller.isLoading) ...[
                 const LinearProgressIndicator(),

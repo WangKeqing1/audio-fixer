@@ -121,7 +121,10 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_audioFixerQa: 'true'
         run: |
-          flutter build apk --release --target lib/main.dart --target-platform android-x64 --no-pub </dev/null
+          # Flutter must regenerate release-mode plugin registration to omit
+          # integration_test (a dev-only native plugin). --no-pub skips that.
+          flutter build apk --release --target lib/main.dart --target-platform android-x64 --pub </dev/null
+          git diff --exit-code -- pubspec.lock
           apk=build/app/outputs/flutter-apk/app-release.apk
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > build/android_runtime/packaged-apk-local.txt
           grep -q "^package: name='com.audiofixer.audio_fixer.qa' " build/android_runtime/packaged-apk-local.txt

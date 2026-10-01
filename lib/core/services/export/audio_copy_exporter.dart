@@ -22,6 +22,13 @@ abstract interface class AudioCopyExporter {
   Future<String?> export(AudioTrack track, List<FieldSuggestion> selected);
 }
 
+/// Optional native lifecycle recovery; simple exporters/mocks need not implement it.
+abstract interface class AudioExportRecovery {
+  Future<String?> recoverInterruptedExport();
+  Future<void> acknowledgeExportRecovery();
+  Future<void> confirmExportRecorded(String uri);
+}
+
 class ExportException implements Exception {
   const ExportException(this.message);
   final String message;
@@ -31,7 +38,7 @@ class ExportException implements Exception {
 
 /// Every edit is made to a temporary copy. Android's system save dialog creates
 /// a new document; no write permission or writable handle to the source is used.
-class SafeAudioCopyExporter implements AudioCopyExporter {
+class SafeAudioCopyExporter implements AudioCopyExporter, AudioExportRecovery {
   SafeAudioCopyExporter(
     this.cacheDirectory, {
     this.channel = const MethodChannel('audio_fixer/device_library'),
@@ -39,6 +46,18 @@ class SafeAudioCopyExporter implements AudioCopyExporter {
   final DirectoryProvider cacheDirectory;
   final MethodChannel channel;
   static const supportedExtensions = {'mp3', 'flac', 'm4a', 'mp4'};
+
+  @override
+  Future<String?> recoverInterruptedExport() =>
+      channel.invokeMethod<String>('recoverExport');
+
+  @override
+  Future<void> acknowledgeExportRecovery() =>
+      channel.invokeMethod<void>('acknowledgeExportRecovery');
+
+  @override
+  Future<void> confirmExportRecorded(String uri) =>
+      channel.invokeMethod<void>('confirmExportRecorded', {'uri': uri});
 
   @override
   bool supports(AudioTrack track) =>

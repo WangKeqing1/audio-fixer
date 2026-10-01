@@ -173,6 +173,10 @@ class AndroidRuntime:
     def test(self) -> None:
         env = dict(os.environ, ORG_GRADLE_PROJECT_audioFixerQa="true")
         env.pop("AUDIO_FIXER_REAL_INPUTS", None)
+        # A preceding release build excludes integration_test's native plugin.
+        # Restore the debug registrant while enforcing the committed lockfile.
+        subprocess.run(["flutter", "pub", "get", "--enforce-lockfile"],
+                       env=env, check=True, timeout=180)
         command = ["flutter", "test", "integration_test/native_flow_test.dart", "-d", self.serial,
                    "--no-pub", "--reporter", "expanded", "--timeout", "8m"]
         process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,

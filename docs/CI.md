@@ -18,8 +18,14 @@ dart format --output=none --set-exit-if-changed lib test tool
 flutter analyze --no-pub
 env -u AUDIO_FIXER_REAL_INPUTS flutter test --no-pub --coverage --concurrency=2 --reporter expanded
 ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi \
-  --target-platform android-arm64 --no-pub
+  --target-platform android-arm64 --pub
+git diff --exit-code -- pubspec.lock
 ```
+
+The release build keeps Pub enabled so Flutter regenerates its Android plugin
+registrant for release mode, excluding the dev-only `integration_test` plugin.
+Using `--no-pub` after tests can leave a test registrant on the release classpath.
+The initial restore enforces the lockfile and the build checks it stays unchanged.
 
 The test suite generates its own small audio signals and cover image. CI unsets
 `AUDIO_FIXER_REAL_INPUTS`, checks Python/FFmpeg/ffprobe before testing, and rejects
@@ -67,6 +73,35 @@ requires the requested delivery destination.
 Only generated synthetic media is used. No private input, audio files, device
 logs, credentials, keystores or broad build/cache directories are uploaded.
 Runtime Android acceptance still needs separate verification.
+
+## Real Android runtime workflow
+
+[`android-runtime.yml`](../.github/workflows/android-runtime.yml) separately runs
+an AOSP API 35 x86_64 emulator when the hosted runner already permits access to
+KVM. Its first step opens the existing device and checks the KVM API; it does not
+change device permissions. A preflight failure means the emulator and app tests
+did not run, not that application behavior passed or failed.
+
+The native integration test uses the production widgets, controller, MediaStore
+bridge, tag exporter and system document picker. Only the online metadata source
+is replaced with explicitly synthetic, offline lyrics. The host generates and
+indexes a covered MP3, then operates freshly observed Android permission and
+save dialogs. Assertions cover permission denial/retry, content-URI reading,
+Unicode tags, candidate review, save cancellation, retry, persisted results and
+temporary-copy cleanup. Pulled original and exported files undergo independent
+FFmpeg decoded-sample and encoded-packet checks, tag/cover checks, and an exact
+original-file SHA-256 comparison.
+
+A subsequent smoke builds and launches the optimized normal `lib/main.dart`
+entrypoint on the emulator. It checks the resumed activity and launch errors;
+settings navigation is attempted only when a unique accessible control can be
+observed. It never presses an online query or connection-test button.
+
+This workflow may retain an exact allowlist of synthetic screenshots and check
+JSON for **one day**, with a SHA-256 manifest. It never uploads music, APKs, raw
+logcat, compiler output, credentials or whole build directories. Artifacts are
+evidence to inspect, not proof of visual quality by themselves. Successful
+emulator results do not constitute physical-device or every-OEM acceptance.
 
 Actions are pinned to verified commit IDs; checkout does not persist credentials,
 permissions are `contents: read`, and no repository secrets or persistent caches

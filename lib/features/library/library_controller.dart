@@ -41,7 +41,33 @@ class LibraryController extends ChangeNotifier {
   AudioLibraryPermission libraryPermission =
       AudioLibraryPermission.notRequested;
   String? libraryError;
-  String? get recoveryNotice => _snapshot.recoveryNotice;
+  String? exportRecoveryNotice;
+  String? get recoveryNotice {
+    final notices = [?_snapshot.recoveryNotice, ?exportRecoveryNotice];
+    return notices.isEmpty ? null : notices.join('\n\n');
+  }
+
+  Future<bool> _recoverExport() async {
+    final recovery = exporter;
+    if (recovery is! AudioExportRecovery) return true;
+    try {
+      exportRecoveryNotice = await (recovery as AudioExportRecovery)
+          .recoverInterruptedExport();
+      return true;
+    } catch (error) {
+      exportRecoveryNotice = '无法检查上次音频保存的恢复记录，请重新启动应用后重试。原音频未修改。';
+      debugPrint('Export recovery unavailable: $error');
+      return false;
+    }
+  }
+
+  Future<void> acknowledgeExportRecovery() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioExportRecovery) return;
+    await (recovery as AudioExportRecovery).acknowledgeExportRecovery();
+    exportRecoveryNotice = null;
+    _notify();
+  });
   bool isCompleting = false;
   bool completionStopRequested = false;
   final Map<String, String> sourceConnections = {};
@@ -77,9 +103,14 @@ class LibraryController extends ChangeNotifier {
     loadError = null;
     _notify();
     try {
+      await _recoverExport();
       _snapshot = await store.load();
       await _pruneUnusedFiles();
-      if (_snapshot.recoveryNotice case final message?) _announce(message);
+      if (recoveryNotice case final message?) {
+        _announce(
+          exportRecoveryNotice == null ? message : '上次音频保存有恢复提醒，请查看说明。',
+        );
+      }
       if (usesDeviceLibrary) await _syncDeviceLibrary(autoRequest: true);
     } catch (error, stack) {
       debugPrint('Library load failed: $error\n$stack');
@@ -98,7 +129,12 @@ class LibraryController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> refreshLibrary() => _operate(() => _syncDeviceLibrary());
+  Future<void> refreshLibrary() => _operate(() async {
+    // A recreated Activity can receive the old system picker result after the
+    // initial recovery probe. Resume/refresh observes its durable notice too.
+    await _recoverExport();
+    await _syncDeviceLibrary();
+  });
 
   Future<void> checkSourceConnections() => _operate(() async {
     for (final source in completion.sources) {
@@ -496,6 +532,10 @@ class LibraryController extends ChangeNotifier {
       progress = '正在生成并校验副本，原音频保持不变…';
       _notify();
       try {
+        if (!await _recoverExport()) {
+          _announce(exportRecoveryNotice!);
+          return;
+        }
         final uri = await exporter!.export(track, selected);
         if (uri == null) {
           _announce('已取消保存，原音频未修改。');
@@ -518,6 +558,15 @@ class LibraryController extends ChangeNotifier {
                 .map((item) => item.trackId == task.trackId ? exported : item)
                 .toList(),
           );
+          if (exporter case final AudioExportRecovery recovery) {
+            try {
+              await recovery.confirmExportRecorded(uri);
+            } catch (error) {
+              // The saved copy and committed task are valid. Leave the native
+              // journal for startup recovery rather than report a failed save.
+              debugPrint('Export journal acknowledgement deferred: $error');
+            }
+          }
           _announce('已导出校验通过的音频副本，原音频未修改。');
         } catch (_) {
           _announce('音频副本已保存，但任务记录保存失败。请在刚选择的位置查看文件。');
