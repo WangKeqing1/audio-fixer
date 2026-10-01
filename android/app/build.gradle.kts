@@ -4,6 +4,12 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Opt-in test identity for safe side-by-side QA installs in every build mode.
+// Normal builds keep the application's existing identity.
+val audioFixerQa = providers.gradleProperty("audioFixerQa")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+
 android {
     namespace = "com.audiofixer.audio_fixer"
     compileSdk = flutter.compileSdkVersion
@@ -27,9 +33,17 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["audioFixerLabel"] = "Audio Fixer"
     }
 
     buildTypes {
+        configureEach {
+            if (audioFixerQa) {
+                applicationIdSuffix = ".qa"
+                versionNameSuffix = "-qa"
+                manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA"
+            }
+        }
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.

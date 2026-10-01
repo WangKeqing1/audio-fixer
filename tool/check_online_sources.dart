@@ -20,10 +20,16 @@ Future<void> main(List<String> arguments) async {
     album: arguments.length > 3 ? arguments[3] : 'Whenever You Need Somebody',
   );
   for (final source in createOnlineSources()) {
-    try {
-      if (source is SourceConnectionTester) {
+    if (source is SourceConnectionTester) {
+      try {
         await (source as SourceConnectionTester).checkConnection();
+        stdout.writeln('${source.name}: connection probe passed');
+      } catch (error) {
+        stderr.writeln('${source.name}: connection probe failed: $error');
+        exitCode = 1;
       }
+    }
+    try {
       final results = await source.lookup(track, source.supportedFields);
       stdout.writeln('${source.name}: reachable; candidates=${results.length}');
       for (final result in results) {
@@ -32,7 +38,7 @@ Future<void> main(List<String> arguments) async {
         );
       }
     } catch (error) {
-      stderr.writeln('${source.name}: $error');
+      stderr.writeln('${source.name}: lookup failed: $error');
       exitCode = 1;
     }
   }

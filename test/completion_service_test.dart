@@ -58,7 +58,56 @@ class _FailingSource implements MetadataSource {
   }
 }
 
+class _LyricsOnlySource implements MetadataSource {
+  _LyricsOnlySource({this.withResult = true});
+  final bool withResult;
+  bool called = false;
+  @override
+  String get name => 'Lyrics only';
+  @override
+  Set<AudioField> get supportedFields => const {AudioField.lyrics};
+  @override
+  Future<List<FieldSuggestion>> lookup(
+    AudioTrack track,
+    Set<AudioField> requestedFields,
+  ) async {
+    called = true;
+    expect(requestedFields, {AudioField.lyrics});
+    return withResult
+        ? const [
+            FieldSuggestion(
+              field: AudioField.lyrics,
+              value: 'Available lyrics',
+              source: 'Lyrics only',
+            ),
+          ]
+        : const [];
+  }
+}
+
 void main() {
+  test(
+    'queries supported fields even when another source is missing',
+    () async {
+      final source = _LyricsOnlySource();
+      final result = await CompletionService(sources: [source])
+          .preview(fixtureTrack(), const AppSettings());
+      expect(source.called, isTrue);
+      expect(result.status, TaskStatus.needsReview);
+      expect(result.suggestions.single.field, AudioField.lyrics);
+      expect(result.message, contains('专辑、封面的数据源尚未接入'));
+    },
+  );
+
+  test('partial source no-match still explains unavailable fields', () async {
+    final source = _LyricsOnlySource(withResult: false);
+    final result = await CompletionService(sources: [source])
+        .preview(fixtureTrack(), const AppSettings());
+    expect(source.called, isTrue);
+    expect(result.status, TaskStatus.noMatch);
+    expect(result.message, contains('数据源尚未接入'));
+  });
+
   test(
     'unconfigured sources produce a blocked task without changing metadata',
     () async {

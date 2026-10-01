@@ -9,6 +9,7 @@ import '../../core/models/completion_task.dart';
 import '../../core/services/audio_importer.dart';
 import '../../core/services/completion_service.dart';
 import '../../core/services/device_music_library.dart';
+import '../../core/services/export/audio_copy_exporter.dart';
 import '../../core/services/metadata_source.dart';
 import '../../core/services/sources/json_api_client.dart';
 import '../../core/storage/library_store.dart';
@@ -20,6 +21,7 @@ class LibraryController extends ChangeNotifier {
     required this.importer,
     required this.completion,
     this.deviceLibrary,
+    this.exporter,
   });
 
   final LibraryStore store;
@@ -27,6 +29,7 @@ class LibraryController extends ChangeNotifier {
   final AudioImporter importer;
   final CompletionService completion;
   final DeviceMusicLibrary? deviceLibrary;
+  final AudioCopyExporter? exporter;
   LibrarySnapshot _snapshot = const LibrarySnapshot();
   bool _disposed = false;
   bool isLoading = true;
@@ -38,6 +41,33 @@ class LibraryController extends ChangeNotifier {
   AudioLibraryPermission libraryPermission =
       AudioLibraryPermission.notRequested;
   String? libraryError;
+  String? exportRecoveryNotice;
+  String? get recoveryNotice {
+    final notices = [?_snapshot.recoveryNotice, ?exportRecoveryNotice];
+    return notices.isEmpty ? null : notices.join('\n\n');
+  }
+
+  Future<bool> _recoverExport() async {
+    final recovery = exporter;
+    if (recovery is! AudioExportRecovery) return true;
+    try {
+      exportRecoveryNotice = await (recovery as AudioExportRecovery)
+          .recoverInterruptedExport();
+      return true;
+    } catch (error) {
+      exportRecoveryNotice = '无法检查上次音频保存的恢复记录，请重新启动应用后重试。原音频未修改。';
+      debugPrint('Export recovery unavailable: $error');
+      return false;
+    }
+  }
+
+  Future<void> acknowledgeExportRecovery() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioExportRecovery) return;
+    await (recovery as AudioExportRecovery).acknowledgeExportRecovery();
+    exportRecoveryNotice = null;
+    _notify();
+  });
   bool isCompleting = false;
   bool completionStopRequested = false;
   final Map<String, String> sourceConnections = {};
@@ -73,8 +103,14 @@ class LibraryController extends ChangeNotifier {
     loadError = null;
     _notify();
     try {
+      await _recoverExport();
       _snapshot = await store.load();
       await _pruneUnusedFiles();
+      if (recoveryNotice case final message?) {
+        _announce(
+          exportRecoveryNotice == null ? message : '上次音频保存有恢复提醒，请查看说明。',
+        );
+      }
       if (usesDeviceLibrary) await _syncDeviceLibrary(autoRequest: true);
     } catch (error, stack) {
       debugPrint('Library load failed: $error\n$stack');
@@ -93,7 +129,12 @@ class LibraryController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> refreshLibrary() => _operate(() => _syncDeviceLibrary());
+  Future<void> refreshLibrary() => _operate(() async {
+    // A recreated Activity can receive the old system picker result after the
+    // initial recovery probe. Resume/refresh observes its durable notice too.
+    await _recoverExport();
+    await _syncDeviceLibrary();
+  });
 
   Future<void> checkSourceConnections() => _operate(() async {
     for (final source in completion.sources) {
@@ -152,8 +193,16 @@ class LibraryController extends ChangeNotifier {
       _notify();
       final discovered = await library.querySongs();
       final cached = {for (final track in _snapshot.tracks) track.id: track};
+      final changedIds = <String>{};
       final refreshed = discovered.map((track) {
         final old = cached[track.id];
+        if (old != null &&
+            (old.dateModifiedMs != track.dateModifiedMs ||
+                old.sizeBytes != track.sizeBytes ||
+                old.fileName != track.fileName ||
+                old.contentUri != track.contentUri)) {
+          changedIds.add(track.id);
+        }
         if (old == null ||
             !old.detailsLoaded ||
             old.dateModifiedMs != track.dateModifiedMs ||
@@ -178,6 +227,7 @@ class LibraryController extends ChangeNotifier {
           ...refreshed,
           ..._snapshot.tracks.where((track) => !track.isDeviceTrack),
         ],
+        tasks: _invalidateTasks(changedIds),
       );
     } on PlatformException catch (error) {
       if (error.code == 'permission_denied') {
@@ -206,10 +256,19 @@ class LibraryController extends ChangeNotifier {
         _notify();
         try {
           final updated = await deviceLibrary!.readDetails(track);
+          final changed =
+              track.title != updated.title ||
+              track.artist != updated.artist ||
+              track.album != updated.album ||
+              track.durationMs != updated.durationMs ||
+              track.lyrics != updated.lyrics ||
+              track.artworkPath != updated.artworkPath ||
+              updated.readError != null;
           await _commit(
             tracks: _snapshot.tracks
                 .map((item) => item.id == id ? updated : item)
                 .toList(),
+            tasks: changed ? _invalidateTasks({id}) : null,
           );
         } on PlatformException catch (error) {
           if (error.code != 'permission_denied') rethrow;
@@ -219,6 +278,7 @@ class LibraryController extends ChangeNotifier {
       });
 
   Future<void> _pruneUnusedFiles() async {
+    if (_snapshot.recoveredFromBackup) return;
     try {
       await importer.prune(_snapshot.tracks.map((track) => track.id).toSet());
     } catch (error, stack) {
@@ -236,6 +296,7 @@ class LibraryController extends ChangeNotifier {
       tracks: tracks ?? _snapshot.tracks,
       tasks: tasks ?? _snapshot.tasks,
       settings: settings ?? _snapshot.settings,
+      recoveredFromBackup: _snapshot.recoveredFromBackup,
     );
     await store.save(next);
     _snapshot = next;
@@ -302,10 +363,18 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> complete({AudioTrack? track}) => _operate(() async {
     final targets = track == null
-        ? tracks.where((item) => item.needsCompletion).toList()
-        : [track];
+        ? tracks
+              .where(
+                (item) => canQueryTrack(item) && !_hasReviewableResult(item),
+              )
+              .toList()
+        : [?trackById(track.id)];
     if (targets.isEmpty || settings.enabledFields.isEmpty) {
-      _announce('当前没有需要补全的歌曲。');
+      _announce(
+        settings.enabledFields.isEmpty
+            ? '请先在设置中选择要补全的内容。'
+            : '没有新的待查询歌曲，已有候选可在补全任务中确认。',
+      );
       return;
     }
     isCompleting = true;
@@ -345,6 +414,15 @@ class LibraryController extends ChangeNotifier {
                 : '查询失败，请检查网络或稍后重试。',
           );
         }
+        task = CompletionTask(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          createdAt: task.createdAt,
+          status: task.status,
+          message: task.message,
+          suggestions: task.suggestions,
+          queriedFields: settings.enabledFields,
+        );
         await _commit(
           tracks: _snapshot.tracks
               .map((current) => current.id == item.id ? item : current)
@@ -364,6 +442,151 @@ class LibraryController extends ChangeNotifier {
       completionStopRequested = false;
     }
   });
+
+  List<CompletionTask> _invalidateTasks(Set<String> trackIds) =>
+      tasks.map((task) {
+        if (!trackIds.contains(task.trackId) ||
+            task.status == TaskStatus.outdated) {
+          return task;
+        }
+        return CompletionTask(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          createdAt: task.createdAt,
+          status: TaskStatus.outdated,
+          message: '原文件或已读取资料已变化，请重新查询后再确认。原先导出的副本不受影响。',
+          suggestions: task.suggestions,
+          exportedCopyUri: task.exportedCopyUri,
+          queriedFields: task.queriedFields,
+        );
+      }).toList();
+
+  bool isTaskCurrent(CompletionTask task) {
+    final current = taskForTrack(task.trackId);
+    final track = trackById(task.trackId);
+    return current != null &&
+        current.createdAt == task.createdAt &&
+        current.status != TaskStatus.outdated &&
+        track != null &&
+        track.detailsLoaded &&
+        track.readError == null;
+  }
+
+  bool _hasReviewableResult(AudioTrack track) {
+    final task = taskForTrack(track.id);
+    return task != null &&
+        isTaskCurrent(task) &&
+        task.suggestions.isNotEmpty &&
+        task.queriedFields.containsAll(settings.enabledFields) &&
+        (task.status == TaskStatus.needsReview ||
+            task.status == TaskStatus.exported);
+  }
+
+  bool canQueryTrack(AudioTrack track) =>
+      track.readError == null &&
+      settings.enabledFields.isNotEmpty &&
+      (!track.detailsLoaded ||
+          track.missingFields.intersection(settings.enabledFields).isNotEmpty);
+
+  int get pendingCompletionCount => tracks
+      .where((track) => canQueryTrack(track) && !_hasReviewableResult(track))
+      .length;
+
+  bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
+
+  CompletionTask? taskForTrack(String id) {
+    for (final task in tasks) {
+      if (task.trackId == id) return task;
+    }
+    return null;
+  }
+
+  Future<bool> exportCandidates(
+    CompletionTask task,
+    List<FieldSuggestion> selected,
+  ) async {
+    var saved = false;
+    await _operate(() async {
+      final track = trackById(task.trackId);
+      final current = taskForTrack(task.trackId);
+      if (track == null || current == null || !isTaskCurrent(task)) {
+        _announce('歌曲或候选已更新，请返回重新打开结果。');
+        return;
+      }
+      if (selected.isEmpty ||
+          selected.any(
+            (item) => !current.suggestions.any(
+              (candidate) =>
+                  candidate.field == item.field &&
+                  candidate.value == item.value &&
+                  candidate.source == item.source,
+            ),
+          )) {
+        _announce('请选择当前结果中的候选资料。');
+        return;
+      }
+      if (!canExportTrack(track)) {
+        _announce('此格式暂不支持安全导出，目前支持 MP3、FLAC 和 M4A/MP4。');
+        return;
+      }
+      progress = '正在生成并校验副本，原音频保持不变…';
+      _notify();
+      try {
+        if (!await _recoverExport()) {
+          _announce(exportRecoveryNotice!);
+          return;
+        }
+        final uri = await exporter!.export(track, selected);
+        if (uri == null) {
+          _announce('已取消保存，原音频未修改。');
+          return;
+        }
+        saved = true;
+        final exported = CompletionTask(
+          trackId: current.trackId,
+          trackTitle: current.trackTitle,
+          createdAt: current.createdAt,
+          status: TaskStatus.exported,
+          message: '已将所选资料写入新副本，并通过音频完整性和标签校验。原音频未修改。',
+          suggestions: current.suggestions,
+          exportedCopyUri: uri,
+          queriedFields: current.queriedFields,
+        );
+        try {
+          await _commit(
+            tasks: tasks
+                .map((item) => item.trackId == task.trackId ? exported : item)
+                .toList(),
+          );
+          if (exporter case final AudioExportRecovery recovery) {
+            try {
+              await recovery.confirmExportRecorded(uri);
+            } catch (error) {
+              // The saved copy and committed task are valid. Leave the native
+              // journal for startup recovery rather than report a failed save.
+              debugPrint('Export journal acknowledgement deferred: $error');
+            }
+          }
+          _announce('已导出校验通过的音频副本，原音频未修改。');
+        } catch (_) {
+          _announce('音频副本已保存，但任务记录保存失败。请在刚选择的位置查看文件。');
+        }
+      } on ExportException catch (error) {
+        _announce(error.message);
+      } on FormatException catch (error) {
+        _announce('音频校验未通过：${error.message} 原音频未修改。');
+      } on TimeoutException {
+        _announce('封面下载超时，未导出副本。请稍后重试。');
+      } on PlatformException catch (error) {
+        _announce(
+          error.code == 'export_cleanup_failed'
+              ? '保存未完成，所选位置可能留有不完整副本，请删除该副本后重试。原音频未修改。'
+              : '保存未完成。原音频未修改，请检查保存位置和可用空间后重试。',
+        );
+      }
+    });
+    return saved;
+  }
 
   Future<void> updateSettings(AppSettings value) =>
       _operate(() => _commit(settings: value));

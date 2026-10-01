@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import java.security.MessageDigest
 import android.provider.Settings
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -35,12 +36,15 @@ class DeviceLibraryBridge(
     }
     private val preferences = activity.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val channel = MethodChannel(messenger, CHANNEL_NAME)
+    private val exportJournal = ExportRecoveryJournal(activity)
+    @Volatile private var exportActive = false
 
     @Volatile
     private var disposed = false
 
     /** Only one Android runtime permission request may be active at a time. */
     private var pendingPermissionResult: OneShotResult? = null
+    private var pendingExport: PendingExport? = null
 
     init {
         channel.setMethodCallHandler(::onMethodCall)
@@ -79,6 +83,20 @@ class DeviceLibraryBridge(
             "querySongs" -> querySongs(result)
             "copyForRead" -> copyForRead(call, result)
             "releaseReadCopy" -> releaseReadCopy(call, result)
+            "exportAudioCopy" -> exportAudioCopy(call, result)
+            "recoverExport" -> executeIo(OneShotResult(result), "export_recovery_failed") {
+                if (exportActive) exportJournal.notice() else exportJournal.recover()
+            }
+            "acknowledgeExportRecovery" -> executeIo(OneShotResult(result), "export_recovery_failed") {
+                exportJournal.setNotice(null)
+                null
+            }
+            "confirmExportRecorded" -> executeIo(OneShotResult(result), "export_recovery_failed") {
+                val uri = call.argument<String>("uri")
+                    ?: throw BridgeException("invalid_argument", "An exported document URI is required.")
+                exportJournal.acknowledgeVerified(uri)
+                null
+            }
             else -> result.notImplemented()
         }
     }
@@ -221,6 +239,137 @@ class DeviceLibraryBridge(
         executeIo(reply, "read_failed") {
             releaseReadCopyOnWorker(path)
             null
+        }
+    }
+
+    private data class PendingExport(val file: File, val reply: OneShotResult)
+
+    private fun exportAudioCopy(call: MethodCall, result: MethodChannel.Result) {
+        val reply = OneShotResult(result)
+        if (exportActive || pendingExport != null) {
+            reply.error("export_in_progress", "An export is already in progress.", null)
+            return
+        }
+        val path = call.argument<String>("path")
+        val name = call.argument<String>("fileName")
+        val mime = call.argument<String>("mimeType")
+        if (path == null || name.isNullOrBlank() || mime !in setOf("audio/mpeg", "audio/flac", "audio/mp4")) {
+            reply.error("invalid_argument", "Invalid audio export request.", null)
+            return
+        }
+        try {
+            val root = File(activity.cacheDir, "tagged_exports").canonicalFile
+            val file = File(path).canonicalFile
+            if (!file.path.startsWith(root.path + File.separator) || !file.isFile || file.length() == 0L) {
+                reply.error("invalid_argument", "Only verified temporary audio copies may be exported.", null)
+                return
+            }
+            // Flush provenance before Android can create any destination.
+            exportJournal.record(ExportRecoveryJournal.PREPARED, file)
+            exportActive = true
+            pendingExport = PendingExport(file, reply)
+            // ACTION_CREATE_DOCUMENT creates a separate document. Never request
+            // a writable handle to the source MediaStore URI.
+            activity.startActivityForResult(
+                Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mime
+                    putExtra(Intent.EXTRA_TITLE, File(name).name)
+                },
+                EXPORT_REQUEST_CODE,
+            )
+        } catch (error: Exception) {
+            pendingExport = null
+            exportActive = false
+            reply.error("export_failed", "Unable to open the system save dialog.", error.message)
+        }
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (disposed || requestCode != EXPORT_REQUEST_CODE) return
+        val pending = pendingExport
+        pendingExport = null
+        val target = if (resultCode == Activity.RESULT_OK) data?.data else null
+        if (pending == null) {
+            // Android may deliver this after Activity/process recreation.
+            try {
+                ioExecutor.execute {
+                    try { exportJournal.recoverOrphanResult(target) } catch (_: Exception) {
+                        // Keep the durable record; startup recovery can retry.
+                    }
+                }
+            } catch (_: RuntimeException) {
+                // The durable journal remains available on the next launch.
+            }
+            return
+        }
+        if (target == null) {
+            exportActive = false
+            try { exportJournal.clear() } catch (_: IOException) { /* recover next launch */ }
+            pending.reply.success(null)
+            return
+        }
+        try {
+            // This must commit before opening a writable destination handle.
+            exportJournal.record(ExportRecoveryJournal.WRITING, pending.file, target)
+        } catch (error: IOException) {
+            exportActive = false
+            val removed = exportJournal.deleteNewDocument(target)
+            pending.reply.error(if (removed) "export_failed" else "export_cleanup_failed", error.message, null)
+            return
+        }
+        executeIo(pending.reply, "export_failed") {
+            exportJournal.exclusively {
+                try {
+                    val expected = MessageDigest.getInstance("SHA-256")
+                    val stream = activity.contentResolver.openOutputStream(target, "w")
+                        ?: throw IOException("Unable to create exported audio.")
+                    stream.use { output ->
+                        pending.file.inputStream().use { input ->
+                            val buffer = ByteArray(COPY_BUFFER_BYTES)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                expected.update(buffer, 0, count)
+                                output.write(buffer, 0, count)
+                            }
+                            output.flush()
+                        }
+                    }
+                    val actual = MessageDigest.getInstance("SHA-256")
+                    val verify = activity.contentResolver.openInputStream(target)
+                        ?: throw IOException("Unable to verify exported audio.")
+                    verify.use { input ->
+                        val buffer = ByteArray(COPY_BUFFER_BYTES)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            actual.update(buffer, 0, count)
+                        }
+                    }
+                    if (!MessageDigest.isEqual(expected.digest(), actual.digest())) {
+                        throw IOException("The saved audio failed integrity verification.")
+                    }
+                    // Dart acknowledges this exact URI only after its task record commits.
+                    exportJournal.record(ExportRecoveryJournal.VERIFIED, pending.file, target)
+                    target.toString()
+                } catch (error: Exception) {
+                    // This URI is a new document from ACTION_CREATE_DOCUMENT only.
+                    // Remove partial output if the provider supports deletion.
+                    val removed = exportJournal.deleteNewDocument(target)
+                    if (!removed) {
+                        throw BridgeException(
+                            "export_cleanup_failed",
+                            "Audio export failed and the incomplete new document could not be removed. " +
+                                "Delete the incomplete copy manually; the original is unchanged.",
+                        )
+                    }
+                    try { exportJournal.clear() } catch (_: IOException) { /* recover next launch */ }
+                    throw IOException("Audio export failed; the original is unchanged.", error)
+                } finally {
+                    exportActive = false
+                }
+            }
         }
     }
 
@@ -500,6 +649,7 @@ class DeviceLibraryBridge(
         private const val PREFERENCES_NAME = "audio_fixer_device_library"
         private const val KEY_PERMISSION_REQUESTED = "audio_permission_requested"
         private const val PERMISSION_REQUEST_CODE = 41937
+        private const val EXPORT_REQUEST_CODE = 41938
         private const val EXTERNAL_VOLUME = "external"
         private const val PERMISSION_NOT_REQUESTED = "notRequested"
         private const val PERMISSION_DENIED = "denied"

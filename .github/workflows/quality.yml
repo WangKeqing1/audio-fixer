@@ -1,0 +1,282 @@
+name: Audio Fixer quality
+
+on:
+  push:
+    branches: [dev/audio-fixer-quality]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-fixer-quality-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-qa-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+
+    steps:
+      - name: Check out the event commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare isolated build evidence and Gradle configuration
+        run: |
+          mkdir -p build/ci "$RUNNER_TEMP/audio-fixer-gradle"
+          printf 'GRADLE_USER_HOME=%s\n' "$RUNNER_TEMP/audio-fixer-gradle" >> "$GITHUB_ENV"
+          # Do not let Gradle add SDK packages outside the explicit setup step.
+          printf '%s\n' 'android.builder.sdkDownload=false' 'org.gradle.daemon=false' \
+            'org.gradle.workers.max=2' 'org.gradle.jvmargs=-Xmx3G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=256m' > "$RUNNER_TEMP/audio-fixer-gradle/gradle.properties"
+          git rev-parse HEAD > build/ci/commit.txt
+          printf '%s\n' "${ImageOS:-unknown} ${ImageVersion:-unknown}" > build/ci/runner-image.txt
+
+      - name: Set up the full Java 21 JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          java-package: jdk
+          architecture: x64
+
+      - name: Set up Flutter 3.47.2
+        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+          architecture: x64
+          cache: false
+
+      - name: Install synthetic-media test tools
+        timeout-minutes: 10
+        run: |
+          # A hosted Azure mirror stalled a previous run. Use only the official
+          # Ubuntu HTTPS archives here, with the runner's existing signing key.
+          test -s /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          sources="$RUNNER_TEMP/audio-fixer-ubuntu.list"
+          cat > "$sources" <<'APT_SOURCES'
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble-updates main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://security.ubuntu.com/ubuntu noble-security main universe
+          APT_SOURCES
+          apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+                       -o 'Acquire::Retries=3' -o 'Acquire::http::Timeout=30'
+                       -o 'Acquire::https::Timeout=30' -o 'APT::Update::Error-Mode=any')
+          sudo apt-get "${apt_options[@]}" update -qq
+          sudo apt-get "${apt_options[@]}" install --no-install-recommends -y python3 ffmpeg
+          python3 --version
+          ffmpeg -version
+          ffprobe -version
+          test -x "$JAVA_HOME/bin/javac"
+          test -f "$JAVA_HOME/jmods/java.base.jmod"
+          javac -version | grep -q '^javac 21\.'
+          flutter --version --machine > build/ci/flutter-version.json
+          {
+            java -version 2>&1
+            javac -version
+            python3 --version
+            ffmpeg -version
+            ffprobe -version
+          } > build/ci/tool-versions.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          version = json.loads(Path('build/ci/flutter-version.json').read_text())
+          assert version['frameworkVersion'] == '3.47.2', version
+          PY
+
+      - name: Restore locked Dart dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib test tool 2>&1 | tee build/ci/format.txt
+
+      - name: Analyze all Dart code
+        run: flutter analyze --no-pub 2>&1 | tee build/ci/analyze.txt
+
+      - name: Run the complete offline synthetic test suite
+        id: tests
+        timeout-minutes: 12
+        run: |
+          # Unset instead of blank: the optional private-media test checks presence.
+          env -u AUDIO_FIXER_REAL_INPUTS flutter test --no-pub --coverage --concurrency=2 \
+            --reporter expanded --file-reporter json:build/ci/test-results.jsonl \
+            2>&1 | tee build/ci/tests.txt
+
+      - name: Verify complete synthetic coverage and collect its manifest
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+          events = [json.loads(line) for line in Path('build/ci/test-results.jsonl').read_text().splitlines() if line.strip()]
+          tests = {e['test']['id']: e['test']['name'] for e in events if e['type'] == 'testStart'}
+          done = [e for e in events if e['type'] == 'testDone' and not e.get('hidden', False)]
+          synthetic = [e for e in done if tests.get(e['testID'], '').startswith('offline encoded audio fixtures ')]
+          summary = {
+              'synthetic_only': True,
+              'completed_tests': len(done),
+              'synthetic_media_tests': len(synthetic),
+              'skipped_tests': sum(bool(e.get('skipped')) for e in done),
+              'failed_tests': sum(e.get('result') != 'success' for e in done),
+              'run_success': any(e['type'] == 'done' and e.get('success') is True for e in events),
+          }
+          Path('build/ci/test-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          manifests = list(Path('build/test_samples/flutter_runs').glob('run_*/generated/manifest.json'))
+          assert len(manifests) == 1, 'Expected exactly one fresh synthetic fixture manifest'
+          manifest = json.loads(manifests[0].read_text())
+          assert manifest.get('synthetic_only') is True, 'Refusing to archive non-synthetic fixture metadata'
+          shutil.copyfile(manifests[0], 'build/ci/synthetic-fixtures.json')
+          assert summary['run_success'] and synthetic, summary
+          assert summary['skipped_tests'] == 0 and summary['failed_tests'] == 0, summary
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Prepare required Android packages using only the approved main license
+        timeout-minutes: 5
+        run: |
+          : "${ANDROID_HOME:?GitHub runner must provide the Android SDK}"
+          original_sdk="$ANDROID_HOME"
+          sdk="$RUNNER_TEMP/audio-fixer-android-sdk"
+          sdkmanager="$original_sdk/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager"
+          test -s "$original_sdk/licenses/android-sdk-license"
+          mkdir -p "$sdk/licenses"
+          cp "$original_sdk/licenses/android-sdk-license" "$sdk/licenses/"
+          # This isolated view excludes every other hosted-runner license.
+          for directory in cmdline-tools platform-tools; do
+            test -d "$original_sdk/$directory"
+            ln -s "$original_sdk/$directory" "$sdk/$directory"
+          done
+          packages=('platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
+                    'ndk;28.2.13676358' 'cmake;3.22.1')
+          missing=()
+          for package in "${packages[@]}"; do
+            relative="${package/;/\/}"
+            mkdir -p "$(dirname "$sdk/$relative")"
+            if [[ -s "$original_sdk/$relative/package.xml" ]]; then
+              ln -s "$original_sdk/$relative" "$sdk/$relative"
+            else
+              missing+=("$package")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            # Exact stable packages only. A new license cannot be accepted on EOF.
+            "$sdkmanager" --sdk_root="$sdk" --channel=0 "${missing[@]}" </dev/null
+          fi
+          for package in "${packages[@]}"; do
+            relative="${package/;/\/}"
+            if [[ ! -s "$sdk/$relative/package.xml" ]]; then
+              echo "::error::Missing Android package $package. Review installation or license requirements; no additional license was accepted."
+              exit 1
+            fi
+            printf '%s\n' "$package" >> build/ci/android-tools.txt
+            cat "$sdk/$relative/source.properties" >> build/ci/android-tools.txt
+          done
+          SDK_VIEW="$sdk" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          sdk = Path(os.environ['SDK_VIEW'])
+          assert {p.name for p in (sdk / 'licenses').iterdir()} == {'android-sdk-license'}
+          for package in sdk.glob('*/*/package.xml'):
+              for node in ET.parse(package).getroot().iter():
+                  if node.tag.rsplit('}', 1)[-1] == 'uses-license':
+                      assert node.get('ref') == 'android-sdk-license', (package, node.attrib)
+          PY
+          for key in ANDROID_HOME ANDROID_SDK_ROOT; do
+            printf '%s=%s\n' "$key" "$sdk" >> "$GITHUB_ENV"
+          done
+          for key in ANDROID_NDK_HOME ANDROID_NDK_ROOT; do
+            printf '%s=%s/ndk/28.2.13676358\n' "$key" "$sdk" >> "$GITHUB_ENV"
+          done
+
+      - name: Build the optimized ARM64 QA APK with debug TEST signing
+        timeout-minutes: 15
+        env:
+          ORG_GRADLE_PROJECT_audioFixerQa: 'true'
+        run: |
+          # Release-mode plugin regeneration excludes dev-only integration_test.
+          # --no-pub would incorrectly reuse the registrant from the test phase.
+          flutter build apk --release --split-per-abi --target-platform android-arm64 \
+            --pub </dev/null 2>&1 | tee build/ci/android-build.txt
+          git diff --exit-code -- pubspec.lock
+
+      - name: Verify optimized QA identity, ARM64, TEST signature and checksum
+        id: apk
+        run: |
+          apk=build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > build/ci/apk-badging.txt
+          grep -q "^package: name='com.audiofixer.audio_fixer.qa' " build/ci/apk-badging.txt
+          grep -q "^application-label:'Audio Fixer QA'$" build/ci/apk-badging.txt
+          grep -q "^native-code: 'arm64-v8a'$" build/ci/apk-badging.txt
+          if grep -q '^application-debuggable' build/ci/apk-badging.txt; then
+            echo '::error::The optimized QA APK must not be debuggable.'
+            exit 1
+          fi
+          # The repository intentionally uses an ephemeral debug TEST signer.
+          # Release mode enables AOT optimization; it is not production signing.
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" \
+            | tee build/ci/apk-signature.txt
+          grep -Eq '^Signer #1 certificate DN: .*CN=Android Debug(,|$)' build/ci/apk-signature.txt
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          badging = Path('build/ci/apk-badging.txt').read_text()
+          package = next(line for line in badging.splitlines() if line.startswith('package: '))
+          attributes = dict(re.findall(r"(\w+)='([^']*)'", package))
+          version = re.search(r'^version:\s*([^\s#]+)', Path('pubspec.yaml').read_text(), re.MULTILINE).group(1).strip("\"'")
+          name, code = version.split('+', 1)
+          assert attributes['versionName'] == name + '-qa', attributes
+          # Flutter's split APK version-code offset for ARM64 is 2000.
+          assert int(attributes['versionCode']) == int(code) + 2000, attributes
+          info = {
+              'package_id': attributes['name'],
+              'label': 'Audio Fixer QA',
+              'version_name': attributes['versionName'],
+              'version_code': attributes['versionCode'],
+              'abi': 'arm64-v8a',
+              'optimized_aot': True,
+              'debuggable': False,
+              'signing': 'debug TEST signing; not production signing',
+              'bytes': Path('build/app/outputs/flutter-apk/app-arm64-v8a-release.apk').stat().st_size,
+          }
+          Path('build/ci/apk-info.json').write_text(json.dumps(info, indent=2) + '\n')
+          print(json.dumps(info, indent=2))
+          PY
+          sha256sum "$apk" | tee build/ci/apk-sha256.txt
+
+      - name: Summarize checked results without publishing binaries
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '## Audio Fixer quality'
+            echo 'APK files are built and verified only; this workflow does not publish binaries or releases.'
+            if [[ -f build/ci/test-summary.json ]]; then
+              echo '```json'
+              cat build/ci/test-summary.json
+              echo '```'
+            fi
+            if [[ -f build/ci/apk-info.json ]]; then
+              echo '```json'
+              cat build/ci/apk-info.json
+              echo '```'
+            fi
+            if [[ -f build/ci/apk-sha256.txt ]]; then
+              echo '```text'
+              cat build/ci/apk-sha256.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

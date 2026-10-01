@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:collection';
 
 import '../../models/audio_track.dart';
@@ -41,8 +42,12 @@ class MusicBrainzMatch {
 /// matches and clean no-result responses are cached.  Exceptions are removed
 /// from the cache so a temporary network failure can be retried.
 class MusicBrainzCatalog {
-  MusicBrainzCatalog(this.client, {int maxCacheEntries = 128})
-    : _maxCacheEntries = maxCacheEntries < 1 ? 1 : maxCacheEntries;
+  MusicBrainzCatalog(
+    this.client, {
+    int maxCacheEntries = 128,
+    DateTime Function()? now,
+  }) : _maxCacheEntries = maxCacheEntries < 1 ? 1 : maxCacheEntries,
+       _now = now ?? DateTime.now;
 
   static const _musicBrainzHost = 'musicbrainz.org';
   static const _recordingPath = '/ws/2/recording/';
@@ -51,8 +56,9 @@ class MusicBrainzCatalog {
 
   final JsonApiClient client;
   final int _maxCacheEntries;
-  final LinkedHashMap<String, Future<MusicBrainzMatch?>> _cache =
-      LinkedHashMap<String, Future<MusicBrainzMatch?>>();
+  final DateTime Function() _now;
+  final LinkedHashMap<String, _CatalogEntry> _cache =
+      LinkedHashMap<String, _CatalogEntry>();
 
   /// Finds a single safe recording candidate for [track].
   ///
@@ -65,12 +71,36 @@ class MusicBrainzCatalog {
     final search = TrackSearch.fromTrack(track);
     final key = search.key;
     final cached = _cache[key];
-    if (cached != null) return cached;
+    if (cached != null &&
+        (cached.expiresAt == null || _now().isBefore(cached.expiresAt!))) {
+      // Refresh insertion order so eviction preserves recently reused matches.
+      _cache.remove(key);
+      _cache[key] = cached;
+      return cached.pending;
+    }
 
-    final pending = _findAndCache(search, key);
-    _cache[key] = pending;
+    final entry = _CatalogEntry(_query(search));
+    _cache[key] = entry;
     _trimCache();
-    return pending;
+    unawaited(
+      entry.pending.then<void>(
+        (match) {
+          // Share one request within a preview, but do not cache no-match forever:
+          // later retries must be able to see corrections at the source.
+          entry.expiresAt = _now().add(
+            match == null
+                ? const Duration(seconds: 30)
+                : const Duration(minutes: 5),
+          );
+        },
+        onError: (Object _, StackTrace _) {
+          // An evicted in-flight request may fail after a replacement was added.
+          // Remove only its own entry, never that newer request.
+          if (identical(_cache[key], entry)) _cache.remove(key);
+        },
+      ),
+    );
+    return entry.pending;
   }
 
   /// Performs a real, harmless MusicBrainz API request for connectivity.
@@ -84,20 +114,6 @@ class MusicBrainzCatalog {
       throw const FormatException(
         'MusicBrainz connection probe returned an unexpected recording',
       );
-    }
-  }
-
-  Future<MusicBrainzMatch?> _findAndCache(
-    TrackSearch search,
-    String key,
-  ) async {
-    try {
-      return await _query(search);
-    } catch (_) {
-      // Do not make a transient server/network failure permanent.  A repeated
-      // call after this future completes will issue a fresh request.
-      if (_cache.containsKey(key)) _cache.remove(key);
-      rethrow;
     }
   }
 
@@ -124,6 +140,13 @@ class MusicBrainzCatalog {
       );
     }
     if (recordings.isEmpty) return null;
+    // The API ranks and paginates results. One matching item on the first page
+    // is not proof of uniqueness if additional candidates were not inspected.
+    final count = _asInt(json['count']);
+    final offset = _asInt(json['offset']) ?? 0;
+    if (offset != 0 || (count != null && count > recordings.length)) {
+      return null;
+    }
 
     final candidates = <_RecordingCandidate>[];
     for (final item in recordings) {
@@ -295,12 +318,26 @@ class MusicBrainzCatalog {
   }
 
   int _compareDates(String? left, String? right) {
-    final leftDate = left == null ? null : DateTime.tryParse(left);
-    final rightDate = right == null ? null : DateTime.tryParse(right);
+    final leftDate = _releaseDate(left);
+    final rightDate = _releaseDate(right);
     if (leftDate == null && rightDate == null) return 0;
     if (leftDate == null) return 1;
     if (rightDate == null) return -1;
     return leftDate.compareTo(rightDate);
+  }
+
+  DateTime? _releaseDate(String? value) {
+    if (value == null) return null;
+    final match = RegExp(r'^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$')
+        .firstMatch(value);
+    if (match == null) return null;
+    final year = int.parse(match[1]!);
+    final month = int.parse(match[2] ?? '01');
+    final day = int.parse(match[3] ?? '01');
+    final date = DateTime.utc(year, month, day);
+    return date.year == year && date.month == month && date.day == day
+        ? date
+        : null;
   }
 
   String _describe(
@@ -359,6 +396,13 @@ class MusicBrainzCatalog {
     }
     return buffer.toString();
   }
+}
+
+class _CatalogEntry {
+  _CatalogEntry(this.pending);
+
+  final Future<MusicBrainzMatch?> pending;
+  DateTime? expiresAt;
 }
 
 class MusicBrainzMetadataSource
@@ -470,7 +514,9 @@ class _RecordingCandidate {
             _asString(credit['name']) ??
             _asString(_asMap(credit['artist'])?['name']);
         if (!hasText(name)) continue;
-        names.add(name!);
+        // A guest credit alone does not identify the primary recording artist.
+        // Retain the first billed artist plus the complete credit phrase.
+        if (names.isEmpty) names.add(name!);
         phrase.write(name);
         phrase.write(_asString(credit['joinphrase']) ?? '');
       }
@@ -537,6 +583,6 @@ String? _asString(Object? value) => value is String ? value : null;
 
 int? _asInt(Object? value) {
   if (value is int) return value;
-  if (value is num) return value.round();
+  if (value is num) return value.isFinite ? value.round() : null;
   return int.tryParse(value?.toString() ?? '');
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/app_settings.dart';
 import '../../core/models/audio_track.dart';
+import '../../shared/widgets/notice_panel.dart';
 import '../library/library_controller.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -11,111 +12,152 @@ class SettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final settings = controller.settings;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final horizontal = MediaQuery.sizeOf(context).width < 360 ? 16.0 : 24.0;
     return ListView(
       key: const PageStorageKey('settings'),
-      padding: const EdgeInsets.only(bottom: 32),
+      padding: EdgeInsets.fromLTRB(horizontal, 8, horizontal, 32),
       children: [
-        const _SectionTitle('补全内容'),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 24),
-          child: Text('仅查询缺失的项目，保留已有信息。'),
-        ),
-        SwitchListTile(
-          title: const Text('元数据'),
-          subtitle: const Text('歌名、歌手、专辑'),
-          value: settings.metadata,
-          onChanged: controller.canOperate
-              ? (value) => controller.updateSettings(
-                  settings.copyWith(metadata: value),
-                )
-              : null,
-        ),
-        SwitchListTile(
-          title: const Text('歌词'),
-          subtitle: const Text('纯文本或带时间轴的歌词'),
-          value: settings.lyrics,
-          onChanged: controller.canOperate
-              ? (value) =>
-                    controller.updateSettings(settings.copyWith(lyrics: value))
-              : null,
-        ),
-        SwitchListTile(
-          title: const Text('专辑封面'),
-          value: settings.artwork,
-          onChanged: controller.canOperate
-              ? (value) =>
-                    controller.updateSettings(settings.copyWith(artwork: value))
-              : null,
-        ),
-        if (settings.enabledFields.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-            child: Text('所有补全项目已关闭，开启至少一项后可以创建任务。'),
-          ),
-        const Divider(height: 32),
-        const _SectionTitle('外观'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-          child: DropdownButtonFormField<AppTheme>(
-            key: ValueKey(settings.theme),
-            initialValue: settings.theme,
-            decoration: const InputDecoration(labelText: '主题'),
-            items: const [
-              DropdownMenuItem(value: AppTheme.system, child: Text('跟随系统')),
-              DropdownMenuItem(value: AppTheme.light, child: Text('浅色')),
-              DropdownMenuItem(value: AppTheme.dark, child: Text('深色')),
+        const _SectionTitle('补全内容', description: '仅查找缺失的资料，保留已有信息。'),
+        Card(
+          child: Column(
+            children: [
+              SwitchListTile(
+                title: const Text('元数据'),
+                subtitle: const Text('歌名、歌手、专辑'),
+                value: settings.metadata,
+                onChanged: controller.canOperate
+                    ? (value) => controller.updateSettings(
+                        settings.copyWith(metadata: value),
+                      )
+                    : null,
+              ),
+              const _InsetDivider(),
+              SwitchListTile(
+                title: const Text('歌词'),
+                subtitle: const Text('纯文本或带时间轴的歌词'),
+                value: settings.lyrics,
+                onChanged: controller.canOperate
+                    ? (value) => controller.updateSettings(
+                        settings.copyWith(lyrics: value),
+                      )
+                    : null,
+              ),
+              const _InsetDivider(),
+              SwitchListTile(
+                title: const Text('专辑封面'),
+                subtitle: const Text('专辑封面候选图片'),
+                value: settings.artwork,
+                onChanged: controller.canOperate
+                    ? (value) => controller.updateSettings(
+                        settings.copyWith(artwork: value),
+                      )
+                    : null,
+              ),
             ],
-            onChanged: controller.canOperate
-                ? (value) {
-                    if (value != null) {
-                      controller.updateSettings(
-                        settings.copyWith(theme: value),
-                      );
-                    }
-                  }
-                : null,
           ),
         ),
-        const Divider(height: 32),
-        const _SectionTitle('数据源'),
-        for (final group in [
-          ('音乐资料', {AudioField.title, AudioField.artist, AudioField.album}),
-          ('歌词服务', {AudioField.lyrics}),
-          ('封面服务', {AudioField.artwork}),
-        ])
-          ListTile(
-            title: Text(group.$1),
-            subtitle: Text(_sourceNames(group.$2)),
-          ),
-        if (controller.completion.sources.isNotEmpty) ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-            child: OutlinedButton.icon(
-              onPressed: controller.canOperate
-                  ? controller.checkSourceConnections
-                  : null,
-              icon: const Icon(Icons.network_check),
-              label: const Text('测试数据源连接'),
-            ),
-          ),
-          for (final result in controller.sourceConnections.entries)
-            ListTile(title: Text(result.key), subtitle: Text(result.value)),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-            child: Text('补全时会发送歌名、歌手、专辑和时长进行检索，不上传音频。查询结果作为候选展示，原文件保持不变。'),
+        if (settings.enabledFields.isEmpty) ...[
+          const SizedBox(height: 12),
+          const NoticePanel(
+            icon: Icons.info_outline,
+            title: '补全项目已全部关闭',
+            message: '开启至少一项后，即可创建查询任务。',
           ),
         ],
-        const Divider(height: 32),
-        const _SectionTitle('关于 Audio Fixer'),
-        const ListTile(
-          leading: Icon(Icons.library_music_outlined),
-          title: Text('Audio Fixer'),
-          subtitle: Text('0.1.2 · 在线资料查询'),
+        const SizedBox(height: 28),
+        const _SectionTitle('外观', description: '跟随系统或选择适合你的主题。'),
+        DropdownButtonFormField<AppTheme>(
+          key: ValueKey(settings.theme),
+          initialValue: settings.theme,
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: '主题'),
+          items: const [
+            DropdownMenuItem(value: AppTheme.system, child: Text('跟随系统')),
+            DropdownMenuItem(value: AppTheme.light, child: Text('浅色')),
+            DropdownMenuItem(value: AppTheme.dark, child: Text('深色')),
+          ],
+          onChanged: controller.canOperate
+              ? (value) {
+                  if (value != null) {
+                    controller.updateSettings(settings.copyWith(theme: value));
+                  }
+                }
+              : null,
         ),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-          child: Text(
-            '授权后自动读取安卓系统音乐库。歌曲保留在原位置，刷新时同步新增和移除的歌曲。\n\n查看资料时会临时读取文件，读取结束后清理临时副本；封面与目录缓存在应用内。在线候选可在补全任务中查看，音频标签写入将在后续接入。',
+        const SizedBox(height: 28),
+        const _SectionTitle('数据源', description: '仅在查找候选或测试连接时访问在线服务。'),
+        Card(
+          child: Column(
+            children: [
+              for (final group in [
+                (
+                  '音乐资料',
+                  Icons.album_outlined,
+                  {AudioField.title, AudioField.artist, AudioField.album},
+                ),
+                ('歌词服务', Icons.lyrics_outlined, {AudioField.lyrics}),
+                ('封面服务', Icons.image_outlined, {AudioField.artwork}),
+              ])
+                ListTile(
+                  leading: Icon(group.$2, color: colors.primary),
+                  title: Text(group.$1),
+                  subtitle: Text(_sourceNames(group.$3)),
+                ),
+              if (controller.completion.sources.isNotEmpty) ...[
+                const _InsetDivider(),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: controller.canOperate
+                          ? controller.checkSourceConnections
+                          : null,
+                      icon: const Icon(Icons.network_check),
+                      label: const Text('测试数据源连接'),
+                    ),
+                  ),
+                ),
+              ],
+              for (final result in controller.sourceConnections.entries)
+                _ConnectionResult(name: result.key, message: result.value),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        const NoticePanel(
+          icon: Icons.privacy_tip_outlined,
+          title: '不上传音频，原文件保持不变',
+          message: '检索时仅发送歌名、歌手、专辑和时长。确认候选后可导出带标签的副本，原文件不会被覆盖。',
+        ),
+        const SizedBox(height: 28),
+        const _SectionTitle('关于 Audio Fixer'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Audio Fixer', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  '0.1.2 · 在线资料查询',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '授权后自动读取 Android 系统音乐库。歌曲保留在原位置，刷新时同步新增和移除的歌曲。\n\n查看资料时临时读取文件，结束后清理临时副本；封面与目录缓存在应用内。',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    height: 1.6,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -129,21 +171,78 @@ class SettingsPage extends StatelessWidget {
         )
         .map((source) => source.name)
         .toList();
-    return names.isEmpty ? '尚未接入' : '已接入 · ${names.join('、')}';
+    return names.isEmpty ? '尚未接入' : names.join('、');
   }
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.title);
+  const _SectionTitle(this.title, {this.description});
   final String title;
+  final String? description;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(24, 16, 24, 12),
-    child: Text(
-      title,
-      style: Theme.of(context).textTheme.titleMedium
-          ?.copyWith(color: Theme.of(context).colorScheme.primary),
-    ),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Semantics(
+            header: true,
+            child: Text(title, style: theme.textTheme.titleMedium),
+          ),
+          if (description != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              description!,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _InsetDivider extends StatelessWidget {
+  const _InsetDivider();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+    padding: EdgeInsets.symmetric(horizontal: 20),
+    child: Divider(),
   );
+}
+
+class _ConnectionResult extends StatelessWidget {
+  const _ConnectionResult({required this.name, required this.message});
+  final String name;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final success = message == '连接测试通过';
+    final pending = message == '测试中…';
+    return ListTile(
+      leading: Icon(
+        success
+            ? Icons.check_circle_outline
+            : pending
+            ? Icons.schedule_outlined
+            : Icons.error_outline,
+        color: success
+            ? colors.primary
+            : pending
+            ? colors.onSurfaceVariant
+            : colors.error,
+      ),
+      title: Text(name),
+      subtitle: Text(message),
+    );
+  }
 }

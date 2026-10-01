@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Offline host-driver unit checks; these are not Android runtime evidence."""
+from pathlib import Path
+import unittest
+from unittest.mock import Mock
+import xml.etree.ElementTree as ET
+
+from android_runtime_ci import AndroidRuntime
+
+
+def node(resource='', text='', kind='android.widget.TextView', **attrs):
+    return ET.Element('node', {'resource-id': resource, 'text': text,
+                              'class': kind, 'package': 'com.android.documentsui',
+                              'enabled': 'true', 'bounds': '[0,0][100,100]', **attrs})
+
+
+class DialogDriverTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = AndroidRuntime('test-only', Path('/tmp/not-used'))
+        self.runtime.adb = Mock()
+        self.runtime.screenshot = Mock()
+        self.runtime.tap = Mock()
+        self.filename = node('android:id/title', 'native_fixture-fixed.mp3',
+                             'android.widget.EditText')
+        self.save = node('android:id/button1', 'SAVE', 'android.widget.Button')
+
+    def test_downloads_toolbar_title_is_never_tapped_as_drawer_root(self):
+        toolbar = node('com.android.documentsui:id/toolbar')
+        toolbar.append(node('android:id/title', 'Downloads'))
+        nodes = [self.filename, self.save, *toolbar.iter('node')]
+        self.assertTrue(self.runtime.act('save_confirm', nodes))
+        self.runtime.tap.assert_called_once_with(self.save, 'save_confirm')
+
+    def test_downloads_drawer_root_can_hide_save_filename(self):
+        self.runtime.save_observed.add('save_confirm')
+        roots = node('com.android.documentsui:id/roots_list')
+        downloads = node('android:id/title', 'Downloads')
+        roots.append(downloads)
+        self.assertFalse(self.runtime.act('save_confirm', list(roots.iter('node'))))
+        self.runtime.tap.assert_called_once_with(downloads, 'choose_downloads')
+
+    def test_unobserved_save_dialog_cannot_select_drawer_root(self):
+        roots = node('com.android.documentsui:id/roots_list')
+        roots.append(node('android:id/title', 'Downloads'))
+        self.assertFalse(self.runtime.act('save_confirm', list(roots.iter('node'))))
+        self.runtime.tap.assert_not_called()
+
+    def test_save_in_other_directory_is_not_confirmed(self):
+        toolbar = node('com.android.documentsui:id/toolbar')
+        toolbar.append(node('android:id/title', 'Recent'))
+        self.assertFalse(self.runtime.act('save_confirm', [self.filename, self.save, toolbar]))
+        self.runtime.tap.assert_not_called()
+
+    def test_cancel_requires_observed_filename(self):
+        self.assertFalse(self.runtime.act('save_cancel', [self.save]))
+        self.runtime.adb.assert_not_called()
+        self.assertTrue(self.runtime.act('save_cancel', [self.filename, self.save]))
+        self.runtime.adb.assert_called_once_with('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+
+    def test_cancel_dismisses_keyboard_before_save_dialog(self):
+        keyboard = node()
+        keyboard.set('package', 'com.android.inputmethod.latin')
+        self.assertFalse(self.runtime.act('save_cancel', [self.filename, keyboard]))
+        self.runtime.screenshot.assert_not_called()
+
+    def test_permission_taps_only_system_permission_controller(self):
+        allow = node('com.android.permissioncontroller:id/permission_allow_button', 'Allow')
+        self.assertFalse(self.runtime.act('permission_grant', [allow]))
+        allow.set('package', 'com.android.permissioncontroller')
+        self.assertTrue(self.runtime.act('permission_grant', [allow]))
+        self.runtime.tap.assert_called_once_with(allow, 'permission_grant')
+
+
+if __name__ == '__main__':
+    unittest.main()
