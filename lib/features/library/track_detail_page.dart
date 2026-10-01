@@ -4,6 +4,7 @@ import '../../core/models/audio_track.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/track_artwork.dart';
 import 'library_controller.dart';
+import '../tasks/candidate_review_page.dart';
 
 class TrackDetailPage extends StatefulWidget {
   const TrackDetailPage({
@@ -135,11 +136,26 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         ? '歌词读取状态未知。'
                         : '音频中尚未发现内嵌歌词。',
                   ),
+                  const SizedBox(height: 24),
+                  if (controller.taskForTrack(track.id) case final task?)
+                    if (task.suggestions.isNotEmpty)
+                      OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => CandidateReviewPage(
+                              task: task,
+                              controller: controller,
+                            ),
+                          ),
+                        ),
+                        icon: const Icon(Icons.fact_check_outlined),
+                        label: Text('查看 ${task.suggestions.length} 项候选资料'),
+                      ),
                   const SizedBox(height: 32),
                   Text(
                     controller.completion.sources.isEmpty
                         ? '在线补全的数据源尚未接入。当前可检查缺失信息并创建任务。'
-                        : '从在线来源查询缺失资料，结果可在补全任务中预览。当前不会写回音频。',
+                        : '在线查询缺失资料，逐项确认后可导出音频副本。已有资料与原音频保持不变。',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -172,7 +188,22 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         controller.canOperate &&
                             track.needsCompletion &&
                             controller.settings.enabledFields.isNotEmpty
-                        ? () => controller.complete(track: track)
+                        ? () async {
+                            await controller.complete(track: track);
+                            final task = controller.taskForTrack(track.id);
+                            if (context.mounted &&
+                                task != null &&
+                                task.suggestions.isNotEmpty) {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => CandidateReviewPage(
+                                    task: task,
+                                    controller: controller,
+                                  ),
+                                ),
+                              );
+                            }
+                          }
                         : null,
                     icon: const Icon(Icons.auto_fix_high_outlined),
                     label: Text(controller.isBusy ? '正在处理…' : '补全缺失信息'),

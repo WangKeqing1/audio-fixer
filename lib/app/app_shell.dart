@@ -117,8 +117,32 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                         controller.incompleteCount > 0 &&
                         controller.settings.enabledFields.isNotEmpty
                     ? () async {
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: Text(
+                              '查询 ${controller.incompleteCount} 首歌曲？',
+                            ),
+                            content: SingleChildScrollView(
+                              child: Text(
+                                '将先检查尚未读取的文件标签，再查询缺失的${controller.settings.enabledFields.map((field) => field.label).join('、')}。\n\n只发送歌名、歌手、专辑和时长，不上传音频。结果需要逐首确认，查询不会修改文件。大音乐库可能耗时较长，可随时停止后续查询。',
+                              ),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('取消'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('开始查询'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed != true || !mounted) return;
+                        setState(() => _selected = 1);
                         await controller.complete();
-                        if (mounted) setState(() => _selected = 1);
                       }
                     : null,
                 icon: const Icon(Icons.auto_fix_high_outlined),

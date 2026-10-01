@@ -10,33 +10,35 @@ class TrackArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final fallback = ColoredBox(
-      color: colors.secondaryContainer,
-      child: Center(
-        child: Icon(
-          Icons.album_outlined,
-          size: size * .5,
-          color: colors.onSecondaryContainer,
+    final fallback = Semantics(
+      label: '暂无封面',
+      image: true,
+      child: ColoredBox(
+        color: colors.secondaryContainer,
+        child: Center(
+          child: Icon(
+            Icons.album_outlined,
+            size: size * .5,
+            color: colors.onSecondaryContainer,
+          ),
         ),
       ),
     );
-    return Semantics(
-      label: path == null ? '暂无封面' : '音频内嵌封面',
-      image: true,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: SizedBox.square(
-          dimension: size,
-          child: path == null
-              ? fallback
-              : Image.file(
-                  File(path!),
-                  fit: BoxFit.cover,
-                  cacheWidth: (size * MediaQuery.devicePixelRatioOf(context))
-                      .round(),
-                  errorBuilder: (_, _, _) => fallback,
-                ),
-        ),
+    final hasArtwork = path != null && path!.trim().isNotEmpty;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size >= 160 ? 24 : 12),
+      child: SizedBox.square(
+        dimension: size,
+        child: !hasArtwork
+            ? fallback
+            : Image.file(
+                File(path!),
+                fit: BoxFit.cover,
+                semanticLabel: '音频内嵌封面',
+                cacheWidth: (size * MediaQuery.devicePixelRatioOf(context))
+                    .round(),
+                errorBuilder: (_, _, _) => fallback,
+              ),
       ),
     );
   }

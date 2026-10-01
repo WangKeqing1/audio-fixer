@@ -44,7 +44,7 @@ class CompletionService {
         .expand((source) => source.supportedFields)
         .toSet();
     final unavailable = requested.difference(available);
-    if (unavailable.isNotEmpty) {
+    if (requested.intersection(available).isEmpty) {
       return result(
         TaskStatus.waitingForSource,
         '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。',
@@ -77,10 +77,15 @@ class CompletionService {
         );
       }
     }
-    final warning = failedSources.isEmpty ? '' : ' ${failedSources.join('；')}';
+    final warnings = <String>[
+      if (unavailable.isNotEmpty)
+        '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。',
+      ...failedSources,
+    ];
+    final warning = warnings.isEmpty ? '' : ' ${warnings.join('；')}';
     if (suggestions.isEmpty) {
       return failedSources.isEmpty
-          ? result(TaskStatus.noMatch, '没有找到可用信息，可以稍后重试。')
+          ? result(TaskStatus.noMatch, '没有找到可用信息，可以稍后重试。$warning')
           : result(TaskStatus.failed, warning.trim());
     }
     return result(

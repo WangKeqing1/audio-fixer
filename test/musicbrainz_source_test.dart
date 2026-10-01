@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
 import 'package:audio_fixer/core/services/sources/musicbrainz_source.dart';
@@ -66,6 +68,117 @@ Map<String, Object?> _release({
 };
 
 void main() {
+  test('no-result cache expires so a later retry reaches the source', () async {
+    var now = DateTime(2026);
+    final client = _FakeJsonApiClient((_) async => null);
+    final catalog = MusicBrainzCatalog(client, now: () => now);
+    await catalog.findMatch(_track());
+    await catalog.findMatch(_track());
+    expect(client.calls, hasLength(1));
+    now = now.add(const Duration(seconds: 31));
+    await catalog.findMatch(_track());
+    expect(client.calls, hasLength(2));
+  });
+
+  test('reusing a cached signature refreshes its eviction order', () async {
+    final client = _FakeJsonApiClient((_) async => null);
+    final catalog = MusicBrainzCatalog(client, maxCacheEntries: 2);
+    await catalog.findMatch(_track(title: 'A'));
+    await catalog.findMatch(_track(title: 'B'));
+    await catalog.findMatch(_track(title: 'A'));
+    await catalog.findMatch(_track(title: 'C'));
+    await catalog.findMatch(_track(title: 'A'));
+    expect(client.calls, hasLength(3));
+    await catalog.findMatch(_track(title: 'B'));
+    expect(client.calls, hasLength(4));
+  });
+
+  test(
+    'an evicted failed request cannot discard a newer cached request',
+    () async {
+      final first = Completer<Object?>();
+      var calls = 0;
+      final client = _FakeJsonApiClient((_) {
+        calls++;
+        return calls == 1 ? first.future : Future.value(null);
+      });
+      final catalog = MusicBrainzCatalog(client, maxCacheEntries: 1);
+      final pending = catalog.findMatch(_track(title: 'A'));
+      final failure = expectLater(pending, throwsA(isA<ApiException>()));
+      await catalog.findMatch(_track(title: 'B'));
+      await catalog.findMatch(_track(title: 'A'));
+      first.completeError(const ApiException('old request failed'));
+      await failure;
+      await catalog.findMatch(_track(title: 'A'));
+      expect(calls, 3);
+    },
+  );
+
+  test('a truncated result page cannot establish a unique recording', () async {
+    final client = _FakeJsonApiClient(
+      (_) async => {
+        'count': 26,
+        'offset': 0,
+        'recordings': [_recording()],
+      },
+    );
+    expect(await MusicBrainzCatalog(client).findMatch(_track()), isNull);
+  });
+
+  test(
+    'guest-only artist matches are not enough to identify a recording',
+    () async {
+      final recording = _recording();
+      recording['artist-credit'] = [
+        {'name': 'Someone Else', 'joinphrase': ' feat. '},
+        {'name': 'Rick Astley'},
+      ];
+      final client = _FakeJsonApiClient(
+        (_) async => {
+          'recordings': [recording],
+        },
+      );
+      expect(await MusicBrainzCatalog(client).findMatch(_track()), isNull);
+    },
+  );
+
+  test(
+    'year-only release dates sort chronologically before later complete dates',
+    () async {
+      final client = _FakeJsonApiClient(
+        (_) async => {
+          'recordings': [
+            _recording(
+              releases: [
+                {
+                  ..._release(id: 'later', title: 'Later Album'),
+                  'date': '2000-02-01',
+                },
+                {
+                  ..._release(id: 'earlier', title: 'Earlier Album'),
+                  'date': '1987',
+                },
+              ],
+            ),
+          ],
+        },
+      );
+      final match = await MusicBrainzCatalog(client).findMatch(_track());
+      expect(match?.releaseId, 'earlier');
+    },
+  );
+
+  test(
+    'punctuation-distinct queries do not reuse another cached signature',
+    () async {
+      final client = _FakeJsonApiClient((_) async => {'recordings': []});
+      final catalog = MusicBrainzCatalog(client);
+      await catalog.findMatch(_track(title: 'A/B'));
+      await catalog.findMatch(_track(title: 'AB'));
+      expect(client.calls, hasLength(2));
+    },
+  );
+
   test('matches exact title, artist credit and duration range', () async {
     final client = _FakeJsonApiClient(
       (_) async => {

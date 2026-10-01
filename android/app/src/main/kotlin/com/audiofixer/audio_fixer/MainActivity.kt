@@ -1,5 +1,6 @@
 package com.audiofixer.audio_fixer
 
+import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 
@@ -21,6 +22,11 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         deviceLibraryBridge?.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        deviceLibraryBridge?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onDestroy() {

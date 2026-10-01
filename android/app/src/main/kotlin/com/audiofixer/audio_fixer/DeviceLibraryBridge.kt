@@ -10,7 +10,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.MediaStore
+import java.security.MessageDigest
 import android.provider.Settings
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -41,6 +43,7 @@ class DeviceLibraryBridge(
 
     /** Only one Android runtime permission request may be active at a time. */
     private var pendingPermissionResult: OneShotResult? = null
+    private var pendingExport: PendingExport? = null
 
     init {
         channel.setMethodCallHandler(::onMethodCall)
@@ -79,6 +82,7 @@ class DeviceLibraryBridge(
             "querySongs" -> querySongs(result)
             "copyForRead" -> copyForRead(call, result)
             "releaseReadCopy" -> releaseReadCopy(call, result)
+            "exportAudioCopy" -> exportAudioCopy(call, result)
             else -> result.notImplemented()
         }
     }
@@ -221,6 +225,95 @@ class DeviceLibraryBridge(
         executeIo(reply, "read_failed") {
             releaseReadCopyOnWorker(path)
             null
+        }
+    }
+
+    private data class PendingExport(val file: File, val reply: OneShotResult)
+
+    private fun exportAudioCopy(call: MethodCall, result: MethodChannel.Result) {
+        val reply = OneShotResult(result)
+        if (pendingExport != null) {
+            reply.error("export_in_progress", "An export is already in progress.", null)
+            return
+        }
+        val path = call.argument<String>("path")
+        val name = call.argument<String>("fileName")
+        val mime = call.argument<String>("mimeType")
+        if (path == null || name.isNullOrBlank() || mime !in setOf("audio/mpeg", "audio/flac", "audio/mp4")) {
+            reply.error("invalid_argument", "Invalid audio export request.", null)
+            return
+        }
+        try {
+            val root = File(activity.cacheDir, "tagged_exports").canonicalFile
+            val file = File(path).canonicalFile
+            if (!file.path.startsWith(root.path + File.separator) || !file.isFile || file.length() == 0L) {
+                reply.error("invalid_argument", "Only verified temporary audio copies may be exported.", null)
+                return
+            }
+            pendingExport = PendingExport(file, reply)
+            // ACTION_CREATE_DOCUMENT creates a separate document. Never request
+            // a writable handle to the source MediaStore URI.
+            activity.startActivityForResult(
+                Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mime
+                    putExtra(Intent.EXTRA_TITLE, File(name).name)
+                },
+                EXPORT_REQUEST_CODE,
+            )
+        } catch (error: Exception) {
+            pendingExport = null
+            reply.error("export_failed", "Unable to open the system save dialog.", error.message)
+        }
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (disposed || requestCode != EXPORT_REQUEST_CODE) return
+        val pending = pendingExport ?: return
+        pendingExport = null
+        val target = data?.data
+        if (resultCode != Activity.RESULT_OK || target == null) {
+            pending.reply.success(null)
+            return
+        }
+        executeIo(pending.reply, "export_failed") {
+            try {
+                val expected = MessageDigest.getInstance("SHA-256")
+                val stream = activity.contentResolver.openOutputStream(target, "w")
+                    ?: throw IOException("Unable to create exported audio.")
+                pending.file.inputStream().use { input ->
+                    stream.use { output ->
+                        val buffer = ByteArray(COPY_BUFFER_BYTES)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            expected.update(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                        }
+                        output.flush()
+                    }
+                }
+                val actual = MessageDigest.getInstance("SHA-256")
+                val verify = activity.contentResolver.openInputStream(target)
+                    ?: throw IOException("Unable to verify exported audio.")
+                verify.use { input ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        actual.update(buffer, 0, count)
+                    }
+                }
+                if (!MessageDigest.isEqual(expected.digest(), actual.digest())) {
+                    throw IOException("The saved audio failed integrity verification.")
+                }
+                target.toString()
+            } catch (error: Exception) {
+                // This URI is a new document from ACTION_CREATE_DOCUMENT only.
+                // Remove partial output if the provider supports deletion.
+                try { DocumentsContract.deleteDocument(activity.contentResolver, target) } catch (_: Exception) { }
+                throw IOException("Audio export failed; the original is unchanged.", error)
+            }
         }
     }
 
@@ -500,6 +593,7 @@ class DeviceLibraryBridge(
         private const val PREFERENCES_NAME = "audio_fixer_device_library"
         private const val KEY_PERMISSION_REQUESTED = "audio_permission_requested"
         private const val PERMISSION_REQUEST_CODE = 41937
+        private const val EXPORT_REQUEST_CODE = 41938
         private const val EXTERNAL_VOLUME = "external"
         private const val PERMISSION_NOT_REQUESTED = "notRequested"
         private const val PERMISSION_DENIED = "denied"

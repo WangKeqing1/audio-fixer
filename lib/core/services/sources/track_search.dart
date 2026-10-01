@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:path/path.dart' as p;
 
 import '../../models/audio_track.dart';
@@ -42,12 +44,14 @@ class TrackSearch {
     );
   }
 
-  String get key => [
-    normalizedIdentity(title),
-    normalizedIdentity(artist ?? ''),
-    normalizedIdentity(album ?? ''),
-    durationSeconds?.toStringAsFixed(2) ?? '',
-  ].join('|');
+  // The actual query includes punctuation and sub-second duration. Do not
+  // share a cached answer across distinct signatures that normalize alike.
+  String get key => jsonEncode([
+    title.trim().toLowerCase(),
+    artist?.trim().toLowerCase(),
+    album?.trim().toLowerCase(),
+    durationSeconds,
+  ]);
 
   bool matchesTitle(String candidate) =>
       normalizedIdentity(title).isNotEmpty &&
@@ -55,14 +59,18 @@ class TrackSearch {
 
   bool matchesArtist(Iterable<String> candidates) =>
       artist == null ||
-      candidates.any(
-        (candidate) =>
-            normalizedIdentity(artist!) == normalizedIdentity(candidate),
-      );
+      (normalizedIdentity(artist!).isNotEmpty &&
+          candidates.any(
+            (candidate) =>
+                normalizedIdentity(artist!) == normalizedIdentity(candidate),
+          ));
 
   bool matchesDuration(double? candidate, {double tolerance = 3}) =>
       durationSeconds == null ||
-      (candidate != null && (durationSeconds! - candidate).abs() <= tolerance);
+      (candidate != null &&
+          candidate.isFinite &&
+          candidate > 0 &&
+          (durationSeconds! - candidate).abs() <= tolerance);
 }
 
 // Keep words such as live/remix/instrumental: they identify different versions.

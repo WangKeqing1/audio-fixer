@@ -50,12 +50,40 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
       return [_suggestion(directCandidate, search, signatureUri)];
     }
 
-    final response = await client.getJson(_searchUri(search));
+    final searchUri = _searchUri(search);
+    final response = await client.getJson(searchUri);
     final candidates = _searchCandidates(response, search);
     if (candidates.isEmpty) return const [];
 
     candidates.sort((left, right) => _compareCandidates(left, right, search));
-    return [_suggestion(candidates.first, search, signatureUri)];
+    final best = candidates.first;
+    final tied = candidates.where(
+      (candidate) => _compareEvidence(candidate, best, search) == 0,
+    );
+    // Sync timestamps and record IDs describe presentation, not recording
+    // identity. Never use them to choose between conflicting lyric texts.
+    final texts = tied.map((candidate) => _lyricText(candidate.lyrics)).toSet();
+    if (texts.length > 1) return const [];
+    if (response is List &&
+        response.any((item) {
+          final record = _record(item);
+          if (record == null ||
+              !_isTrue(record['instrumental']) ||
+              !_matchesIdentityAndDuration(record, search)) {
+            return false;
+          }
+          final instrumental = _LrclibCandidate(
+            id: _id(record['id']),
+            album: _text(record['albumName']),
+            duration: _number(record['duration']),
+            lyrics: '',
+            synced: false,
+          );
+          return _compareEvidence(instrumental, best, search) <= 0;
+        })) {
+      return const [];
+    }
+    return [_suggestion(best, search, searchUri)];
   }
 
   @override
@@ -162,19 +190,21 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
 
   Iterable<String> _artistAlternatives(String artist) sync* {
     yield artist;
-    yield* artist
-        .split(
-          RegExp(
-            r'\s*(?:[,;]|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b)\s*',
-            caseSensitive: false,
-          ),
-        )
-        .where((part) => part.trim().isNotEmpty);
+    // A tag may omit featured performers. Only the leading artist is an
+    // alternative; a guest alone cannot identify the recording. Commas are
+    // not safe separators (for example, "Earth, Wind & Fire").
+    final feature = RegExp(
+      r'\s+(?:feat\.?|ft\.?|featuring)\s+',
+      caseSensitive: false,
+    ).firstMatch(artist);
+    if (feature != null) yield artist.substring(0, feature.start).trim();
   }
 
   _Lyrics? _lyrics(Map<String, dynamic> record) {
     final synced = _text(record['syncedLyrics']);
-    if (synced != null && _isUsableLyrics(synced)) {
+    if (synced != null &&
+        _timestamp.hasMatch(synced) &&
+        _isUsableLyrics(synced)) {
       return _Lyrics(synced, synced: true);
     }
 
@@ -185,25 +215,54 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
     return null;
   }
 
-  bool _isUsableLyrics(String value) {
-    final content = value
-        .replaceAll(RegExp(r'\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (content.length < 8) return false;
+  static final _timestamp = RegExp(r'\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]');
+  static final _metadata = RegExp(
+    r'\[(?:ar|al|ti|au|by|re|ve|length|offset):[^\]]*\]',
+    caseSensitive: false,
+  );
 
-    final normalized = content.toLowerCase();
+  String _lyricText(String value) => value
+      .replaceAll(_timestamp, ' ')
+      .replaceAll(_metadata, ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .toLowerCase();
+
+  bool _isUsableLyrics(String value) {
+    final content = _lyricText(value);
+    // Avoid a Latin-centric minimum length: a short Chinese lyric can be
+    // meaningful. Metadata and timestamps alone are not song lyrics.
+    if (!RegExp(r'[\p{L}\p{N}]', unicode: true).hasMatch(content)) return false;
     const placeholders = {
       'placeholder',
       'test',
       'testing',
       'probe',
       'lyrics unavailable',
+      'lyrics not available',
+      'no lyrics',
+      'instrumental',
+      '暂无歌词',
+      '纯音乐',
     };
-    return !placeholders.contains(normalized);
+    return !placeholders.contains(content);
   }
 
   int _compareCandidates(
+    _LrclibCandidate left,
+    _LrclibCandidate right,
+    TrackSearch search,
+  ) {
+    final evidenceOrder = _compareEvidence(left, right, search);
+    if (evidenceOrder != 0) return evidenceOrder;
+
+    final syncOrder = (left.synced ? 0 : 1).compareTo(right.synced ? 0 : 1);
+    if (syncOrder != 0) return syncOrder;
+
+    return (left.id ?? '').compareTo(right.id ?? '');
+  }
+
+  int _compareEvidence(
     _LrclibCandidate left,
     _LrclibCandidate right,
     TrackSearch search,
@@ -219,10 +278,7 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
     final durationOrder = leftDuration.compareTo(rightDuration);
     if (durationOrder != 0) return durationOrder;
 
-    final syncOrder = (left.synced ? 0 : 1).compareTo(right.synced ? 0 : 1);
-    if (syncOrder != 0) return syncOrder;
-
-    return (left.id ?? '').compareTo(right.id ?? '');
+    return 0;
   }
 
   int _albumOrder(_LrclibCandidate candidate, TrackSearch search) {
@@ -250,12 +306,17 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
         ? '时长匹配（相差${duration.toStringAsFixed(1)}秒）'
         : '时长未核对';
     final lyricType = candidate.synced ? '同步歌词' : '纯文本歌词';
+    final albumText = !hasText(search.album)
+        ? '专辑未核对'
+        : _albumOrder(candidate, search) == 0
+        ? '专辑匹配'
+        : '来自其他或未知专辑';
     return FieldSuggestion(
       field: AudioField.lyrics,
       value: candidate.lyrics,
       source: name,
       sourceUrl: _sourceUrl(candidate.id, signatureUri),
-      matchDescription: '歌名/歌手匹配；$durationText；$lyricType',
+      matchDescription: '歌名/歌手匹配；$albumText；$durationText；$lyricType',
     );
   }
 
@@ -279,9 +340,12 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
   }
 
   double? _number(Object? value) {
-    if (value is num) return value.toDouble();
-    if (value is String) return double.tryParse(value.trim());
-    return null;
+    final number = value is num
+        ? value.toDouble()
+        : value is String
+        ? double.tryParse(value.trim())
+        : null;
+    return number != null && number.isFinite && number > 0 ? number : null;
   }
 
   bool _isTrue(Object? value) =>

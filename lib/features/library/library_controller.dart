@@ -9,6 +9,7 @@ import '../../core/models/completion_task.dart';
 import '../../core/services/audio_importer.dart';
 import '../../core/services/completion_service.dart';
 import '../../core/services/device_music_library.dart';
+import '../../core/services/export/audio_copy_exporter.dart';
 import '../../core/services/metadata_source.dart';
 import '../../core/services/sources/json_api_client.dart';
 import '../../core/storage/library_store.dart';
@@ -20,6 +21,7 @@ class LibraryController extends ChangeNotifier {
     required this.importer,
     required this.completion,
     this.deviceLibrary,
+    this.exporter,
   });
 
   final LibraryStore store;
@@ -27,6 +29,7 @@ class LibraryController extends ChangeNotifier {
   final AudioImporter importer;
   final CompletionService completion;
   final DeviceMusicLibrary? deviceLibrary;
+  final AudioCopyExporter? exporter;
   LibrarySnapshot _snapshot = const LibrarySnapshot();
   bool _disposed = false;
   bool isLoading = true;
@@ -364,6 +367,86 @@ class LibraryController extends ChangeNotifier {
       completionStopRequested = false;
     }
   });
+
+  bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
+
+  CompletionTask? taskForTrack(String id) {
+    for (final task in tasks) {
+      if (task.trackId == id) return task;
+    }
+    return null;
+  }
+
+  Future<bool> exportCandidates(
+    CompletionTask task,
+    List<FieldSuggestion> selected,
+  ) async {
+    var saved = false;
+    await _operate(() async {
+      final track = trackById(task.trackId);
+      final current = taskForTrack(task.trackId);
+      if (track == null ||
+          current == null ||
+          current.createdAt != task.createdAt) {
+        _announce('歌曲或候选已更新，请返回重新打开结果。');
+        return;
+      }
+      if (selected.isEmpty ||
+          selected.any(
+            (item) => !current.suggestions.any(
+              (candidate) =>
+                  candidate.field == item.field &&
+                  candidate.value == item.value &&
+                  candidate.source == item.source,
+            ),
+          )) {
+        _announce('请选择当前结果中的候选资料。');
+        return;
+      }
+      if (!canExportTrack(track)) {
+        _announce('此格式暂不支持安全导出，目前支持 MP3、FLAC 和 M4A/MP4。');
+        return;
+      }
+      progress = '正在生成并校验副本，原音频保持不变…';
+      _notify();
+      try {
+        final uri = await exporter!.export(track, selected);
+        if (uri == null) {
+          _announce('已取消保存，原音频未修改。');
+          return;
+        }
+        saved = true;
+        final exported = CompletionTask(
+          trackId: current.trackId,
+          trackTitle: current.trackTitle,
+          createdAt: current.createdAt,
+          status: TaskStatus.exported,
+          message: '已将所选资料写入新副本，并通过音频完整性和标签校验。原音频未修改。',
+          suggestions: current.suggestions,
+          exportedCopyUri: uri,
+        );
+        try {
+          await _commit(
+            tasks: tasks
+                .map((item) => item.trackId == task.trackId ? exported : item)
+                .toList(),
+          );
+          _announce('已导出校验通过的音频副本，原音频未修改。');
+        } catch (_) {
+          _announce('音频副本已保存，但任务记录保存失败。请在刚选择的位置查看文件。');
+        }
+      } on ExportException catch (error) {
+        _announce(error.message);
+      } on FormatException catch (error) {
+        _announce('音频校验未通过：${error.message} 原音频未修改。');
+      } on TimeoutException {
+        _announce('封面下载超时，未导出副本。请稍后重试。');
+      } on PlatformException {
+        _announce('保存未完成。原音频未修改，请检查保存位置和可用空间后重试。');
+      }
+    });
+    return saved;
+  }
 
   Future<void> updateSettings(AppSettings value) =>
       _operate(() => _commit(settings: value));
