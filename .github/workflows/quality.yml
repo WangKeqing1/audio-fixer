@@ -57,10 +57,22 @@ jobs:
           cache: false
 
       - name: Install synthetic-media test tools
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install --no-install-recommends -y python3 ffmpeg
+          # A hosted Azure mirror stalled a previous run. Use only the official
+          # Ubuntu HTTPS archives here, with the runner's existing signing key.
+          test -s /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          sources="$RUNNER_TEMP/audio-fixer-ubuntu.list"
+          cat > "$sources" <<'APT_SOURCES'
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble-updates main universe
+          deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://security.ubuntu.com/ubuntu noble-security main universe
+          APT_SOURCES
+          apt_options=(-o "Dir::Etc::sourcelist=$sources" -o 'Dir::Etc::sourceparts=-'
+                       -o 'Acquire::Retries=3' -o 'Acquire::http::Timeout=30'
+                       -o 'Acquire::https::Timeout=30' -o 'APT::Update::Error-Mode=any')
+          sudo apt-get "${apt_options[@]}" update -qq
+          sudo apt-get "${apt_options[@]}" install --no-install-recommends -y python3 ffmpeg
           python3 --version
           ffmpeg -version
           ffprobe -version

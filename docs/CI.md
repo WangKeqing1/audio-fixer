@@ -26,6 +26,12 @@ The test suite generates its own small audio signals and cover image. CI unsets
 skipped tests or an absent synthetic-media suite. It does not call live metadata
 sources or use anyone's music library.
 
+Media test packages come from the official Ubuntu HTTPS archives using the
+runner's existing Ubuntu signing key. This avoids a slow hosted Azure mirror
+seen in CI. Network operations have 30-second timeouts and three retries; this
+setup step has a 10-minute ceiling within the unchanged 35-minute job limit.
+Signature verification stays enabled and no third-party package source is added.
+
 ## Android SDK and license boundary
 
 CI uses Android platforms 35 and 36, Build Tools 36.0.0, NDK 28.2.13676358,
