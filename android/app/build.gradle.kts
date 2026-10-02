@@ -1,3 +1,6 @@
+import com.android.build.api.dsl.ApplicationExtension
+import java.io.File
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -28,7 +31,7 @@ require(!audioFixerTranslationOffline || (audioFixerTranslationProbe && audioFix
 if (audioFixerTranslationProbe) {
     val target = providers.gradleProperty("target").orNull
     val targetFile = target?.let {
-        val path = java.io.File(it)
+        val path = File(it)
         if (path.isAbsolute) path else rootProject.file("../$it")
     }
     require(targetFile?.canonicalFile == rootProject.file("../tool/native_translation_probe.dart").canonicalFile) {
@@ -36,17 +39,19 @@ if (audioFixerTranslationProbe) {
     }
 }
 
-android {
+// Use AGP's public interface instead of the deprecated BaseAppModuleExtension
+// Kotlin accessor. The public interface also works with Flutter's newDsl opt-out.
+extensions.configure<ApplicationExtension> {
     namespace = "com.audiofixer.audio_fixer"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
-    compileOptions {
+    compileOptions.apply {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    defaultConfig {
+    defaultConfig.apply {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.audiofixer.audio_fixer"
         // You can update the following values to match your application needs.
@@ -62,19 +67,17 @@ android {
         manifestPlaceholders["audioFixerLabel"] = "Audio Fixer"
     }
 
-    buildTypes {
-        configureEach {
-            if (audioFixerQa) {
-                applicationIdSuffix = ".qa.v030"
-                versionNameSuffix = "-qa"
-                manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.3"
-            }
+    buildTypes.configureEach {
+        if (audioFixerQa) {
+            applicationIdSuffix = ".qa.v030"
+            versionNameSuffix = "-qa"
+            manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.3"
         }
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
-        }
+    }
+    buildTypes.named("release") {
+        // TODO: Add your own signing config for the release build.
+        // Signing with the debug keys for now, so `flutter run --release` works.
+        signingConfig = signingConfigs.getByName("debug")
     }
 
     sourceSets.configureEach {

@@ -130,6 +130,7 @@ class TranslationRuntime:
         command = ["flutter", "build", "apk", "--release", "--split-per-abi",
                    "--target-platform", "android-x64", "--target", "tool/native_translation_probe.dart",
                    f"--dart-define=AUDIO_FIXER_TRANSLATION_PROBE_PHASE={phase}", "--pub"]
+        print(f"Building synthetic {phase} AOT probe; offline overlay={phase == 'offline'}", flush=True)
         subprocess.run(command, env=env, check=True, timeout=900, stdin=subprocess.DEVNULL)
         checked(["git", "diff", "--exit-code", "--", "pubspec.lock"])
         source = Path("build/app/outputs/flutter-apk/app-x86_64-release.apk")
@@ -165,6 +166,7 @@ class TranslationRuntime:
             raise RuntimeError("Installed package INTERNET permission differs from intended phase")
         if phase == "offline" and re.search(r"android\.permission\.INTERNET:\s*granted=true", dump):
             raise RuntimeError("Installed offline package still has an INTERNET grant")
+        print(f"Installed synthetic {phase} probe: INTERNET requested={INTERNET in permissions}", flush=True)
         self.adb("shell", "am", "force-stop", PACKAGE)
         started = self.adb("shell", "am", "start", "-W", "-n",
                            PACKAGE + "/com.audiofixer.audio_fixer.MainActivity")
@@ -185,6 +187,7 @@ class TranslationRuntime:
                 (self.output / f"{phase}.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
                 if result.get("passed") is not True:
                     raise RuntimeError(f"Synthetic {phase} probe failed: {result.get('error', 'unknown failure')}")
+                print(f"Synthetic {phase} probe passed {len(result.get('checks', []))} checks", flush=True)
                 return result
             try:
                 current_pid = self.adb("shell", "pidof", PACKAGE).strip()
