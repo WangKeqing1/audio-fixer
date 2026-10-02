@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../features/library/library_controller.dart';
@@ -18,6 +20,8 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _selected = 0;
   int _noticeRevision = 0;
+  String? _inlineNotice;
+  Timer? _noticeTimer;
   static const _labels = ['音乐库', '补全任务', '设置'];
   static const _icons = [
     Icons.library_music_outlined,
@@ -49,15 +53,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (message == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(message)));
+      _noticeTimer?.cancel();
+      setState(() => _inlineNotice = message);
+      _noticeTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _inlineNotice = null);
+      });
     });
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_showNotice);
+    _noticeTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -159,6 +166,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           bottom: wide,
           child: Column(
             children: [
+              if (_inlineNotice case final message?)
+                _OperationNotice(
+                  message: message,
+                  onClose: () {
+                    _noticeTimer?.cancel();
+                    setState(() => _inlineNotice = null);
+                  },
+                ),
               if (controller.recoveryNotice != null ||
                   controller.originalRecoveryState != null)
                 TextButton.icon(
@@ -253,6 +268,59 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+/// Operation messages reserve space above content instead of obscuring pinned
+/// selection controls. The full message remains available in a readable dialog.
+class _OperationNotice extends StatelessWidget {
+  const _OperationNotice({required this.message, required this.onClose});
+  final String message;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    key: const ValueKey('operation-notice'),
+    color: Theme.of(context).colorScheme.secondaryContainer,
+    child: Padding(
+      padding: const EdgeInsets.only(left: 16, right: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Semantics(
+              liveRegion: true,
+              child: Text(
+                message,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: '查看完整提示',
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('操作提示'),
+                content: SingleChildScrollView(child: Text(message)),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('关闭'),
+                  ),
+                ],
+              ),
+            ),
+            icon: const Icon(Icons.info_outline),
+          ),
+          IconButton(
+            tooltip: '关闭提示',
+            onPressed: onClose,
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _RecoveryDialog extends StatelessWidget {

@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 
 const _phase = String.fromEnvironment('AUDIO_FIXER_TRANSLATION_PROBE_PHASE');
 const _channel = MethodChannel('audio_fixer/lyrics_translation');
-const _resultMarker = 'AUDIO_FIXER_TRANSLATION_RESULT:';
+const _resultMarker = 'AUDIO_FIXER_TRANSLATION_CHUNK:';
 const _english = [
   'The bright sun rises above the quiet blue river.',
   'The silver moon shines over the sleeping green garden.',
@@ -361,8 +361,31 @@ Future<void> main() async {
     };
     _progress.value = '$_phase failed; see bounded synthetic check result';
   }
-  // AOT probe needs no VM-service socket, debug flag, storage permission, or
-  // online result endpoint. Host only captures this exact synthetic JSON marker.
-  // ignore: avoid_print
-  print('$_resultMarker${jsonEncode(result)}');
+  // Android/Flutter log entries can be split at about 1 KiB. Keep each ASCII
+  // frame well below that limit; the host requires the complete verified JSON.
+  // No VM-service socket, debug flag, extra storage, or result endpoint is used.
+  var bytes = utf8.encode(jsonEncode(result));
+  if (bytes.length > 12000) {
+    bytes = utf8.encode(
+      jsonEncode({
+        'passed': false,
+        'phase': _phase,
+        'synthetic_only': true,
+        'error': 'Synthetic result exceeded bounded evidence size',
+      }),
+    );
+  }
+  final encoded = base64Encode(bytes);
+  final digest = sha256.convert(bytes).toString();
+  const chunkSize = 512;
+  final count = (encoded.length + chunkSize - 1) ~/ chunkSize;
+  for (var index = 0; index < count; index++) {
+    final start = index * chunkSize;
+    final end = (start + chunkSize).clamp(0, encoded.length);
+    // ignore: avoid_print
+    print(
+      '$_resultMarker'
+      'v1|$_phase|$digest|$index|$count|${encoded.substring(start, end)}',
+    );
+  }
 }

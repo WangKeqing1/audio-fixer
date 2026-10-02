@@ -29,9 +29,11 @@ Both merged APKs must omit `MlKitInitProvider`; explicit SDK channel use initial
 ML Kit on demand. This check does not prove that the SDK makes no telemetry
 requests while the online download phase has network permission.
 
-No VM-service connection is needed: the standalone AOT probe writes one compact
-synthetic JSON result to logcat, and the host reads only that marker for the exact
-app PID. It does not save or upload raw device logs. This is why the offline phase
+No VM-service connection is needed: the standalone AOT probe emits bounded
+512-character Base64 frames of its synthetic JSON result to logcat. Each frame
+has a phase, index/count and SHA-256 identity. The host reads only that marker
+for the exact app PID, tolerates incomplete polling, and accepts only a complete,
+checksum-verified result; conflicting or oversized frames fail. It does not save or upload raw device logs. This is why the offline phase
 uses the standalone probe instead of `flutter test`, whose driver needs sockets.
 
 ## Commands and boundaries

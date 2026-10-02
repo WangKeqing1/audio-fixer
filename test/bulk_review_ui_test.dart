@@ -254,4 +254,46 @@ void main() {
     expect(toolbar, findsNothing);
     expect(tester.takeException(), isNull);
   });
+  for (final scale in [1.0, 2.0]) {
+    testWidgets(
+      'operation notices never obscure pinned actions at scale $scale',
+      (tester) async {
+        tester.view.physicalSize = const Size(320, 740);
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final controller = _controller(writer: _Writer());
+        await tester.pumpWidget(AudioFixerApp(controller: controller));
+        await tester.pumpAndSettle();
+        await _tap(tester, find.text('补全任务'));
+        await controller.approveCandidates(controller.taskForTrack('one')!, [
+          _album,
+        ]);
+        await tester.pumpAndSettle();
+        controller.selectTracks({'one', 'two'});
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('operation-notice')).hitTestable(),
+          findsOneWidget,
+        );
+        final save = find.byKey(const ValueKey('bulk-save-original'));
+        expect(save.hitTestable(), findsOneWidget);
+        expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
+        await tester.tap(find.byTooltip('查看完整提示'));
+        await tester.pumpAndSettle();
+        expect(find.text('操作提示'), findsOneWidget);
+        expect(find.text('已确认 1 项资料，尚未修改文件。可在批量操作中保存。'), findsWidgets);
+        await tester.tap(find.text('关闭'));
+        await tester.pumpAndSettle();
+        expect(save.hitTestable(), findsOneWidget);
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('operation-notice')), findsNothing);
+        expect(save.hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 }

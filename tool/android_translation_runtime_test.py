@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline host-contract tests, not Android/model-download evidence."""
 import json
+import base64
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,24 +14,54 @@ from android_translation_runtime import (
 
 
 class TranslationProbeContractTest(unittest.TestCase):
-    def test_pid_log_only_accepts_bounded_matching_synthetic_result(self):
-        value = {'phase': 'offline', 'synthetic_only': True, 'passed': True}
-        self.assertEqual(result_from_log('I/flutter: ' + MARKER + json.dumps(value), 'offline'), value)
-        self.assertIsNone(result_from_log(MARKER + json.dumps(value), 'download'))
-        self.assertIsNone(result_from_log('ordinary Flutter log', 'offline'))
-        value['synthetic_only'] = False
-        with self.assertRaises(RuntimeError):
-            result_from_log(MARKER + json.dumps(value), 'offline')
-        value['synthetic_only'] = True
-        message = MARKER + json.dumps(value)
-        with self.assertRaises(RuntimeError):
-            result_from_log(message + '\n' + message, 'offline')
+    @staticmethod
+    def frames(value, *, encoded=None):
+        data = json.dumps(value, ensure_ascii=False).encode()
+        encoded = encoded or base64.b64encode(data).decode()
+        chunks = [encoded[index:index + 512] for index in range(0, len(encoded), 512)]
+        digest = hashlib.sha256(data).hexdigest()
+        return [f"{MARKER}v1|{value['phase']}|{digest}|{index}|{len(chunks)}|{chunk}"
+                for index, chunk in enumerate(chunks)]
 
-    def test_malformed_or_oversized_result_is_rejected(self):
-        with self.assertRaises(json.JSONDecodeError):
-            result_from_log(MARKER + '{truncated', 'offline')
+    def test_pid_log_reassembles_complete_synthetic_result_over_log_limit(self):
+        value = {'phase': 'offline', 'synthetic_only': True, 'passed': True,
+                 'translations': ['中文合成结果' * 100]}
+        frames = self.frames(value)
+        self.assertGreater(len(frames), 3)
+        self.assertTrue(all(len(frame.encode()) < 700 for frame in frames))
+        self.assertIsNone(result_from_log('\n'.join(frames[:-1]), 'offline'))
+        self.assertEqual(result_from_log('\n'.join('I/flutter: ' + frame for frame in frames), 'offline'), value)
+        self.assertEqual(result_from_log('\n'.join(reversed(frames)), 'offline'), value)
+        self.assertEqual(result_from_log('\n'.join(frames + [frames[0]]), 'offline'), value)
+        self.assertIsNone(result_from_log('\n'.join(frames), 'download'))
+        self.assertIsNone(result_from_log('ordinary Flutter log', 'offline'))
+
+    def test_conflicting_or_corrupt_frames_are_rejected(self):
+        value = {'phase': 'offline', 'synthetic_only': True, 'passed': True,
+                 'padding': 'a' * 1000}
+        frames = self.frames(value)
         with self.assertRaises(RuntimeError):
-            result_from_log(MARKER + 'x' * 12_001, 'offline')
+            result_from_log('\n'.join(frames + [frames[0][:-1] + 'Z']), 'offline')
+        other = self.frames(dict(value, passed=False))
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join(frames + other), 'offline')
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join([frames[0].replace('|0|', '|99|', 1), *frames[1:]]), 'offline')
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join([frames[0][:-1], *frames[1:]]), 'offline')
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join(frames[:-1] + [frames[-1][:-1] + 'A']), 'offline')
+
+    def test_malformed_oversized_or_non_synthetic_payload_is_rejected(self):
+        with self.assertRaises(RuntimeError):
+            result_from_log(MARKER + '{truncated', 'offline')
+        oversized = self.frames({'phase': 'offline', 'synthetic_only': True, 'padding': 'x' * 12_001})
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join(oversized), 'offline')
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join(self.frames({'phase': 'offline', 'synthetic_only': False})), 'offline')
+        with self.assertRaises(RuntimeError):
+            result_from_log('\n'.join(self.frames({'phase': 'offline', 'synthetic_only': True}, encoded='%%%')), 'offline')
 
     def test_installed_permission_parse_uses_exact_request_block(self):
         dump = '''Package [com.audiofixer.audio_fixer.qa.v030]:

@@ -10,6 +10,8 @@ are published by this script.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -21,7 +23,7 @@ import time
 
 PACKAGE = "com.audiofixer.audio_fixer.qa.v030"
 INTERNET = "android.permission.INTERNET"
-MARKER = "AUDIO_FIXER_TRANSLATION_RESULT:"
+MARKER = "AUDIO_FIXER_TRANSLATION_CHUNK:"
 PHASES = ("download", "offline")
 EVIDENCE = ("download.json", "offline.json", "summary.json")
 
@@ -32,22 +34,49 @@ def checked(command: list[str], *, timeout: int = 90, env: dict | None = None) -
 
 
 def result_from_log(text: str, phase: str) -> dict | None:
-    values = []
+    """Reassemble complete <=512-character ASCII frames; never guess truncation."""
+    frames: dict[int, str] = {}
+    identity: tuple[str, int] | None = None
     for line in text.splitlines():
         if MARKER not in line:
             continue
         payload = line.split(MARKER, 1)[1].strip()
-        if len(payload.encode()) > 12_000:
-            raise RuntimeError("Probe result exceeded bounded synthetic contract")
-        value = json.loads(payload)
-        if not isinstance(value, dict) or value.get("phase") != phase:
+        match = re.fullmatch(
+            r"v1\|(download|offline)\|([a-f0-9]{64})\|(\d{1,2})\|(\d{1,2})\|([A-Za-z0-9+/=]{1,512})",
+            payload,
+        )
+        if not match:
+            raise RuntimeError("Malformed or oversized synthetic result frame")
+        found_phase, digest, index_text, count_text, chunk = match.groups()
+        if found_phase != phase:
             continue
-        if value.get("synthetic_only") is not True:
-            raise RuntimeError("Refusing non-synthetic probe evidence")
-        values.append(value)
-    if len(values) > 1:
-        raise RuntimeError("Ambiguous repeated probe results")
-    return values[0] if values else None
+        index, count = int(index_text), int(count_text)
+        if not 1 <= count <= 32 or not 0 <= index < count:
+            raise RuntimeError("Synthetic result frame count/index exceeds its bound")
+        if index < count - 1 and len(chunk) != 512:
+            raise RuntimeError("Incomplete non-terminal synthetic frame")
+        current = (digest, count)
+        if identity is not None and identity != current:
+            raise RuntimeError("Conflicting synthetic result identity or frame count")
+        identity = current
+        if index in frames and frames[index] != chunk:
+            raise RuntimeError("Conflicting duplicate synthetic result frame")
+        frames[index] = chunk
+    if identity is None or len(frames) != identity[1]:
+        return None  # Logcat polling can observe a prefix of the emitted frames.
+    encoded = "".join(frames[index] for index in range(identity[1]))
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise RuntimeError("Invalid synthetic result Base64") from error
+    if not 0 < len(data) <= 12_000:
+        raise RuntimeError("Synthetic result exceeded bounded evidence size")
+    if hashlib.sha256(data).hexdigest() != identity[0]:
+        raise RuntimeError("Synthetic result checksum mismatch")
+    value = json.loads(data)
+    if not isinstance(value, dict) or value.get("phase") != phase or value.get("synthetic_only") is not True:
+        raise RuntimeError("Refusing mismatched or non-synthetic probe evidence")
+    return value
 
 
 def safe_native_failure(result: dict) -> dict:
