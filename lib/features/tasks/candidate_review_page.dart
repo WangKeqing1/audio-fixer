@@ -27,9 +27,16 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   @override
   void initState() {
     super.initState();
+    final approved = widget.controller.approvedSuggestionsFor(widget.task);
     for (final candidate in widget.task.suggestions) {
-      if (hasText(candidate.value)) {
-        _selected.putIfAbsent(candidate.field, () => candidate);
+      if (approved.any(
+        (item) =>
+            item.field == candidate.field &&
+            item.value == candidate.value &&
+            item.source == candidate.source &&
+            item.sourceUrl == candidate.sourceUrl,
+      )) {
+        _selected[candidate.field] = candidate;
       }
     }
   }
@@ -40,7 +47,12 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     super.dispose();
   }
 
-  Future<void> _export(List<FieldSuggestion> selected) async {
+  Future<void> _save(
+    List<FieldSuggestion> selected, {
+    bool exportCopy = false,
+    bool approveOnly = false,
+    bool revokeOnly = false,
+  }) async {
     if (_exporting || !widget.controller.canOperate) return;
     final route = ModalRoute.of(context);
     final revision = widget.controller.noticeRevision;
@@ -48,10 +60,13 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       _exporting = true;
       _exportNotice = null;
     });
-    final saved = await widget.controller.exportCandidates(
-      widget.task,
-      selected,
-    );
+    final saved = revokeOnly
+        ? await widget.controller.revokeCandidateApproval(widget.task)
+        : approveOnly
+        ? await widget.controller.approveCandidates(widget.task, selected)
+        : exportCopy
+        ? await widget.controller.exportCandidates(widget.task, selected)
+        : await widget.controller.saveCandidates(widget.task, selected);
     if (!mounted) return;
     // Never dismiss a newer route if the save finishes while another screen
     // is on top of this one.
@@ -112,20 +127,21 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       if (track == null) {
         unavailableReason = '此歌曲当前不可访问，可能已移除或需要重新授权。请返回音乐库刷新。';
       } else if (current?.status == TaskStatus.outdated) {
-        unavailableReason = '原歌曲已发生变化，旧候选仅供参考。请重新查询后再导出。';
+        unavailableReason = '原歌曲已发生变化，旧候选仅供参考。请重新查询后再保存。';
       } else if (!track.detailsLoaded || track.readError != null) {
         unavailableReason = '原歌曲的资料需要重新检查。请返回音乐库读取歌曲资料，再重新查询。';
       } else if (isStale) {
-        unavailableReason = '歌曲或候选已更新，这份结果仅供查看。请打开最新结果后再导出。';
-      } else if (controller.exporter == null) {
-        unavailableReason = '此设备尚未启用安全导出，可继续预览候选资料。';
-      } else if (!controller.canExportTrack(track)) {
-        unavailableReason =
-            '${track.extension} 格式当前仅支持预览。安全导出支持 MP3、FLAC 和 M4A/MP4。';
+        unavailableReason = '歌曲或候选已更新，这份结果仅供查看。请打开最新结果后再保存。';
       } else {
         unavailableReason = null;
       }
-      final canExport = unavailableReason == null;
+      final canReview = unavailableReason == null;
+      final canSaveOriginal =
+          canReview && track != null && controller.canSaveOriginalTrack(track);
+      final canExport =
+          canReview && track != null && controller.canExportTrack(track);
+      final canAct =
+          controller.canOperate && !_exporting && selected.isNotEmpty;
       return PopScope(
         canPop: !_exporting,
         child: Scaffold(
@@ -145,7 +161,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '选择要写入副本的资料，保存前将再次校验。',
+                      '逐项查看并勾选可信资料，默认保存到原文件。候选不会自动选中。',
                       style: theme.textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 20),
@@ -163,7 +179,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                     if (unavailableReason != null) ...[
                       NoticePanel(
                         icon: Icons.info_outline,
-                        title: '当前无法导出',
+                        title: '当前无法保存',
                         message: unavailableReason,
                         action:
                             isStale &&
@@ -198,6 +214,53 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                       ),
                       const SizedBox(height: 16),
                     ],
+                    if (canReview && !canSaveOriginal) ...[
+                      NoticePanel(
+                        icon: Icons.info_outline,
+                        title: '此歌曲暂不支持原位保存',
+                        message: canExport
+                            ? '可以先确认资料，或选择导出副本。原位保存支持可写入的 MP3、FLAC 和 M4A/MP4。'
+                            : '${track?.extension ?? ''} 格式当前仅支持预览和确认。保存支持 MP3、FLAC 和 M4A/MP4，并需要文件写入权限。',
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (result.status == TaskStatus.savedOriginal) ...[
+                      const NoticePanel(
+                        icon: Icons.check_circle_outline,
+                        title: '已保存到原文件',
+                        message: '缺失资料已补入，已有资料与音频内容保留。',
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (controller
+                        .approvedSuggestionsFor(widget.task)
+                        .isNotEmpty) ...[
+                      NoticePanel(
+                        icon: Icons.fact_check_outlined,
+                        title: '资料已确认，等待保存',
+                        message: '可在此保存，也可返回后批量保存。调整勾选后需再次确认；撤销确认会将此歌曲移出待保存范围。',
+                        action: TextButton.icon(
+                          key: const ValueKey('revoke-approval'),
+                          onPressed:
+                              controller.canOperate && !_exporting && canReview
+                              ? () => _save([], revokeOnly: true)
+                              : null,
+                          icon: const Icon(Icons.undo),
+                          label: const Text('撤销确认'),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (result.writeError != null &&
+                        result.writeError != _exportNotice) ...[
+                      NoticePanel(
+                        icon: Icons.error_outline,
+                        title: '上次保存失败',
+                        message: result.writeError!,
+                        isError: true,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                     if (result.status == TaskStatus.exported) ...[
                       const NoticePanel(
                         icon: Icons.download_done_outlined,
@@ -222,7 +285,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                             SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                '原音频保持不变\n仅补入缺失项。逐项确认后，由系统弹窗选择新副本的保存位置。',
+                                '仅补入缺失项，不覆盖已有资料\n保存前会再次校验文件。保存到原文件可能需要系统授权；也可另行导出副本。',
                               ),
                             ),
                           ],
@@ -256,7 +319,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                               onChanged:
                                   controller.canOperate &&
                                       !_exporting &&
-                                      canExport &&
+                                      canReview &&
                                       hasText(candidate.value) &&
                                       !hasText(track?.valueOf(candidate.field))
                                   ? (checked) => setState(() {
@@ -361,23 +424,38 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                     ),
                     const SizedBox(height: 8),
                   ],
-                  if (canExport && selected.isEmpty) ...[
+                  if (canReview && selected.isEmpty) ...[
                     const Text('请至少选择一项要写入的资料', textAlign: TextAlign.center),
                     const SizedBox(height: 8),
                   ],
                   FilledButton.icon(
-                    onPressed:
-                        controller.canOperate &&
-                            !_exporting &&
-                            canExport &&
-                            selected.isNotEmpty
-                        ? () => _export(selected)
+                    key: const ValueKey('save-original'),
+                    onPressed: canAct && canSaveOriginal
+                        ? () => _save(selected)
+                        : null,
+                    icon: const Icon(Icons.save_outlined),
+                    label: Text(
+                      _exporting ? '正在校验并保存…' : '保存到原文件（${selected.length} 项）',
+                    ),
+                  ),
+                  TextButton(
+                    key: const ValueKey('approve-for-batch'),
+                    onPressed: canAct && canReview
+                        ? () => _save(selected, approveOnly: true)
+                        : null,
+                    child: const Text(
+                      '确认所选资料，稍后批量保存',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('export-copy'),
+                    onPressed: canAct && canExport
+                        ? () => _save(selected, exportCopy: true)
                         : null,
                     icon: const Icon(Icons.save_alt),
                     label: Text(
-                      _exporting
-                          ? '正在校验并保存…'
-                          : '${result.status == TaskStatus.exported ? '再次导出副本' : '导出副本'}（${selected.length} 项）',
+                      '${result.status == TaskStatus.exported ? '再次导出副本' : '导出副本'}（${selected.length} 项）',
                     ),
                   ),
                 ],

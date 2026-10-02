@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/batch_operation.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/audio_importer.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
@@ -22,6 +23,7 @@ import 'package:path_provider/path_provider.dart';
 // The host generates this media with generate_audio_fixtures.py and handles
 // Android-owned dialogs from fresh UI hierarchies. No MethodChannel is mocked.
 const _fileName = 'native_fixture.mp3';
+const _unapprovedFileName = 'native_unapproved.mp3';
 const _lyrics =
     '[00:00.00]Synthetic Android runtime fixture only\n'
     '[00:00.60]Native save cancellation and retry';
@@ -41,7 +43,7 @@ class _OfflineFixtureSource implements MetadataSource {
     Set<AudioField> requestedFields,
   ) async {
     calls++;
-    expect(track.fileName, _fileName);
+    expect({_fileName, _unapprovedFileName}, contains(track.fileName));
     expect(track.detailsLoaded, isTrue);
     expect(requestedFields, {AudioField.lyrics});
     return [
@@ -75,7 +77,7 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
-    'real Android permission, MediaStore, cancel and save preserve source audio',
+    'native permission, reviewed-only batch original save and optional export',
     (tester) async {
       expect(Platform.isAndroid, isTrue);
       final support = await getApplicationSupportDirectory();
@@ -141,6 +143,8 @@ void main() {
       expect(track.detailsLoaded, isFalse);
 
       await phase('read_details');
+      await tester.enterText(find.byType(TextField).first, _fileName);
+      await tester.pumpAndSettle();
       final title = find.text(track.displayTitle);
       await tester.scrollUntilVisible(
         title,
@@ -176,6 +180,25 @@ void main() {
       );
       expect(source.calls, 1);
       expect(controller.taskForTrack(track.id)!.status, TaskStatus.needsReview);
+      await tester.scrollUntilVisible(
+        find.byType(Checkbox),
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).first).value,
+        isFalse,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const ValueKey('save-original')))
+            .onPressed,
+        isNull,
+        reason: 'Newly fetched candidates require explicit review.',
+      );
+      await tester.tap(find.byType(Checkbox).first);
+      await tester.pumpAndSettle();
+      expect(find.text('保存到原文件（1 项）'), findsOneWidget);
       expect(find.text('导出副本（1 项）'), findsOneWidget);
       await checkpoint('review_ready');
 
@@ -208,7 +231,7 @@ void main() {
       expect(Uri.parse(exported.exportedCopyUri!).scheme, 'content');
       expect(exported.exportedCopyUri, isNot(track.contentUri));
       expect(controller.trackById(track.id)!.lyrics, isNull);
-      await checkpoint('saved_ready');
+      await checkpoint('exported_ready');
 
       // Re-read through the native content URI after saving, rather than
       // trusting the controller cache. Host FFmpeg checks are independent.
@@ -224,6 +247,97 @@ void main() {
             .toString(),
         coverHash,
       );
+      // A new lookup requires fresh explicit review. The primary original-save
+      // action must keep the review open when Android write consent is denied.
+      await tester.tap(find.text('补全缺失信息'));
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            find.byType(CandidateReviewPage).evaluate().isNotEmpty,
+        'new original-save candidate review',
+      );
+      await tester.scrollUntilVisible(
+        find.byType(Checkbox),
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).first).value,
+        isFalse,
+      );
+      await tester.tap(find.byType(Checkbox).first);
+      await tester.pumpAndSettle();
+      await phase('original_cancel');
+      await tester.ensureVisible(find.byKey(const ValueKey('save-original')));
+      await tester.tap(find.byKey(const ValueKey('save-original')));
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            controller.taskForTrack(track.id)!.status == TaskStatus.needsReview,
+        'cancellation of real Android write consent',
+      );
+      expect(find.byType(CandidateReviewPage), findsOneWidget);
+      expect((await library.readDetails(track)).lyrics, isNull);
+      await checkpoint('original_cancelled_ready');
+
+      // Persist one explicit approval; the other selected song stays unreviewed.
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('approve-for-batch')),
+      );
+      await tester.tap(find.byKey(const ValueKey('approve-for-batch')));
+      await _waitFor(
+        tester,
+        () => !controller.isBusy,
+        'persisted field approval',
+      );
+      final unapproved = controller.tracks.singleWhere(
+        (item) => item.fileName == _unapprovedFileName,
+      );
+      await controller.complete(trackIds: {unapproved.id});
+      await tester.pumpAndSettle();
+      expect(
+        controller.taskForTrack(unapproved.id)!.status,
+        TaskStatus.needsReview,
+      );
+      controller.selectTracks({track.id, unapproved.id});
+      await checkpoint('bulk_review_ready');
+      await phase('original_confirm');
+      final batchSave = controller.saveSelectedCandidates();
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            controller.taskForTrack(track.id)!.status ==
+                TaskStatus.savedOriginal,
+        'real original write consent, backup, replacement, and read-back',
+      );
+      await batchSave;
+      expect(controller.batchOperation!.kind, BatchOperationKind.saveOriginal);
+      expect(controller.batchOperation!.totalCount, 2);
+      expect(controller.batchOperation!.completedCount, 2);
+      expect(controller.batchOperation!.savedOriginalCount, 1);
+      expect(controller.batchOperation!.skippedCount, 1);
+      expect(controller.batchOperation!.failedCount, 0);
+      expect(controller.batchOperation!.isRunning, isFalse);
+      final savedOriginal = controller.taskForTrack(track.id)!;
+      final savedDetails = await library.readDetails(
+        controller.trackById(track.id)!,
+      );
+      expect(savedDetails.lyrics, _lyrics);
+      expect(savedDetails.title, detailed.title);
+      expect(savedDetails.artist, detailed.artist);
+      expect(savedDetails.album, detailed.album);
+      expect((await library.readDetails(unapproved)).lyrics, isNull);
+      expect(
+        sha256
+            .convert(await File(savedDetails.artworkPath!).readAsBytes())
+            .toString(),
+        coverHash,
+      );
+      await checkpoint('saved_ready');
+
       for (final name in ['device_library_read', 'tagged_exports']) {
         final directory = Directory('${cache.path}/$name');
         if (await directory.exists()) {
@@ -236,8 +350,12 @@ void main() {
       }
       final persisted = await JsonLibraryStore(getApplicationSupportDirectory)
           .load();
-      expect(persisted.tasks.single.status, TaskStatus.exported);
-      expect(persisted.tasks.single.exportedCopyUri, exported.exportedCopyUri);
+      expect(
+        persisted.tasks.singleWhere((task) => task.trackId == track.id).status,
+        TaskStatus.savedOriginal,
+      );
+      expect(persisted.batchOperation!.savedOriginalCount, 1);
+      expect(persisted.batchOperation!.skippedCount, 1);
       await File('${support.path}/native_runtime_result.json').writeAsString(
         jsonEncode({
           'passed': true,
@@ -247,6 +365,10 @@ void main() {
           'offline_source_calls': source.calls,
           'source_uri': track.contentUri,
           'export_uri': exported.exportedCopyUri,
+          'original_save_status': savedOriginal.status.name,
+          'unapproved_source_uri': unapproved.contentUri,
+          'batch_saved_original': controller.batchOperation!.savedOriginalCount,
+          'batch_skipped_unapproved': controller.batchOperation!.skippedCount,
           'cover_sha256': coverHash,
           'expected_tags': {'lyrics': _lyrics},
           'checks': [
@@ -255,16 +377,22 @@ void main() {
             'real_widgets_and_native_bridge',
             'unicode_tags_and_embedded_cover_read',
             'offline_candidate_review',
+            'new_candidates_unchecked_until_explicit_review',
             'system_save_cancel_retains_review_and_task',
             'system_save_retry_creates_new_document',
-            'source_reread_unchanged',
+            'source_unchanged_after_export_and_cancel',
+            'real_original_write_consent_cancel_and_retry',
+            'approved_only_bulk_original_save',
+            'unapproved_selected_song_unchanged',
+            'batch_result_counters_persisted',
+            'original_tags_and_cover_reread',
             'temporary_copies_released',
-            'export_record_persisted',
+            'original_save_record_persisted',
           ],
         }),
       );
       await phase('complete');
     },
-    timeout: const Timeout(Duration(minutes: 7)),
+    timeout: const Timeout(Duration(minutes: 10)),
   );
 }

@@ -6,6 +6,8 @@ import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../library/library_controller.dart';
 import 'candidate_review_page.dart';
+import 'bulk_action_panel.dart';
+import 'batch_progress_panel.dart';
 
 class TasksPage extends StatelessWidget {
   const TasksPage({
@@ -36,12 +38,40 @@ class TasksPage extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          '查询 → 确认资料 → 导出副本\n每首歌曲保留最近一次结果，原音频保持不变。',
+          '查询 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。已有资料不会被覆盖。',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+        if (controller.tasks.isNotEmpty) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              TextButton.icon(
+                key: const ValueKey('select-all-task-tracks'),
+                onPressed: controller.canOperate
+                    ? () => controller.selectTracks(
+                        controller.tasks
+                            .where(
+                              (task) =>
+                                  controller.trackById(task.trackId) != null,
+                            )
+                            .map((task) => task.trackId),
+                      )
+                    : null,
+                icon: const Icon(Icons.select_all),
+                label: const Text('全选任务歌曲'),
+              ),
+            ],
+          ),
+          BulkActionPanel(controller: controller),
+        ],
+        if (controller.batchOperation != null) ...[
+          BatchProgressPanel(controller: controller),
+          const SizedBox(height: 12),
+        ],
         if (controller.settings.enabledFields.isEmpty) ...[
           NoticePanel(
             icon: Icons.tune_outlined,
@@ -92,20 +122,42 @@ class TasksPage extends StatelessWidget {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          switch (task.status) {
-                            TaskStatus.waitingForSource =>
-                              Icons.hourglass_empty,
-                            TaskStatus.needsReview => Icons.fact_check_outlined,
-                            TaskStatus.exported => Icons.download_done_outlined,
-                            TaskStatus.noMatch => Icons.search_off,
-                            TaskStatus.skipped => Icons.check_circle_outline,
-                            TaskStatus.failed => Icons.error_outline,
-                            TaskStatus.outdated => Icons.update_outlined,
-                          },
-                          color: task.status == TaskStatus.failed
-                              ? theme.colorScheme.error
-                              : theme.colorScheme.primary,
+                        Checkbox(
+                          key: ValueKey('select-task-${task.trackId}'),
+                          value: controller.selectedTrackIds.contains(
+                            task.trackId,
+                          ),
+                          semanticLabel: '选择 ${task.trackTitle}',
+                          onChanged:
+                              controller.canOperate &&
+                                  controller.trackById(task.trackId) != null
+                              ? (_) => controller.toggleTrackSelection(
+                                  task.trackId,
+                                )
+                              : null,
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Icon(
+                            switch (task.status) {
+                              TaskStatus.waitingForSource =>
+                                Icons.hourglass_empty,
+                              TaskStatus.needsReview =>
+                                Icons.fact_check_outlined,
+                              TaskStatus.readyToSave =>
+                                Icons.playlist_add_check,
+                              TaskStatus.savedOriginal => Icons.save_outlined,
+                              TaskStatus.exported =>
+                                Icons.download_done_outlined,
+                              TaskStatus.noMatch => Icons.search_off,
+                              TaskStatus.skipped => Icons.check_circle_outline,
+                              TaskStatus.failed => Icons.error_outline,
+                              TaskStatus.outdated => Icons.update_outlined,
+                            },
+                            color: task.status == TaskStatus.failed
+                                ? theme.colorScheme.error
+                                : theme.colorScheme.primary,
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -135,6 +187,13 @@ class TasksPage extends StatelessWidget {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (task.writeError case final error?) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        error,
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     if (controller.trackById(task.trackId) == null) ...[
                       const Text('原歌曲当前不可访问。请返回音乐库刷新或重新授权；历史结果仍可查看。'),
@@ -142,11 +201,14 @@ class TasksPage extends StatelessWidget {
                     ] else if (task.suggestions.isNotEmpty &&
                         !controller.canExportTrack(
                           controller.trackById(task.trackId)!,
+                        ) &&
+                        !controller.canSaveOriginalTrack(
+                          controller.trackById(task.trackId)!,
                         )) ...[
                       Text(
                         controller.exporter == null
-                            ? '当前仅可预览候选资料，尚未启用安全导出。'
-                            : '${controller.trackById(task.trackId)!.extension} 仅可预览；安全导出支持 MP3、FLAC 和 M4A/MP4。',
+                            ? '当前可预览并确认资料，此设备暂不支持写入或导出。'
+                            : '${controller.trackById(task.trackId)!.extension} 可预览并确认；保存支持 MP3、FLAC 和 M4A/MP4。',
                       ),
                       const SizedBox(height: 8),
                     ],
@@ -188,10 +250,10 @@ class TasksPage extends StatelessWidget {
                                   ? '查看历史候选'
                                   : task.status == TaskStatus.exported
                                   ? '查看候选资料'
-                                  : !controller.canExportTrack(
-                                      controller.trackById(task.trackId)!,
-                                    )
-                                  ? '预览 ${task.suggestions.length} 项候选'
+                                  : task.status == TaskStatus.readyToSave
+                                  ? '修改已确认资料'
+                                  : task.status == TaskStatus.savedOriginal
+                                  ? '查看已保存资料'
                                   : '确认 ${task.suggestions.length} 项候选',
                             ),
                           ),

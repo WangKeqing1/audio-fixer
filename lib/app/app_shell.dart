@@ -83,7 +83,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         : IndexedStack(
             index: _selected,
             children: [
-              LibraryPage(controller: controller),
+              LibraryPage(
+                controller: controller,
+                onOpenTasks: () => setState(() => _selected = 1),
+              ),
               TasksPage(
                 controller: controller,
                 onOpenSettings: () => setState(() => _selected = 2),
@@ -155,40 +158,64 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           bottom: wide,
           child: Column(
             children: [
-              if (controller.recoveryNotice case final recovery?)
+              if (controller.recoveryNotice != null)
                 TextButton.icon(
                   onPressed: () => showDialog<void>(
                     context: context,
-                    builder: (context) => AlertDialog(
-                      title: Text(
-                        controller.exportRecoveryNotice == null
-                            ? '本地目录已恢复'
-                            : '恢复提醒',
-                      ),
-                      content: SingleChildScrollView(
-                        child: SelectableText(recovery),
-                      ),
-                      actions: [
-                        if (controller.exportRecoveryNotice != null)
-                          TextButton(
-                            onPressed: controller.canOperate
-                                ? () async {
-                                    await controller
-                                        .acknowledgeExportRecovery();
-                                    if (context.mounted) Navigator.pop(context);
-                                  }
-                                : null,
-                            child: const Text('已查看保存结果'),
-                          ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: Text(
-                            controller.exportRecoveryNotice == null
-                                ? '知道了'
-                                : '关闭',
+                    builder: (context) => ListenableBuilder(
+                      listenable: controller,
+                      builder: (context, _) => AlertDialog(
+                        title: Text(
+                          controller.exportRecoveryNotice == null
+                              ? '本地目录已恢复'
+                              : '恢复提醒',
+                        ),
+                        content: SingleChildScrollView(
+                          child: SelectableText(
+                            controller.recoveryNotice ?? '恢复处理已完成。',
                           ),
                         ),
-                      ],
+                        actions: [
+                          if (controller.exportRecoveryNotice != null &&
+                              controller.canRetryOriginalRecovery)
+                            FilledButton.icon(
+                              key: const ValueKey('retry-original-recovery'),
+                              onPressed: controller.canOperate
+                                  ? () async {
+                                      await controller.retryOriginalRecovery();
+                                      if (context.mounted &&
+                                          controller.recoveryNotice == null) {
+                                        Navigator.pop(context);
+                                      }
+                                    }
+                                  : null,
+                              icon: const Icon(Icons.restore),
+                              label: const Text('重试原文件恢复'),
+                            ),
+                          if (controller.exportRecoveryNotice != null)
+                            TextButton(
+                              onPressed: controller.canOperate
+                                  ? () async {
+                                      await controller
+                                          .acknowledgeExportRecovery();
+                                      if (context.mounted &&
+                                          controller.recoveryNotice == null) {
+                                        Navigator.pop(context);
+                                      }
+                                    }
+                                  : null,
+                              child: const Text('已查看保存结果'),
+                            ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: Text(
+                              controller.exportRecoveryNotice == null
+                                  ? '知道了'
+                                  : '关闭',
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                   icon: const Icon(Icons.restore),
@@ -206,6 +233,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                     child: Row(
                       children: [
                         Expanded(child: Text(controller.progress!)),
+                        if (controller.batchOperation?.isRunning == true &&
+                            !controller.isCompleting)
+                          TextButton(
+                            onPressed: controller.batchOperation!.stopRequested
+                                ? null
+                                : controller.stopBatch,
+                            child: const Text('停止'),
+                          ),
                         if (controller.isCompleting)
                           TextButton(
                             onPressed: controller.completionStopRequested

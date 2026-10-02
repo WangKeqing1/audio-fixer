@@ -51,7 +51,7 @@ void main() {
       trackTitle: '示例音频 · 午后散步',
       createdAt: createdAt,
       status: TaskStatus.needsReview,
-      message: '已找到 2 项示例候选，请确认版本后导出副本。',
+      message: '已找到 2 项示例候选，请确认版本后保存到原文件，或选择导出副本。',
       suggestions: const [
         FieldSuggestion(
           field: AudioField.album,
@@ -270,7 +270,14 @@ class _PreviewSource implements MetadataSource {
   ) async => [];
 }
 
-class _PreviewExporter implements AudioCopyExporter {
+class _PreviewExporter implements AudioCopyExporter, AudioOriginalSaver {
+  @override
+  bool supportsOriginal(AudioTrack track) => true;
+  @override
+  Future<String?> saveOriginal(
+    AudioTrack track,
+    List<FieldSuggestion> selected,
+  ) async => throw StateError("Preview rendering must never save originals.");
   @override
   bool supports(AudioTrack track) => true;
 

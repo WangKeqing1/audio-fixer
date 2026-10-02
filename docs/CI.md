@@ -1,7 +1,7 @@
 # Quality checks and QA APK
 
 [`.github/workflows/quality.yml`](../.github/workflows/quality.yml) runs on pushes to
-`dev/audio-fixer-quality` and on pull requests. One Ubuntu 24.04 job checks Dart
+`main` and `dev/audio-fixer-quality`, and on pull requests. One Ubuntu 24.04 job checks Dart
 formatting, runs `flutter analyze`, runs every test under `test/` including the
 FFmpeg-backed synthetic-media cases, and builds an optimized ARM64 QA APK. A newer run cancels
 an older run for the same branch or pull request; the job has a 35-minute limit.
@@ -78,19 +78,42 @@ Runtime Android acceptance still needs separate verification.
 
 [`android-runtime.yml`](../.github/workflows/android-runtime.yml) separately runs
 an AOSP API 35 x86_64 emulator when the hosted runner already permits access to
-KVM. Its first step opens the existing device and checks the KVM API; it does not
-change device permissions. A preflight failure means the emulator and app tests
-did not run, not that application behavior passed or failed.
+KVM. The workflow verifies KVM API access before starting the emulator. A preflight
+failure means emulator and app tests did not run, not that application behavior
+passed or failed. The separately approved hosted-runner setup may temporarily
+give only the current test user read/write access to `/dev/kvm`, with original
+owner/group/mode restored after emulator cleanup. That narrowly scoped setup is
+for ephemeral GitHub-hosted runners; it does not authorize permission changes on
+a developer computer or this cloud workspace. No world-writable mode or persistent
+udev rule is required.
 
 The native integration test uses the production widgets, controller, MediaStore
 bridge, tag exporter and system document picker. Only the online metadata source
 is replaced with explicitly synthetic, offline lyrics. The host generates and
 indexes a covered MP3, then operates freshly observed Android permission and
 save dialogs. Assertions cover permission denial/retry, content-URI reading,
-Unicode tags, candidate review, save cancellation, retry, persisted results and
-temporary-copy cleanup. Pulled original and exported files undergo independent
-FFmpeg decoded-sample and encoded-packet checks, tag/cover checks, and an exact
-original-file SHA-256 comparison.
+Unicode tags, initially unchecked candidates, explicit field review, optional
+export cancellation/retry, original-write consent cancellation/retry, an approved
+song saved in a batch alongside an unapproved skipped song, persisted per-song
+results/batch counters and temporary-copy cleanup. The host verifies the source
+hash at cancellation checkpoints and the unapproved song's final exact hash.
+Both the optional exported file and the updated original undergo independent
+FFmpeg decoded-sample and encoded-packet checks and existing tag/cover checks.
+
+A second native integration test launches a fresh Activity after the host seeds
+an interrupted production-format journal, valid backup and truncated app-private
+synthetic audio. The real bridge must restore byte-exact original content, clear
+the backup, retain its recovery notice until acknowledgement and decode cleanly.
+The same real native method also rejects a deliberately stale source SHA-256
+before writing, without leaving an unresolved backup.
+This is deterministic persisted-state recovery coverage, not a timed crash or
+MediaStore grant-loss test. No production fault-injection hook is added.
+
+The native harness resets its debug plugin registrant using `flutter pub get
+--offline --enforce-lockfile`; dependencies must already have been restored by the
+setup step. The harness never downloads packages or queries metadata providers.
+Run `python3 tool/android_runtime_driver_test.py` for offline tests of the dialog
+recognition/coordinate guard logic. Those tests are not Android runtime evidence.
 
 A subsequent smoke builds and launches the optimized normal `lib/main.dart`
 entrypoint on the emulator. It checks the resumed activity and launch errors;
@@ -115,3 +138,11 @@ References: [checkout](https://github.com/actions/checkout/tree/v6.0.2),
 [flutter-action](https://github.com/subosito/flutter-action/tree/v2.21.0),
 [Ubuntu runner inventory](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
 [disabling SDK auto-download](https://developer.android.com/studio/intro/update#download-with-gradle).
+
+## 0.3 original-save acceptance checklist
+
+See [native acceptance scope](NATIVE_ACCEPTANCE.md) for commands, fixture boundaries
+and the distinction between automated coverage and device behavior that still
+needs runtime verification. Version changes or passing Dart tests do not by
+themselves establish that Android write consent, recovery, or storage-provider
+compatibility has passed.

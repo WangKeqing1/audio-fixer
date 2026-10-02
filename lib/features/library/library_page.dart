@@ -8,6 +8,7 @@ import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/track_artwork.dart';
 import 'library_controller.dart';
 import 'track_detail_page.dart';
+import '../tasks/bulk_action_panel.dart';
 
 enum _LibraryFilter {
   all('全部'),
@@ -27,8 +28,9 @@ enum _LibraryFilter {
 }
 
 class LibraryPage extends StatefulWidget {
-  const LibraryPage({super.key, required this.controller});
+  const LibraryPage({super.key, required this.controller, this.onOpenTasks});
   final LibraryController controller;
+  final VoidCallback? onOpenTasks;
 
   @override
   State<LibraryPage> createState() => _LibraryPageState();
@@ -37,6 +39,7 @@ class LibraryPage extends StatefulWidget {
 class _LibraryPageState extends State<LibraryPage> {
   final _search = TextEditingController();
   _LibraryFilter _filter = _LibraryFilter.all;
+  bool _selectionMode = false;
 
   @override
   void dispose() {
@@ -116,6 +119,14 @@ class _LibraryPageState extends State<LibraryPage> {
               .toLowerCase()
               .contains(query);
     }).toList();
+    final selectionMode = _selectionMode || controller.selectedCount > 0;
+    final visibleIds = tracks.map((track) => track.id).toSet();
+    final allVisibleSelected =
+        visibleIds.isNotEmpty &&
+        visibleIds.every(controller.selectedTrackIds.contains);
+    final hiddenSelected = controller.selectedTrackIds
+        .difference(visibleIds)
+        .length;
     final checked = allTracks.where((track) => track.detailsLoaded).length;
     final complete = allTracks
         .where(
@@ -203,7 +214,79 @@ class _LibraryPageState extends State<LibraryPage> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 20),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    TextButton.icon(
+                      key: const ValueKey('toggle-library-selection'),
+                      onPressed: controller.canOperate
+                          ? () => setState(() {
+                              _selectionMode = !selectionMode;
+                              if (!_selectionMode) controller.clearSelection();
+                            })
+                          : null,
+                      icon: Icon(selectionMode ? Icons.close : Icons.checklist),
+                      label: Text(selectionMode ? '结束多选' : '多选'),
+                    ),
+                    if (selectionMode)
+                      TextButton.icon(
+                        key: const ValueKey('select-visible-tracks'),
+                        onPressed:
+                            controller.canOperate && visibleIds.isNotEmpty
+                            ? () {
+                                if (allVisibleSelected) {
+                                  for (final id in visibleIds) {
+                                    controller.toggleTrackSelection(id);
+                                  }
+                                } else {
+                                  controller.selectTracks(visibleIds);
+                                }
+                              }
+                            : null,
+                        icon: Icon(
+                          allVisibleSelected
+                              ? Icons.deselect
+                              : Icons.select_all,
+                        ),
+                        label: Text(allVisibleSelected ? '取消当前列表全选' : '全选当前列表'),
+                      ),
+                    TextButton.icon(
+                      key: const ValueKey('query-visible-tracks'),
+                      onPressed:
+                          controller.canOperate &&
+                              visibleIds.isNotEmpty &&
+                              controller.settings.enabledFields.isNotEmpty
+                          ? () => confirmBatchQuery(
+                              context,
+                              controller,
+                              visibleIds,
+                              onStart: widget.onOpenTasks,
+                            )
+                          : null,
+                      icon: const Icon(Icons.manage_search),
+                      label: const Text('查询当前列表'),
+                    ),
+                  ],
+                ),
+                if (hiddenSelected > 0)
+                  Text(
+                    '另有 $hiddenSelected 首已选歌曲不在当前筛选中，仍会参与批量操作。',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                if (controller.selectedCount > 0) ...[
+                  BulkActionPanel(
+                    controller: controller,
+                    onQueryStart: widget.onOpenTasks,
+                  ),
+                  TextButton.icon(
+                    onPressed: widget.onOpenTasks,
+                    icon: const Icon(Icons.fact_check_outlined),
+                    label: const Text('前往补全任务，逐首确认资料'),
+                  ),
+                ],
+                const SizedBox(height: 12),
                 Semantics(
                   header: true,
                   child: Row(
@@ -253,6 +336,11 @@ class _LibraryPageState extends State<LibraryPage> {
                   padding: const EdgeInsets.only(bottom: 8),
                   child: _TrackTile(
                     track: track,
+                    selectionMode: selectionMode,
+                    selected: controller.selectedTrackIds.contains(track.id),
+                    onSelectionChanged: controller.canOperate
+                        ? () => controller.toggleTrackSelection(track.id)
+                        : null,
                     onTap: !controller.canOperate
                         ? null
                         : () => Navigator.of(context).push(
@@ -352,9 +440,18 @@ class _LibraryOverview extends StatelessWidget {
 }
 
 class _TrackTile extends StatelessWidget {
-  const _TrackTile({required this.track, required this.onTap});
+  const _TrackTile({
+    required this.track,
+    required this.onTap,
+    required this.selectionMode,
+    required this.selected,
+    this.onSelectionChanged,
+  });
   final AudioTrack track;
   final VoidCallback? onTap;
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onSelectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -371,78 +468,86 @@ class _TrackTile extends StatelessWidget {
             colors.primary,
           )
         : (Icons.check_circle_outline, '资料完整', colors.primary);
-    return MergeSemantics(
-      child: Semantics(
-        button: true,
-        enabled: onTap != null,
-        child: Card(
-          child: InkWell(
-            onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  ExcludeSemantics(
-                    child: TrackArtwork(path: track.artworkPath, size: 52),
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      child: Card(
+        child: InkWell(
+          onTap: selectionMode ? onSelectionChanged : onTap,
+          onLongPress: onSelectionChanged,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                if (selectionMode)
+                  Checkbox(
+                    key: ValueKey('select-track-${track.id}'),
+                    value: selected,
+                    semanticLabel: '选择 ${track.displayTitle}',
+                    onChanged: onSelectionChanged == null
+                        ? null
+                        : (_) => onSelectionChanged!(),
                   ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          track.displayTitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                ExcludeSemantics(
+                  child: TrackArtwork(path: track.artworkPath, size: 52),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        track.displayTitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${hasText(track.artist) ? track.artist : '歌手未知'} · ${track.extension} · ${formatDuration(track.durationMs)}',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colors.onSurfaceVariant,
-                          ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${hasText(track.artist) ? track.artist : '歌手未知'} · ${track.extension} · ${formatDuration(track.durationMs)}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
                         ),
-                        const SizedBox(height: 8),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            ExcludeSemantics(
-                              child: Icon(
-                                statusIcon,
-                                size: 16,
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ExcludeSemantics(
+                            child: Icon(
+                              statusIcon,
+                              size: 16,
+                              color: statusColor,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              statusText,
+                              style: theme.textTheme.bodySmall?.copyWith(
                                 color: statusColor,
+                                height: 1.4,
                               ),
                             ),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                statusText,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: statusColor,
-                                  height: 1.4,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 4),
-                  ExcludeSemantics(
-                    child: Icon(
-                      Icons.chevron_right,
-                      size: 20,
-                      color: colors.onSurfaceVariant,
-                    ),
+                ),
+                const SizedBox(width: 4),
+                ExcludeSemantics(
+                  child: Icon(
+                    Icons.chevron_right,
+                    size: 20,
+                    color: colors.onSurfaceVariant,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

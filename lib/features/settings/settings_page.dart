@@ -129,8 +129,8 @@ class SettingsPage extends StatelessWidget {
         const SizedBox(height: 12),
         const NoticePanel(
           icon: Icons.privacy_tip_outlined,
-          title: '不上传音频，原文件保持不变',
-          message: '检索时仅发送歌名、歌手、专辑和时长。确认候选后可导出带标签的副本，原文件不会被覆盖。',
+          title: '不上传音频，确认后再保存',
+          message: '检索时仅发送歌名、歌手、专辑和时长。逐项确认后默认将缺失资料保存到原文件，不覆盖已有资料；也可选择导出副本。原位保存可能需要系统授权。',
         ),
         const SizedBox(height: 28),
         const _SectionTitle('关于 Audio Fixer'),

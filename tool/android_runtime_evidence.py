@@ -27,7 +27,9 @@ def main() -> None:
     evidence.mkdir(exist_ok=False)
     allowlist = [f'screenshots/{name}.png' for name in PHASES + CHECKPOINTS + SMOKE_SCREENS]
     allowlist += ['summary.json', 'native-test-result.json', 'native-ui-actions.json',
-                  'source-baseline.json', 'independent-audio-check.json', 'packaged-smoke.json']
+                  'source-baseline.json', 'independent-audio-check.json',
+                  'independent-original-check.json', 'native-recovery-result.json',
+                  'packaged-smoke.json']
     manifest = {'synthetic_only': True, 'retention_days': 1,
                 'commit': os.environ.get('GITHUB_SHA'), 'files': []}
     for relative in allowlist:

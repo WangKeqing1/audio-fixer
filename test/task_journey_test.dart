@@ -117,21 +117,47 @@ Future<void> _openTasks(
 Future<void> _openReview(
   WidgetTester tester, {
   String label = '确认 1 项候选',
+  bool selectCandidates = true,
 }) async {
   await tester.ensureVisible(find.text(label));
   await tester.pumpAndSettle();
   await tester.tap(find.text(label).hitTestable());
   await tester.pumpAndSettle();
+  if (selectCandidates) await _selectCandidate(tester);
 }
 
-FilledButton _saveButton(WidgetTester tester) => tester.widget<FilledButton>(
-  find
-      .descendant(
-        of: find.byType(CandidateReviewPage),
-        matching: find.byType(FilledButton),
-      )
-      .last,
-);
+Future<void> _selectCandidate(WidgetTester tester) async {
+  if (tester
+      .widget<CandidateReviewPage>(find.byType(CandidateReviewPage))
+      .task
+      .suggestions
+      .isEmpty) {
+    return;
+  }
+  if (find.byType(Checkbox).evaluate().isEmpty) {
+    await tester.scrollUntilVisible(
+      find.byType(Checkbox),
+      220,
+      scrollable: find
+          .descendant(
+            of: find.byType(CandidateReviewPage),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+  }
+  final checkbox = find.byType(Checkbox).first;
+  final value = tester.widget<Checkbox>(checkbox);
+  if (value.onChanged == null || value.value == true) return;
+  await tester.ensureVisible(checkbox);
+  await tester.pumpAndSettle();
+  await tester.tap(checkbox.hitTestable());
+  await tester.pumpAndSettle();
+}
+
+OutlinedButton _saveButton(WidgetTester tester) =>
+    tester.widget<OutlinedButton>(find.byKey(const ValueKey('export-copy')));
 
 void main() {
   testWidgets(
@@ -139,9 +165,8 @@ void main() {
     (tester) async {
       final exporter = _Exporter();
       await _openTasks(tester, _controller(exporter: exporter));
-      await _openReview(tester);
-      await tester.tap(find.byType(Checkbox));
-      await tester.pumpAndSettle();
+      await _openReview(tester, selectCandidates: false);
+      expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
       expect(find.text('请至少选择一项要写入的资料'), findsOneWidget);
       expect(_saveButton(tester).onPressed, isNull);
       expect(exporter.calls, 0);
@@ -239,6 +264,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('更新后的示例专辑'));
     expect(find.text('更新后的示例专辑'), findsOneWidget);
+    expect(_saveButton(tester).onPressed, isNull);
+    await _selectCandidate(tester);
     expect(_saveButton(tester).onPressed, isNotNull);
     expect(exporter.calls, 0);
     expect(tester.takeException(), isNull);
@@ -261,6 +288,8 @@ void main() {
       expect(source.calls, 1);
       expect(controller.tasks.single.status, TaskStatus.needsReview);
       expect(find.textContaining('原歌曲已发生变化'), findsNothing);
+      expect(_saveButton(tester).onPressed, isNull);
+      await _selectCandidate(tester);
       expect(_saveButton(tester).onPressed, isNotNull);
       expect(tester.takeException(), isNull);
     },
@@ -286,7 +315,7 @@ void main() {
     },
   );
 
-  testWidgets('unsupported format says preview-only before and during review', (
+  testWidgets('unsupported format permits review but disables writing', (
     tester,
   ) async {
     final track = AudioTrack(
@@ -298,9 +327,9 @@ void main() {
     );
     final exporter = _Exporter();
     await _openTasks(tester, _controller(track: track, exporter: exporter));
-    expect(find.textContaining('OGG 仅可预览'), findsOneWidget);
-    await _openReview(tester, label: '预览 1 项候选');
-    expect(find.textContaining('OGG 格式当前仅支持预览'), findsOneWidget);
+    expect(find.textContaining('OGG 可预览并确认'), findsOneWidget);
+    await _openReview(tester);
+    expect(find.textContaining('OGG 格式当前仅支持预览和确认'), findsOneWidget);
     expect(_saveButton(tester).onPressed, isNull);
     expect(exporter.calls, 0);
     expect(tester.takeException(), isNull);

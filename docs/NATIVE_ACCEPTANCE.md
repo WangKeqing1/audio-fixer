@@ -1,0 +1,71 @@
+# Original-save and bulk Android acceptance (0.3.0)
+
+## Synthetic-only runtime
+
+Use a clean disposable emulator and the QA package identity. Do not run the host
+driver against a phone containing personal music. The driver creates only
+`Music/AudioFixerSynthetic/native_fixture.mp3` and `native_unapproved.mp3`, using
+FFmpeg-generated signals and an authored cover. It never calls an online source,
+uploads audio or operates arbitrary MediaStore entries.
+
+```sh
+python3 tool/android_runtime_driver_test.py
+python3 tool/android_runtime_ci.py --serial emulator-5554
+```
+
+The emulator, adb server and these commands must share the same process/network
+environment. In isolated command sandboxes, launch and hold the emulator and run
+the driver inside one long-lived shell; an adb server in a separate sandbox
+cannot see that emulator. Use the normal accelerated CI boot path where available.
+Software-only startup may be slow or unusable; do not alter `/dev/kvm` or host
+security settings to work around a missing acceleration capability.
+
+## What the native harness checks
+
+- Real permission denial, retry/grant and MediaStore query/read through content URIs
+- Unicode existing metadata and embedded cover; no mock native MethodChannels
+- New candidate values start unchecked and need explicit selection
+- Optional export cancel/retry through the real Android document picker
+- Source whole-file SHA-256 unchanged after export and original-write consent cancel
+- Explicitly reviewed original saved alongside an unreviewed selected track;
+  persisted batch reports one saved and one skipped, with no inferred success
+- Updated original and optional copy both fully decode; encoded packets, decoded
+  samples, existing metadata and cover match; selected lyrics have the exact value
+- Unapproved track remains byte-identical; temporary read/tag copies are released
+- A separate fresh-Activity test restores a truncated private synthetic file from
+  a seeded `writing` journal/valid backup, then verifies exact bytes and cleanup
+- The real native original-save method rejects a deliberately stale source SHA-256
+  before opening a truncating writer, leaving source bytes and journal state intact
+
+The seeded-journal test checks the real native recovery implementation but does
+not claim to reproduce process death at an exact instruction. It uses app-private
+synthetic audio to separate byte restoration from MediaStore grant lifetime.
+
+## Remaining device/manual cases
+
+Do not mark these passed merely because automated test files exist:
+
+- Physical Android 10, Android 11+, old-version write permission behavior, and OEM
+  MediaStore/document-provider differences
+- Actual process kill/power loss during backup, target truncation/write and after
+  verification but before task persistence; check restored or verified state and
+  retained visible recovery records when restoration cannot finish
+- Permission revoked between preparation and write, source externally edited while
+  consent is open, full storage, unwritable provider and read-back mismatch
+- Batch stop midway, restart handling, retry failures without touching success,
+  alternate export-directory cancellation and document-provider cleanup failure
+- Playback in the user's usual player, without uploading or committing music
+
+Unit/Flutter tests cover many failure-state transitions, but those do not replace
+real Android API behavior for permission and storage failures. A green APK build
+is compilation evidence only. Record command, commit, device API/ABI, outcome and
+scope for every native run; preserve explicit not-run/blocked/failed distinctions.
+
+## Evidence boundaries
+
+Raw local reports/audio remain ignored under `build/android_runtime/`. The CI
+artifact tool allows only named synthetic screenshots and check JSON for one day;
+never add APKs, audio, raw logs, credentials or broad directories to that allowlist.
+No user-initiated undo exists. Backups support interrupted/failed writes and are
+removed after safe resolution; do not clear app data or uninstall while a recovery
+notice says unresolved original backups remain.

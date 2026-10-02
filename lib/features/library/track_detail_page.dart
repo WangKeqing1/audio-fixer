@@ -158,7 +158,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                   Text(
                     controller.completion.sources.isEmpty
                         ? '在线补全的数据源尚未接入。当前可检查缺失信息并创建任务。'
-                        : '在线查询缺失资料，逐项确认后可导出音频副本。已有资料与原音频保持不变。',
+                        : '在线查询缺失资料，逐项确认后保存到原文件，也可导出副本。仅补入缺失项，不覆盖已有资料。',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),

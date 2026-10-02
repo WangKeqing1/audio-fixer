@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/app_settings.dart';
 import '../models/audio_track.dart';
+import '../models/batch_operation.dart';
 import '../models/completion_task.dart';
 
 typedef DirectoryProvider = Future<Directory> Function();
@@ -21,11 +22,13 @@ class LibrarySnapshot {
     this.tasks = const [],
     this.settings = const AppSettings(),
     this.recoveredFromBackup = false,
+    this.batchOperation,
   });
 
   final List<AudioTrack> tracks;
   final List<CompletionTask> tasks;
   final AppSettings settings;
+  final BatchOperation? batchOperation;
 
   // Recovery can omit recent imports. Keep this persisted across later saves
   // and restarts so callers never prune those imports as unreferenced files.
@@ -33,11 +36,12 @@ class LibrarySnapshot {
   String? get recoveryNotice =>
       recoveredFromBackup ? '已恢复本地目录，最近一次更改可能未保留。原有目录和音频文件已保留，已暂停自动清理。' : null;
 
-  Map<String, Object> toJson() => {
+  Map<String, Object?> toJson() => {
     'version': 1,
     'tracks': tracks.map((track) => track.toJson()).toList(),
     'tasks': tasks.map((task) => task.toJson()).toList(),
     'settings': settings.toJson(),
+    'batchOperation': batchOperation?.toJson(),
     if (recoveredFromBackup) 'recoveredFromBackup': true,
   };
 
@@ -54,13 +58,25 @@ class LibrarySnapshot {
       final tasksJson = json['tasks'] as List;
       final settingsJson = json['settings'] as Map<String, dynamic>;
       _checkEnum(settingsJson['theme'], AppTheme.values.map((v) => v.name));
+      if (json['batchOperation'] case final Map<String, dynamic> batch) {
+        _checkEnum(batch['kind'], BatchOperationKind.values.map((v) => v.name));
+        for (final item in batch['items'] as List) {
+          _checkEnum(
+            (item as Map<String, dynamic>)['status'],
+            BatchItemStatus.values.map((v) => v.name),
+          );
+        }
+      }
       for (final item in tasksJson) {
         final task = item as Map<String, dynamic>;
         _checkEnum(task['status'], TaskStatus.values.map((v) => v.name));
         for (final field in task['queriedFields'] as List? ?? const []) {
           _checkEnum(field, AudioField.values.map((v) => v.name));
         }
-        for (final item in task['suggestions'] as List) {
+        for (final item in [
+          ...task['suggestions'] as List,
+          ...task['approvedSuggestions'] as List? ?? const [],
+        ]) {
           final suggestion = item as Map<String, dynamic>;
           _checkEnum(suggestion['field'], AudioField.values.map((v) => v.name));
         }
@@ -80,6 +96,11 @@ class LibrarySnapshot {
             .toList(),
         settings: AppSettings.fromJson(settingsJson),
         recoveredFromBackup: json['recoveredFromBackup'] as bool? ?? false,
+        batchOperation: json['batchOperation'] == null
+            ? null
+            : BatchOperation.fromJson(
+                json['batchOperation'] as Map<String, dynamic>,
+              ),
       );
     } on TypeError {
       throw const FormatException('本地目录字段不完整或类型无效');

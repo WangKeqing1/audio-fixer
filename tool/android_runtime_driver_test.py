@@ -97,5 +97,51 @@ class DialogDriverTest(unittest.TestCase):
         self.runtime.tap.assert_called_once_with(allow, 'permission_grant')
 
 
+    def original_consent(self):
+        package = 'com.android.providers.media.module'
+        title = node('android:id/message', 'Allow Audio Fixer QA to modify this audio file?',
+                     package=package)
+        allow = node('android:id/button1', 'Allow', 'android.widget.Button', package=package)
+        deny = node('android:id/button2', "Don't allow", 'android.widget.Button', package=package)
+        return title, allow, deny
+
+    def test_original_confirm_requires_expected_system_surface_and_purpose(self):
+        title, allow, deny = self.original_consent()
+        self.assertTrue(self.runtime.act('original_confirm', [title, allow, deny]))
+        self.runtime.tap.assert_called_once_with(allow, 'original_confirm')
+
+    def test_original_cancel_uses_deny_not_allow(self):
+        title, allow, deny = self.original_consent()
+        self.assertTrue(self.runtime.act('original_cancel', [title, allow, deny]))
+        self.runtime.tap.assert_called_once_with(deny, 'original_cancel')
+
+    def test_original_button_alone_is_not_authorization_surface(self):
+        _, allow, deny = self.original_consent()
+        self.assertFalse(self.runtime.act('original_confirm', [allow, deny]))
+        self.runtime.tap.assert_not_called()
+
+    def test_original_wrong_app_or_delete_request_is_rejected(self):
+        title, allow, deny = self.original_consent()
+        for text in ['Allow Another App to modify this audio file?',
+                     'Allow Audio Fixer QA to delete this audio file?']:
+            title.set('text', text)
+            self.assertFalse(self.runtime.act('original_confirm', [title, allow, deny]))
+        self.runtime.tap.assert_not_called()
+
+    def test_original_fake_app_package_is_rejected(self):
+        nodes = self.original_consent()
+        for item in nodes:
+            item.set('package', 'example.fake.media')
+        self.assertFalse(self.runtime.act('original_confirm', list(nodes)))
+        self.runtime.tap.assert_not_called()
+
+    def test_original_duplicate_or_disabled_button_is_rejected(self):
+        title, allow, deny = self.original_consent()
+        self.assertFalse(self.runtime.act('original_confirm', [title, allow, allow, deny]))
+        allow.set('enabled', 'false')
+        self.assertFalse(self.runtime.act('original_confirm', [title, allow, deny]))
+        self.runtime.tap.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

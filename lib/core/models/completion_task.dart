@@ -3,6 +3,8 @@ import 'audio_track.dart';
 enum TaskStatus {
   waitingForSource('等待数据源'),
   needsReview('候选待确认'),
+  readyToSave('已确认待保存'),
+  savedOriginal('已保存原文件'),
   exported('已导出副本'),
   outdated('资料已变化'),
   noMatch('未找到结果'),
@@ -56,6 +58,8 @@ class CompletionTask {
     this.suggestions = const [],
     this.exportedCopyUri,
     this.queriedFields = const {},
+    this.approvedSuggestions = const [],
+    this.writeError,
   });
 
   final String trackId;
@@ -66,6 +70,8 @@ class CompletionTask {
   final List<FieldSuggestion> suggestions;
   final String? exportedCopyUri;
   final Set<AudioField> queriedFields;
+  final List<FieldSuggestion> approvedSuggestions;
+  final String? writeError;
 
   Map<String, Object?> toJson() => {
     'trackId': trackId,
@@ -76,6 +82,10 @@ class CompletionTask {
     'suggestions': suggestions.map((item) => item.toJson()).toList(),
     'exportedCopyUri': exportedCopyUri,
     'queriedFields': queriedFields.map((field) => field.name).toList(),
+    'approvedSuggestions': approvedSuggestions
+        .map((item) => item.toJson())
+        .toList(),
+    'writeError': writeError,
   };
 
   factory CompletionTask.fromJson(Map<String, dynamic> json) => CompletionTask(
@@ -84,6 +94,10 @@ class CompletionTask {
     createdAt: DateTime.parse(json['createdAt'] as String),
     status: TaskStatus.values.byName(json['status'] as String),
     exportedCopyUri: json['exportedCopyUri'] as String?,
+    writeError: json['writeError'] as String?,
+    approvedSuggestions: (json['approvedSuggestions'] as List? ?? const [])
+        .map((item) => FieldSuggestion.fromJson(item as Map<String, dynamic>))
+        .toList(),
     queriedFields: (json['queriedFields'] as List? ?? const [])
         .map((field) => AudioField.values.byName(field as String))
         .toSet(),
