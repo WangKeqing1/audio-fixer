@@ -11,6 +11,7 @@ class AppSettings {
     this.artwork = true,
     this.excludeShortAudio = false,
     this.includeChineseTranslation = true,
+    this.onDeviceTranslationEnabled = false,
     this.excludedFolders = const [],
   });
 
@@ -20,6 +21,7 @@ class AppSettings {
   final bool artwork;
   final bool excludeShortAudio;
   final bool includeChineseTranslation;
+  final bool onDeviceTranslationEnabled;
   final List<AudioFolder> excludedFolders;
 
   bool excludes(AudioTrack track) =>
@@ -43,6 +45,7 @@ class AppSettings {
     bool? artwork,
     bool? excludeShortAudio,
     bool? includeChineseTranslation,
+    bool? onDeviceTranslationEnabled,
     List<AudioFolder>? excludedFolders,
   }) => AppSettings(
     theme: theme ?? this.theme,
@@ -52,6 +55,8 @@ class AppSettings {
     excludeShortAudio: excludeShortAudio ?? this.excludeShortAudio,
     includeChineseTranslation:
         includeChineseTranslation ?? this.includeChineseTranslation,
+    onDeviceTranslationEnabled:
+        onDeviceTranslationEnabled ?? this.onDeviceTranslationEnabled,
     excludedFolders: excludedFolders == null
         ? this.excludedFolders
         : List.unmodifiable(excludedFolders),
@@ -64,6 +69,7 @@ class AppSettings {
     'artwork': artwork,
     'excludeShortAudio': excludeShortAudio,
     'includeChineseTranslation': includeChineseTranslation,
+    'onDeviceTranslationEnabled': onDeviceTranslationEnabled,
     'excludedFolders': excludedFolders
         .map((folder) => folder.toJson())
         .toList(),
@@ -77,6 +83,8 @@ class AppSettings {
     excludeShortAudio: json['excludeShortAudio'] as bool? ?? false,
     includeChineseTranslation:
         json['includeChineseTranslation'] as bool? ?? true,
+    onDeviceTranslationEnabled:
+        json['onDeviceTranslationEnabled'] as bool? ?? false,
     excludedFolders: List.unmodifiable(
       (json['excludedFolders'] as List? ?? const []).map(
         (folder) =>

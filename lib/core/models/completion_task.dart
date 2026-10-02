@@ -26,6 +26,8 @@ class FieldSuggestion {
     this.originalLyrics,
     this.chineseTranslation,
     this.includeChineseTranslation = true,
+    this.machineTranslated = false,
+    this.translationNotice,
   });
 
   final AudioField field;
@@ -36,11 +38,14 @@ class FieldSuggestion {
   final String? originalLyrics;
   final String? chineseTranslation;
   final bool includeChineseTranslation;
+  final bool machineTranslated;
+  final String? translationNotice;
 
   LyricsContent? get lyricsContent => field == AudioField.lyrics
       ? LyricsContent(
           originalLyrics ?? value,
           chineseTranslation: chineseTranslation,
+          machineTranslated: machineTranslated,
         )
       : null;
 
@@ -56,7 +61,30 @@ class FieldSuggestion {
       originalLyrics: content.original,
       chineseTranslation: chineseTranslation,
       includeChineseTranslation: include,
+      machineTranslated: machineTranslated,
+      translationNotice: translationNotice,
     );
+  }
+
+  FieldSuggestion withTranslation({
+    String? chineseLyrics,
+    bool machineTranslated = false,
+    String? notice,
+  }) {
+    final content = lyricsContent;
+    if (content == null) return this;
+    return FieldSuggestion(
+      field: field,
+      value: content.original,
+      source: source,
+      sourceUrl: sourceUrl,
+      matchDescription: matchDescription,
+      originalLyrics: content.original,
+      chineseTranslation: chineseLyrics,
+      machineTranslated: machineTranslated,
+      translationNotice: notice,
+      includeChineseTranslation: includeChineseTranslation,
+    ).withChineseTranslation(includeChineseTranslation);
   }
 
   /// Only the two exact renderings of an existing candidate may be approved.
@@ -69,6 +97,8 @@ class FieldSuggestion {
           ? value == item.value
           : lyricsContent!.original == item.lyricsContent!.original &&
                 chineseTranslation == item.chineseTranslation &&
+                machineTranslated == item.machineTranslated &&
+                translationNotice == item.translationNotice &&
                 (value == item.value ||
                     (lyricsContent!.hasChineseTranslation &&
                         item.value ==
@@ -86,6 +116,8 @@ class FieldSuggestion {
     'originalLyrics': originalLyrics,
     'chineseTranslation': chineseTranslation,
     'includeChineseTranslation': includeChineseTranslation,
+    'machineTranslated': machineTranslated,
+    'translationNotice': translationNotice,
   };
 
   factory FieldSuggestion.fromJson(Map<String, dynamic> json) =>
@@ -99,6 +131,8 @@ class FieldSuggestion {
         chineseTranslation: json['chineseTranslation'] as String?,
         includeChineseTranslation:
             json['includeChineseTranslation'] as bool? ?? true,
+        machineTranslated: json['machineTranslated'] as bool? ?? false,
+        translationNotice: json['translationNotice'] as String?,
       );
 }
 

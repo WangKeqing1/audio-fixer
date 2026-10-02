@@ -202,9 +202,21 @@ Future<LibraryController> _verifyLibraryFilters(
           .first,
       maxScrolls: 50,
     );
-    await tester.tap(row);
+    // Native scrolling can still be settling when scrollUntilVisible returns.
+    // A row partly below the viewport must never tap the fixed Apply footer.
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('apply-folder-exclusions')));
+    final checkbox = find.descendant(of: row, matching: find.byType(Checkbox));
+    await Scrollable.ensureVisible(tester.element(checkbox), alignment: 0.5);
+    await tester.pumpAndSettle();
+    expect(checkbox.hitTestable(), findsOneWidget);
+    final wasChecked = tester.widget<Checkbox>(checkbox).value;
+    await tester.tap(checkbox.hitTestable());
+    await tester.pumpAndSettle();
+    expect(page, findsOneWidget);
+    expect(tester.widget<Checkbox>(checkbox).value, !wasChecked!);
+    final apply = find.byKey(const ValueKey('apply-folder-exclusions'));
+    expect(apply.hitTestable(), findsOneWidget);
+    await tester.tap(apply.hitTestable());
     await _waitFor(
       tester,
       () => !controller.isBusy && page.evaluate().isEmpty,
@@ -576,18 +588,27 @@ void main() {
         160,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.byKey(const ValueKey('select-all-task-tracks')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('select-all-task-tracks')).hitTestable(),
+      );
       await tester.pumpAndSettle();
       expect(controller.selectedTrackIds, {track.id, unapproved.id});
-      expect(find.text('已选 2 首 · 已确认 1 首'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.byKey(const ValueKey('bulk-save-original')),
-        160,
-        scrollable: find.byType(Scrollable).first,
+      expect(find.text('已选 2 首'), findsOneWidget);
+      expect(find.text('已确认 1 首 · 仅保存已确认资料'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('fixed-task-selection-toolbar')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('bulk-save-original')).hitTestable(),
+        findsOneWidget,
       );
       await checkpoint('bulk_review_ready');
       await phase('original_confirm');
-      await tester.tap(find.byKey(const ValueKey('bulk-save-original')));
+      await tester.tap(
+        find.byKey(const ValueKey('bulk-save-original')).hitTestable(),
+      );
       await _waitFor(
         tester,
         () =>

@@ -151,8 +151,12 @@ void main() {
         isEmpty,
       );
       await _tap(tester, find.byKey(const ValueKey('select-all-task-tracks')));
-      expect(find.text('已选 2 首 · 已确认 1 首'), findsOneWidget);
-      expect(find.textContaining('未确认、已保存或不可用的歌曲将跳过'), findsOneWidget);
+      expect(find.text('已选 2 首'), findsOneWidget);
+      expect(find.text('已确认 1 首 · 仅保存已确认资料'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('fixed-task-selection-toolbar')),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<FilledButton>(
@@ -202,4 +206,52 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+  testWidgets('task bulk toolbar stays fixed through a long reviewed list', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _controller();
+    final store = controller.store as MemoryStore;
+    store.snapshot = LibrarySnapshot(
+      tracks: [
+        for (var i = 0; i < 40; i++) fixtureTrack(id: '$i', title: '歌曲$i'),
+      ],
+      tasks: [
+        for (var i = 0; i < 40; i++)
+          CompletionTask(
+            trackId: '$i',
+            trackTitle: '歌曲$i',
+            createdAt: DateTime(2026),
+            status: TaskStatus.needsReview,
+            message: '需要确认',
+            suggestions: const [_album],
+          ),
+      ],
+    );
+    await tester.pumpWidget(AudioFixerApp(controller: controller));
+    await tester.pumpAndSettle();
+    await _tap(tester, find.text('补全任务'));
+    await _tap(tester, find.byKey(const ValueKey('select-all-task-tracks')));
+    final toolbar = find.byKey(const ValueKey('fixed-task-selection-toolbar'));
+    final before = tester.getRect(toolbar);
+    await tester.drag(
+      find.byKey(const PageStorageKey('tasks')),
+      const Offset(0, -1400),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getRect(toolbar), before);
+    expect(
+      find.byKey(const ValueKey('bulk-query-selected')).hitTestable(),
+      findsOneWidget,
+    );
+    expect(controller.selectedCount, 40);
+    await tester.tap(find.byKey(const ValueKey('end-task-selection')));
+    await tester.pumpAndSettle();
+    expect(controller.selectedCount, 0);
+    expect(toolbar, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }

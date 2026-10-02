@@ -485,7 +485,7 @@ void main() {
     await _openReview(tester);
     await tester.tap(find.text('导出副本（1 项）'));
     await tester.pumpAndSettle();
-    expect(find.text('保存结果'), findsOneWidget);
+    expect(find.text('处理结果'), findsOneWidget);
     expect(find.text(exporter.error!), findsWidgets);
     expect(_saveButton(tester).onPressed, isNotNull);
     expect(find.text('导出副本（1 项）').hitTestable(), findsOneWidget);

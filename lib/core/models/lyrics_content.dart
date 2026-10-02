@@ -1,10 +1,18 @@
 /// Original/provider-supplied translated lyrics remain separate until saving.
 /// No machine translation or upload of lyrics is performed here.
 class LyricsContent {
-  const LyricsContent(this.original, {this.chineseTranslation});
+  const LyricsContent(
+    this.original, {
+    this.chineseTranslation,
+    this.machineTranslated = false,
+  });
 
   final String original;
   final String? chineseTranslation;
+  final bool machineTranslated;
+
+  String get translationLabel =>
+      machineTranslated ? '中文机器翻译 · Google Translate' : '中文';
 
   static final _timestamp = RegExp(
     r'\[(\d{1,3}):([0-5]\d)(?:[.:](\d{1,3}))?\]',
@@ -58,7 +66,9 @@ class LyricsContent {
   String get status => hasIncompatibleOffsets
       ? '译文时间偏移不同，仅供预览；保存时保留原歌词'
       : hasChineseTranslation
-      ? '来源提供中文译文'
+      ? machineTranslated
+            ? 'Google Translate 本机机器翻译，需人工核对'
+            : '来源提供中文译文'
       : mostlyChinese
       ? '原歌词以中文为主'
       : '来源未提供可用中文译文，保留原歌词';
@@ -83,9 +93,16 @@ class LyricsContent {
           .where(
             (line) => !_timestamp.hasMatch(line) && line.trim().startsWith('['),
           );
-      return [...metadata, ...lines.map((line) => line.value)].join('\n');
+      return [
+        ...metadata,
+        ...lines.map(
+          (line) => line.order >= 100000
+              ? line.value.replaceFirst('【中文】', '【$translationLabel】')
+              : line.value,
+        ),
+      ].join('\n');
     }
-    return '【原歌词】\n$original\n\n【中文译文】\n$chineseTranslation';
+    return '【原歌词】\n$original\n\n【${machineTranslated ? translationLabel : '中文译文'}】\n$chineseTranslation';
   }
 
   static int _offset(String value) =>

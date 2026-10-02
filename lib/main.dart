@@ -7,6 +7,7 @@ import 'app/audio_fixer_app.dart';
 import 'core/services/audio_importer.dart';
 import 'core/services/completion_service.dart';
 import 'core/services/device_music_library.dart';
+import 'core/services/lyrics_translation_service.dart';
 import 'core/services/export/audio_copy_exporter.dart';
 import 'core/services/sources/online_sources.dart';
 import 'core/storage/library_store.dart';
@@ -30,6 +31,7 @@ Future<void> main() async {
         importer: LocalAudioImporter(getApplicationSupportDirectory),
         completion: CompletionService(
           sources: createOnlineSources(cacheDirectory: sourceCache),
+          translator: PlatformLyricsTranslator(cacheDirectory: sourceCache),
         ),
         deviceLibrary: AndroidMusicLibrary(getApplicationSupportDirectory),
         exporter: SafeAudioCopyExporter(getTemporaryDirectory),

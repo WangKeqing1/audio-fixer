@@ -14,6 +14,9 @@ class LibrarySelectionToolbar extends StatelessWidget {
     required this.allVisibleSelected,
     required this.onEnd,
     this.onOpenTasks,
+    this.toolbarKey = const ValueKey('fixed-library-selection-toolbar'),
+    this.selectAllKey = const ValueKey('select-visible-tracks'),
+    this.endKey = const ValueKey('toggle-library-selection'),
   });
 
   final LibraryController controller;
@@ -22,6 +25,9 @@ class LibrarySelectionToolbar extends StatelessWidget {
   final bool allVisibleSelected;
   final VoidCallback onEnd;
   final VoidCallback? onOpenTasks;
+  final Key toolbarKey;
+  final Key selectAllKey;
+  final Key endKey;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +42,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
         .length;
     final canWrite = controller.canOperate && approved > 0;
     return Material(
-      key: const ValueKey('fixed-library-selection-toolbar'),
+      key: toolbarKey,
       color: colors.surfaceContainer,
       elevation: 3,
       child: SafeArea(
@@ -58,7 +64,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
                     ),
                   ),
                   IconButton(
-                    key: const ValueKey('select-visible-tracks'),
+                    key: selectAllKey,
                     tooltip: allVisibleSelected ? '取消当前列表全选' : '全选当前列表',
                     onPressed: controller.canOperate && visibleIds.isNotEmpty
                         ? () {
@@ -83,7 +89,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
                     icon: const Icon(Icons.remove_done),
                   ),
                   IconButton(
-                    key: const ValueKey('toggle-library-selection'),
+                    key: endKey,
                     tooltip: '结束多选',
                     onPressed: controller.canOperate ? onEnd : null,
                     icon: const Icon(Icons.close),
@@ -143,12 +149,13 @@ class LibrarySelectionToolbar extends StatelessWidget {
                         enabled: canWrite,
                         child: const Text('批量导出副本'),
                       ),
-                      PopupMenuItem(
-                        key: const ValueKey('open-tasks'),
-                        value: 'review',
-                        enabled: onOpenTasks != null,
-                        child: const Text('前往任务确认资料'),
-                      ),
+                      if (onOpenTasks != null)
+                        PopupMenuItem(
+                          key: const ValueKey('open-tasks'),
+                          value: 'review',
+                          enabled: onOpenTasks != null,
+                          child: const Text('前往任务确认资料'),
+                        ),
                     ],
                   ),
                 ],

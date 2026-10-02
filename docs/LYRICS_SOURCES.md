@@ -32,11 +32,29 @@ If anonymous access is denied or the format changes, the source surfaces an erro
 
 ## Chinese translation
 
-“附加中文翻译” defaults on, can be turned off in Settings, and can be overridden per lyric candidate before approval/export/save. Only provider-supplied Chinese translation is currently supported. No whole lyric is sent to a machine-translation service, no paid translator is configured, and translation coverage is not guaranteed.
+“附加中文翻译” defaults on, can be turned off in Settings, and can be overridden per lyric candidate before approval/export/save. Provider-supplied Chinese translation is preferred. When no provider translation is available, users can enable Google Translate / ML Kit on-device machine translation. No whole lyric is sent to a cloud translation service, no paid translator is configured, and translation coverage/quality is not guaranteed.
 
 Original and translation are stored separately in candidate records and previewed separately with provider attribution. Timestamp-only, empty, placeholder, identical, or non-Chinese translation payloads are not called translated. Missing translation is visibly reported; the original remains available. Chinese-dominant originals are identified conservatively (kana/Hangul exclude that classification).
 
 When both languages have compatible LRC offsets, saving interleaves the provider's exact timestamps, labels Chinese lines `【中文】`, and never aligns by row number or manufactures time values. Untimed lyrics use separately labeled original/translation sections. Conflicting LRC offset tags disable translated saving with an explicit preview-only warning, preserving the original unchanged rather than silently shifting either timeline. Existing audio lyrics are never overwritten by this feature.
+
+## On-device machine translation fallback
+
+The global Chinese-translation preference defaults on. SDK activation is separately opt-in: first use explains Google's SDK data collection; each model download requires a separate user action listing the required languages and approximate size. English is built into ML Kit, so English→Chinese downloads the Chinese model only; other supported languages generally need the source and Chinese models, around 30 MB each. Downloads require Wi-Fi. An authorized OS-managed download can finish after leaving the screen or after a timeout because the SDK provides no cancellation API. Failure never turns into a cloud translation or repeated automatic download.
+
+- SDK: `com.google.mlkit:translate:17.0.3`; bundled `com.google.mlkit:language-id:17.0.6` (about 900 KB), Android API 23+. The app's existing minimum is API 24.
+- Official APIs: <https://developers.google.com/ml-kit/language/translation/android> and <https://developers.google.com/ml-kit/language/identification/android>
+- Supported lazy initialization: <https://developers.google.com/android/reference/com/google/mlkit/common/MlKit>. The default ML Kit provider is removed as documented and the public `MlKit.initialize` runs only on an opted-in SDK channel operation. Viewing help links does not initialize ML Kit.
+- Privacy: <https://developers.google.com/ml-kit/terms> and <https://developers.google.com/ml-kit/android-data-disclosure>. Input/output text is processed on-device. The SDK sends device/application information, installation identifiers, language configuration, performance/usage and feature-size metrics to Google. Enabling this SDK does not mean zero network traffic; the app describes that distinction before activation and in Settings.
+- Model storage/install behavior: <https://developers.google.com/ml-kit/tips/installation-paths>. Models live in app-specific storage and require initial connectivity; subsequent supported inference can run offline. Availability on a specific physical device/network is not guaranteed by a mock test.
+- Quality: <https://developers.google.com/ml-kit/language/translation>. Models target casual/simple translation. Non-English pairs can route through English; lyrics, metaphor and mixed-language material require human review.
+- Attribution: <https://developers.google.com/ml-kit/language/translation/translation-terms> and <https://docs.cloud.google.com/translate/attribution>. The unchanged official badge is bundled for offline display, alongside machine translation; provenance is in `assets/google_translate/README.md`. Actions are attributed to Google Translate, and Settings/candidate views provide the disclaimer and help links. No Google endorsement is implied.
+
+The SDK and models are governed by ML Kit/Google API terms, rather than the Apache license of code samples. Integration uses normal Gradle dependencies and implicit SDK terms; it does not create an account, API key, billing plan, or accept a separate explicit agreement dialog.
+
+Automatic fallback uses already-downloaded models only, after opt-in, and preserves provider translations in preference to machine output. Source lyrics, machine-translation provenance and output are stored separately. The translation service identifies the source language, rejects uncertain/unsupported input and enhanced word-timed LRC it cannot preserve, translates unique text rows locally, and retains exact original LRC stamps/offsets. Additional translated line breaks are reported as untimed continuation lines rather than assigned fabricated times. Machine output is clearly labeled in both preview and saved lyric text. Global/per-song opt-out remains available; existing approved payloads are not silently rewritten.
+
+Translation work is deduplicated and cached privately by exact input/engine signature, bounded to 256 results and 4 MiB. Missing-model/error states are not cached as successful translations. On model-download success the candidate is queried again into a new review step; nothing is automatically saved.
 
 ## Request budget and local cache
 
@@ -52,6 +70,8 @@ Unit tests use synthetic lyrics (no copyrighted songs are checked into fixtures)
 - `netease_lyrics_source_test.dart`: exact Chinese matching, wrong artist/version/duration, missing identity, ambiguity, placeholders, denied anonymous access, default bilingual rendering and opt-out
 - `lyrics_content_test.dart`: distinct language data, timestamp preservation, offset mismatch, availability and approved-rendering integrity
 - `lyrics_translation_ui_test.dart`: preview opt-out exports exact original-only content; old settings migrate default-on
+- `lyrics_translation_service_test.dart`: native-channel contract, no automatic downloads, missing/unsupported states, LRC integrity, in-flight deduplication and restart cache bounds
+- `on_device_translation_flow_test.dart`: no SDK calls before opt-in or after opt-out, provider priority, actual download consent and review-only machine candidates
 - `track_search_test.dart`: Chinese filename separators and existing identity protections
 
 Network verification is intentionally small; it is not a catalog-coverage benchmark. Endpoint uptime, every song's translation, physical-device networks, and provider rights are not guaranteed by these tests.

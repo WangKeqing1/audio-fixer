@@ -1,0 +1,157 @@
+name: Audio Fixer native offline translation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/translation-runtime.yml'
+      - 'android/app/build.gradle.kts'
+      - 'android/app/src/main/AndroidManifest.xml'
+      - 'android/app/src/main/kotlin/**/LyricsTranslationBridge.kt'
+      - 'android/app/src/main/kotlin/**/MainActivity.kt'
+      - 'android/app/src/translationProbeOffline/**'
+      - 'lib/core/services/lyrics_translation_service.dart'
+      - 'lib/core/services/completion_service.dart'
+      - 'lib/core/models/lyrics_content.dart'
+      - 'lib/core/models/completion_task.dart'
+      - 'lib/features/settings/on_device_translation_settings.dart'
+      - 'lib/shared/widgets/translation_privacy.dart'
+      - 'lib/features/tasks/candidate_review_page.dart'
+      - 'lib/core/models/app_settings.dart'
+      - 'tool/native_translation_probe.dart'
+      - 'tool/android_translation_runtime*.py'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-fixer-translation-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic-offline-translation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+
+    steps:
+      - name: Grant this disposable hosted runner user KVM access
+        run: |
+          # User-approved, runner-local access only. Never widen access for all
+          # users, create a persistent udev rule, or alter a self-hosted machine.
+          [[ "${RUNNER_ENVIRONMENT:-}" == 'github-hosted' ]]
+          test -c /dev/kvm
+          stat -c '%u %g %a' /dev/kvm > "$RUNNER_TEMP/audio-fixer-kvm-original"
+          sudo chown "$(id -u)" /dev/kvm
+          sudo chmod u+rw /dev/kvm
+
+      - name: Verify KVM acceleration before preparing the app
+        run: |
+          python3 - <<'PY'
+          import fcntl
+          import os
+          import sys
+          try:
+              fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
+              try:
+                  version = fcntl.ioctl(fd, 0xAE00)  # KVM_GET_API_VERSION
+                  assert version == 12, f'Unexpected KVM API version {version}'
+              finally:
+                  os.close(fd)
+          except (OSError, AssertionError) as error:
+              print(f'::error::Hosted KVM is inaccessible after runner-local access setup: {error}. Native runtime did not run.')
+              sys.exit(1)
+          print('Runner-local /dev/kvm access verified; KVM API version 12')
+          PY
+
+      - name: Check out the exact requested head commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Prepare isolated Gradle and evidence directories
+        run: |
+          mkdir -p build/android_runtime "$RUNNER_TEMP/audio-fixer-runtime-gradle"
+          printf 'GRADLE_USER_HOME=%s\n' "$RUNNER_TEMP/audio-fixer-runtime-gradle" >> "$GITHUB_ENV"
+          printf '%s\n' 'android.builder.sdkDownload=false' 'org.gradle.daemon=false' \
+            'org.gradle.workers.max=2' 'org.gradle.jvmargs=-Xmx3G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=256m' \
+            > "$RUNNER_TEMP/audio-fixer-runtime-gradle/gradle.properties"
+          printf 'SOURCE_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up the full Java 21 JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          java-package: jdk
+          architecture: x64
+
+      - name: Set up Flutter 3.47.2
+        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+          architecture: x64
+          cache: false
+
+      - name: Restore locked dependencies and verify probe contracts
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed tool/native_translation_probe.dart
+          flutter analyze --no-pub tool/native_translation_probe.dart
+          python3 -m py_compile tool/android_translation_runtime*.py
+          python3 tool/android_translation_runtime_test.py
+          bash -n tool/android_runtime_setup.sh tool/android_runtime_boot.sh
+
+      - name: Prepare approved SDK packages and AOSP emulator image
+        timeout-minutes: 12
+        run: bash tool/android_runtime_setup.sh
+
+      - name: Boot one accelerated disposable AOSP device
+        timeout-minutes: 6
+        run: bash tool/android_runtime_boot.sh
+
+      - name: Download official models then prove no-INTERNET native translation
+        timeout-minutes: 60
+        run: |
+          # Explicit test-only model-download permission for this user-requested
+          # acceptance stage. AOT probe APKs never become the deliverable app.
+          # The second APK removes only its own INTERNET manifest permission;
+          # no OS Wi-Fi/mobile/airplane/firewall settings are modified.
+          python3 tool/android_translation_runtime.py --allow-model-download
+
+      - name: Retain only synthetic translation check JSON for one day
+        if: ${{ !cancelled() && hashFiles('build/android_translation_runtime/evidence/manifest.json') != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: android-translation-synthetic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/android_translation_runtime/evidence/
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Stop the disposable emulator
+        if: ${{ always() }}
+        run: |
+          if command -v adb >/dev/null && [[ -f build/android_runtime/emulator.pid ]]; then
+            timeout 15s adb -s emulator-5554 emu kill || true
+          fi
+
+      - name: Restore original KVM ownership and permissions
+        if: ${{ always() }}
+        run: |
+          original="$RUNNER_TEMP/audio-fixer-kvm-original"
+          if [[ "${RUNNER_ENVIRONMENT:-}" == 'github-hosted' && -f "$original" ]] && [[ -c /dev/kvm ]]; then
+            read -r owner group mode < "$original"
+            sudo chown "$owner:$group" /dev/kvm
+            sudo chmod "$mode" /dev/kvm
+          fi

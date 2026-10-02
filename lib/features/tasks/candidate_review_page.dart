@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/translation_privacy.dart';
 import '../library/library_controller.dart';
 
 class CandidateReviewPage extends StatefulWidget {
@@ -23,6 +24,8 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   final Map<FieldSuggestion, bool> _translationChoices = {};
   final ScrollController _scrollController = ScrollController();
   bool _exporting = false;
+  bool _translationWorking = false;
+  bool _translationProcessing = false;
   String? _exportNotice;
 
   @override
@@ -105,6 +108,103 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     }
   }
 
+  Future<void> _prepareTranslation(FieldSuggestion candidate) async {
+    final controller = widget.controller;
+    final translator = controller.completion.translator;
+    final track = controller.trackById(widget.task.trackId);
+    final route = ModalRoute.of(context);
+    if (_translationWorking ||
+        _exporting ||
+        !controller.canOperate ||
+        translator == null ||
+        track == null ||
+        !controller.isTaskCurrent(widget.task)) {
+      return;
+    }
+    setState(() {
+      _translationWorking = true;
+      _exportNotice = null;
+    });
+    try {
+      if (!controller.settings.onDeviceTranslationEnabled) {
+        if (!await showTranslationPrivacy(context) || !mounted) return;
+        await controller.updateSettings(
+          controller.settings.copyWith(onDeviceTranslationEnabled: true),
+        );
+        if (!controller.settings.onDeviceTranslationEnabled) {
+          throw StateError('本机翻译设置未保存，请重试。');
+        }
+      }
+      if (!mounted || route?.isCurrent != true) return;
+      setState(() => _translationProcessing = true);
+      final status = await translator.inspect(
+        candidate.lyricsContent!.original,
+      );
+      if (!mounted || route?.isCurrent != true) return;
+      setState(() => _translationProcessing = false);
+      if (!status.canTranslate) {
+        setState(() => _exportNotice = status.message ?? '无法确认可翻译的原文语言，保留原歌词。');
+        return;
+      }
+      if (!status.ready && status.missingModels.isEmpty) {
+        setState(() => _exportNotice = status.message ?? '无法确认模型状态，请稍后重试。');
+        return;
+      }
+      if (!status.ready) {
+        final count = status.missingModels.length;
+        final approved =
+            await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('下载本机翻译模型？'),
+                content: Text(
+                  '当前语言：${status.sourceLanguage} → 中文\n'
+                  '需要模型：${status.missingModels.join('、')}\n'
+                  '约 ${count * 30} MB（约 30 MB/语言，以实际下载为准）。仅在 Wi-Fi 下下载。模型保留在本机，后续翻译可离线进行。',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('下载并使用 Google Translate'),
+                  ),
+                ],
+              ),
+            ) ??
+            false;
+        if (!approved || !mounted || route?.isCurrent != true) return;
+        setState(() => _translationProcessing = true);
+        await translator.downloadModels(status.sourceLanguage);
+      }
+      if (!mounted ||
+          route?.isCurrent != true ||
+          !controller.canOperate ||
+          !controller.isTaskCurrent(widget.task)) {
+        return;
+      }
+      // Re-query uses the source cache and produces a new reviewable candidate;
+      // existing approvals are never silently changed into translated saves.
+      await _queryAgain(track);
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => _exportNotice =
+              '本机翻译暂不可用，请检查 Wi-Fi 和存储空间后重试。已确认的下载可能仍在继续；原歌词未改变。',
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _translationWorking = false;
+          _translationProcessing = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
@@ -145,7 +245,10 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       final canExport =
           canReview && track != null && controller.canExportTrack(track);
       final canAct =
-          controller.canOperate && !_exporting && selected.isNotEmpty;
+          controller.canOperate &&
+          !_exporting &&
+          !_translationWorking &&
+          selected.isNotEmpty;
       return PopScope(
         canPop: !_exporting,
         child: Scaffold(
@@ -169,12 +272,18 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                       style: theme.textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 20),
+                    if (_translationProcessing) ...[
+                      const LinearProgressIndicator(),
+                      const SizedBox(height: 8),
+                      const Text('正在识别语言、等待模型下载或进行本机翻译。可以返回；已确认的模型下载可能继续。'),
+                      const SizedBox(height: 16),
+                    ],
                     if (_exportNotice != null) ...[
                       Semantics(
                         liveRegion: true,
                         child: NoticePanel(
                           icon: Icons.info_outline,
-                          title: '保存结果',
+                          title: '处理结果',
                           message: _exportNotice!,
                         ),
                       ),
@@ -325,6 +434,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                               onChanged:
                                   controller.canOperate &&
                                       !_exporting &&
+                                      !_translationWorking &&
                                       canReview &&
                                       hasText(candidate.value) &&
                                       !hasText(track?.valueOf(candidate.field))
@@ -365,6 +475,21 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                   else if (candidate.field == AudioField.lyrics)
                                     _LyricsPreview(
                                       candidate: candidate,
+                                      onPrepareTranslation:
+                                          controller.canOperate &&
+                                              !_exporting &&
+                                              !_translationWorking &&
+                                              canReview &&
+                                              controller
+                                                      .completion
+                                                      .translator !=
+                                                  null &&
+                                              !(candidate
+                                                      .lyricsContent
+                                                      ?.hasChineseTranslation ??
+                                                  true)
+                                          ? () => _prepareTranslation(candidate)
+                                          : null,
                                       includeTranslation:
                                           _translationChoices[candidate] ??
                                           controller
@@ -373,6 +498,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                       onChanged:
                                           controller.canOperate &&
                                               !_exporting &&
+                                              !_translationWorking &&
                                               canReview
                                           ? (value) => setState(() {
                                               _translationChoices[candidate] =
@@ -519,7 +645,9 @@ class _LyricsPreview extends StatelessWidget {
     required this.candidate,
     required this.includeTranslation,
     required this.onChanged,
+    this.onPrepareTranslation,
   });
+  final VoidCallback? onPrepareTranslation;
   final FieldSuggestion candidate;
   final bool includeTranslation;
   final ValueChanged<bool>? onChanged;
@@ -551,7 +679,9 @@ class _LyricsPreview extends StatelessWidget {
               content.hasIncompatibleOffsets
                   ? content.status
                   : includeTranslation
-                  ? '保存原文和来源提供的译文'
+                  ? candidate.machineTranslated
+                        ? '保存原文与本机生成的机器译文'
+                        : '保存原文和来源提供的译文'
                   : '不加翻译，仅保存原歌词',
             ),
             value: includeTranslation && content.canIncludeTranslation,
@@ -559,14 +689,35 @@ class _LyricsPreview extends StatelessWidget {
           ),
           if (includeTranslation) ...[
             Text(
-              '中文译文 · ${candidate.source}',
+              candidate.machineTranslated
+                  ? '中文机器翻译 · Google Translate（本机）'
+                  : '中文译文 · ${candidate.source}',
               style: Theme.of(context).textTheme.labelLarge,
             ),
             const SizedBox(height: 8),
             preview(content.chineseTranslation!),
+            if (candidate.machineTranslated) ...[
+              const SizedBox(height: 8),
+              const GoogleTranslationAttribution(),
+              const GoogleTranslationDisclaimer(),
+            ],
           ],
-        ] else
+        ] else ...[
           Text(content.status, style: Theme.of(context).textTheme.bodySmall),
+          if (onPrepareTranslation != null)
+            OutlinedButton.icon(
+              onPressed: onPrepareTranslation,
+              icon: const Icon(Icons.translate),
+              label: const Text('使用 Google Translate 本机翻译'),
+            ),
+        ],
+        if (candidate.translationNotice != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            candidate.translationNotice!,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ],
     );
   }

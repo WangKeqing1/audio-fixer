@@ -11,6 +11,31 @@ val audioFixerQa = providers.gradleProperty("audioFixerQa")
     .map { it.equals("true", ignoreCase = true) }
     .getOrElse(false)
 
+// An opt-in, synthetic-only runtime probe uses a second APK without INTERNET
+// to prove already-downloaded models translate without network access.
+val audioFixerTranslationProbe = providers.gradleProperty("audioFixerTranslationProbe")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+val audioFixerTranslationOffline = providers.gradleProperty("audioFixerTranslationOffline")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+require(!audioFixerTranslationProbe || audioFixerQa) {
+    "The translation probe requires the isolated audioFixerQa application."
+}
+require(!audioFixerTranslationOffline || (audioFixerTranslationProbe && audioFixerQa)) {
+    "The offline translation manifest is allowed only in an isolated QA translation probe."
+}
+if (audioFixerTranslationProbe) {
+    val target = providers.gradleProperty("target").orNull
+    val targetFile = target?.let {
+        val path = java.io.File(it)
+        if (path.isAbsolute) path else rootProject.file("../$it")
+    }
+    require(targetFile?.canonicalFile == rootProject.file("../tool/native_translation_probe.dart").canonicalFile) {
+        "The translation probe flags require --target tool/native_translation_probe.dart."
+    }
+}
+
 android {
     namespace = "com.audiofixer.audio_fixer"
     compileSdk = flutter.compileSdkVersion
@@ -51,6 +76,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    sourceSets.configureEach {
+        if (audioFixerTranslationOffline && name in setOf("debug", "profile", "release")) {
+            // A higher-priority build-type overlay removes INTERNET from the
+            // main manifest and every transitive library manifest.
+            manifest.srcFile("src/translationProbeOffline/AndroidManifest.xml")
+        }
+    }
 }
 
 kotlin {
@@ -61,4 +94,11 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Models are downloaded explicitly over Wi-Fi; lyric inference stays on device.
+    implementation("com.google.mlkit:translate:17.0.3")
+    // Bundle identification so identifying a language never downloads its model.
+    implementation("com.google.mlkit:language-id:17.0.6")
 }

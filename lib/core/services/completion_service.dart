@@ -2,13 +2,15 @@ import '../models/app_settings.dart';
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
 import 'metadata_source.dart';
+import 'lyrics_translation_service.dart';
 import 'sources/json_api_client.dart';
 
 class CompletionService {
-  CompletionService({List<MetadataSource> sources = const []})
+  CompletionService({List<MetadataSource> sources = const [], this.translator})
     : sources = List.unmodifiable(sources);
 
   final List<MetadataSource> sources;
+  final LyricsTranslator? translator;
 
   Future<CompletionTask> preview(AudioTrack track, AppSettings settings) async {
     CompletionTask result(
@@ -81,6 +83,38 @@ class CompletionService {
               ? '${source.name}：${error.message}'
               : '${source.name}：查询失败或超时',
         );
+      }
+    }
+    // Existing provider translations win. Automatic local fallback uses only
+    // already-downloaded models after first-use disclosure/enablement.
+    if (settings.includeChineseTranslation &&
+        settings.onDeviceTranslationEnabled &&
+        translator != null &&
+        !suggestions.any(
+          (candidate) =>
+              candidate.lyricsContent?.hasChineseTranslation ?? false,
+        )) {
+      final index = suggestions.indexWhere(
+        (candidate) => candidate.field == AudioField.lyrics,
+      );
+      if (index >= 0) {
+        final candidate = suggestions[index];
+        try {
+          final translated = await translator!
+              .translateIfReady(candidate.lyricsContent!.original)
+              .timeout(const Duration(seconds: 45));
+          suggestions[index] = candidate
+              .withTranslation(
+                chineseLyrics: translated.chineseLyrics,
+                machineTranslated: translated.available,
+                notice: translated.message,
+              )
+              .withChineseTranslation(settings.includeChineseTranslation);
+        } catch (_) {
+          suggestions[index] = candidate.withTranslation(
+            notice: '本机翻译暂未完成，原歌词可正常使用。',
+          );
+        }
       }
     }
     final warnings = <String>[
