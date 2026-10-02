@@ -10,10 +10,14 @@ test -x "$sdkmanager"
 test -s "$original_sdk/licenses/android-sdk-license"
 mkdir -p "$sdk/licenses"
 cp "$original_sdk/licenses/android-sdk-license" "$sdk/licenses/"
-for directory in cmdline-tools platform-tools; do
-  test -d "$original_sdk/$directory"
-  ln -s "$original_sdk/$directory" "$sdk/$directory"
-done
+# avdmanager derives its SDK root from the canonical command-line tools
+# directory, not ANDROID_HOME. A symlink would resolve back to the hosted SDK
+# and hide the system image installed in this isolated SDK view.
+mkdir -p "$sdk/cmdline-tools"
+cp -aL "$original_sdk/cmdline-tools/latest" "$sdk/cmdline-tools/latest"
+[[ "$(cd "$sdk/cmdline-tools/latest" && pwd -P)" == "$sdk/cmdline-tools/latest" ]]
+test -d "$original_sdk/platform-tools"
+ln -s "$original_sdk/platform-tools" "$sdk/platform-tools"
 
 # Only the approved main Android license is visible. Never run --licenses,
 # accept an extra license, or let Gradle install packages automatically.
