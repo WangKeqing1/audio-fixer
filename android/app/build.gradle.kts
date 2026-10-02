@@ -39,9 +39,14 @@ if (audioFixerTranslationProbe) {
     }
 }
 
-// Use AGP's public interface instead of the deprecated BaseAppModuleExtension
-// Kotlin accessor. The public interface also works with Flutter's newDsl opt-out.
-extensions.configure<ApplicationExtension> {
+// Keep a real android { namespace = ... } block for Flutter's source parser,
+// while resolving configuration through AGP's public interface rather than the
+// deprecated generated BaseAppModuleExtension accessor.
+fun android(block: ApplicationExtension.() -> Unit) {
+    extensions.configure<ApplicationExtension> { block(this) }
+}
+
+android {
     namespace = "com.audiofixer.audio_fixer"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion

@@ -7,7 +7,7 @@ import unittest
 
 from android_translation_runtime import (
     INTERNET, MARKER, create_evidence, installed_permissions,
-    result_from_log, signature_digest,
+    result_from_log, signature_digest, safe_native_failure,
 )
 
 
@@ -56,6 +56,26 @@ class TranslationProbeContractTest(unittest.TestCase):
             signature_digest('Number of signers: 2\nSigner #1 certificate SHA-256 digest: ' + digest)
         with self.assertRaises(RuntimeError):
             signature_digest('Number of signers: 1\nMissing digest')
+
+    def test_native_diagnostics_never_copy_messages_stack_or_input(self):
+        value = safe_native_failure({
+            'error_code': 'IDENTIFICATION_FAILED',
+            'native_details': {
+                'stage': 'create_language_identifier',
+                'exceptionTypes': ['java.lang.NullPointerException', 'a' * 161, 'bad type', 'ignored.Fourth'],
+                'mlKitErrorCode': 13,
+                'message': 'Synthetic forbidden message',
+                'stack': 'Synthetic forbidden stack',
+                'lyrics': 'Synthetic forbidden input',
+            },
+        })
+        self.assertEqual(value, {'error_code': 'IDENTIFICATION_FAILED', 'native_details': {
+            'stage': 'create_language_identifier',
+            'exceptionTypes': ['java.lang.NullPointerException'], 'mlKitErrorCode': 13,
+        }})
+        self.assertEqual(safe_native_failure({'error_code': 'bad code', 'native_details': {
+            'stage': 'untrusted dynamic text', 'mlKitErrorCode': True,
+        }}), {'error_code': 'PLATFORM_ERROR', 'native_details': {}})
 
     def test_evidence_excludes_apks_models_and_raw_logs(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -50,6 +50,28 @@ def result_from_log(text: str, phase: str) -> dict | None:
     return values[0] if values else None
 
 
+def safe_native_failure(result: dict) -> dict:
+    """Keep only fixed stages, bounded type names and numeric SDK codes."""
+    allowed_stages = {"validate_arguments", "initialize_sdk", "create_language_identifier",
+                      "identify_language", "read_model_status", "download_models",
+                      "create_translator", "translate_line"}
+    code = result.get("error_code")
+    cleaned = {"error_code": code if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", code) else "PLATFORM_ERROR"}
+    raw = result.get("native_details")
+    details = {}
+    if isinstance(raw, dict):
+        if isinstance(raw.get("stage"), str) and raw["stage"] in allowed_stages:
+            details["stage"] = raw["stage"]
+        types = raw.get("exceptionTypes")
+        if isinstance(types, list):
+            details["exceptionTypes"] = [value for value in types[:3]
+                if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.$]{1,160}", value)]
+        if type(raw.get("mlKitErrorCode")) is int:
+            details["mlKitErrorCode"] = raw["mlKitErrorCode"]
+    cleaned["native_details"] = details
+    return cleaned
+
+
 def installed_permissions(dump: str) -> set[str]:
     """Read the package's requested permission block, never a substring guess."""
     lines = dump.splitlines()
@@ -180,13 +202,19 @@ class TranslationRuntime:
             logs = self.adb("logcat", "-d", "--pid=" + pid, "-v", "raw", "-s", "flutter:I")
             result = result_from_log(logs, phase)
             if result is not None:
+                if "error_code" in result or "native_details" in result:
+                    result.update(safe_native_failure(result))
                 result["apk"] = metadata
                 result["installed_internet_requested"] = INTERNET in permissions
                 result["installed_internet_granted"] = bool(re.search(
                     r"android\.permission\.INTERNET:\s*granted=true", dump))
                 (self.output / f"{phase}.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
                 if result.get("passed") is not True:
-                    raise RuntimeError(f"Synthetic {phase} probe failed: {result.get('error', 'unknown failure')}")
+                    if "error_code" in result:
+                        diagnostic = json.dumps(safe_native_failure(result), ensure_ascii=True)
+                    else:
+                        diagnostic = str(result.get("error", "unknown failure"))[:400]
+                    raise RuntimeError(f"Synthetic {phase} probe failed: {diagnostic}")
                 print(f"Synthetic {phase} probe passed {len(result.get('checks', []))} checks", flush=True)
                 return result
             try:

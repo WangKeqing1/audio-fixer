@@ -109,15 +109,17 @@ class LyricsTranslationBridge(
             return
         }
         claimInference(reply)
-        ensureMlKitInitialized()
+        ensureMlKitInitialized(reply)
+        reply.stage = "create_language_identifier"
         val identifier = LanguageIdentification.getClient()
         reply.client = identifier
         // The bundled model uses the SDK's default confidence threshold (0.5).
         // This identifies the entire sample, not each language in mixed text.
+        reply.stage = "identify_language"
         identifier.identifyLanguage(text).addOnCompleteListener(mainExecutor) { task ->
             reply.guard {
                 if (task.isSuccessful) reply.success(task.result ?: "und")
-                else reply.error("IDENTIFICATION_FAILED", "Could not identify the lyric language.")
+                else reply.sdkError("IDENTIFICATION_FAILED", "Could not identify the lyric language.", task.exception)
             }
         }
     }
@@ -135,11 +137,12 @@ class LyricsTranslationBridge(
         reply.success(null)
     }
 
-    private fun ensureMlKitInitialized() {
+    private fun ensureMlKitInitialized(reply: PendingReply) {
         if (mlKitInitialized) return
         // The default provider is removed using Google's documented manifest
         // configuration. Only an opted-in SDK operation reaches this call.
         // https://developers.google.com/android/reference/com/google/mlkit/common/MlKit
+        reply.stage = "initialize_sdk"
         MlKit.initialize(activity.applicationContext)
         mlKitInitialized = true
     }
@@ -182,13 +185,14 @@ class LyricsTranslationBridge(
         }
 
     private fun readStatus(source: String, reply: PendingReply, onReady: (Map<String, Any>) -> Unit) {
-        ensureMlKitInitialized()
+        ensureMlKitInitialized(reply)
+        reply.stage = "read_model_status"
         RemoteModelManager.getInstance()
             .getDownloadedModels(TranslateRemoteModel::class.java)
             .addOnCompleteListener(mainExecutor) { task ->
                 reply.guard {
                     if (!task.isSuccessful) {
-                        reply.error("MODEL_STATUS_FAILED", "Could not inspect translation models.")
+                        reply.sdkError("MODEL_STATUS_FAILED", "Could not inspect translation models.", task.exception)
                         return@guard
                     }
                     val downloaded = task.result.map { it.language }.toSet()
@@ -218,13 +222,14 @@ class LyricsTranslationBridge(
                 reply.error("BUSY", "Other language models are still downloading.")
                 return@readStatus
             }
+            reply.stage = "download_models"
             val tasks = missing.map { language ->
                 downloads[language] ?: startDownload(language)
             }
             Tasks.whenAll(tasks).addOnCompleteListener(mainExecutor) { task ->
                 reply.guard {
                     if (!task.isSuccessful) {
-                        reply.error("DOWNLOAD_FAILED", "Model download failed. Check Wi-Fi and available storage.")
+                        reply.sdkError("DOWNLOAD_FAILED", "Model download failed. Check Wi-Fi and available storage.", task.exception)
                         return@guard
                     }
                     // Verify actual persisted state rather than assuming a
@@ -260,6 +265,7 @@ class LyricsTranslationBridge(
                 reply.error("MODELS_MISSING", "Download the required language models first.", status)
                 return@readStatus
             }
+            reply.stage = "create_translator"
             val translator = Translation.getClient(
                 TranslatorOptions.Builder()
                     .setSourceLanguage(source)
@@ -297,6 +303,7 @@ class LyricsTranslationBridge(
         val current = next
         val line = unique[current]
         // Strictly one local inference at a time. Never call downloadModelIfNeeded here.
+        reply.stage = "translate_line"
         translator.translate(line).addOnCompleteListener(mainExecutor) { task ->
             reply.guard {
                 if (!task.isSuccessful) {
@@ -305,7 +312,7 @@ class LyricsTranslationBridge(
                     } else {
                         "TRANSLATION_FAILED"
                     }
-                    reply.error(code, "Could not translate these lyrics on this device.")
+                    reply.sdkError(code, "Could not translate these lyrics on this device.", task.exception)
                     return@guard
                 }
                 val value = task.result
@@ -334,6 +341,7 @@ class LyricsTranslationBridge(
     ) {
         private var completed = false
         var client: Closeable? = null
+        var stage = "validate_arguments"
         val active: Boolean get() = !completed && !disposed
         private val timeoutAction = Runnable {
             error(
@@ -356,10 +364,10 @@ class LyricsTranslationBridge(
                 action()
             } catch (failure: BridgeException) {
                 error(failure.code, failure.message)
-            } catch (_: Exception) {
+            } catch (failure: Exception) {
                 // SDK exception messages can include input. Do not return or
                 // log them, even on a failure path.
-                error(failureCode, "The on-device language operation failed.")
+                sdkError(failureCode, "The on-device language operation failed.", failure)
             }
         }
 
@@ -367,6 +375,25 @@ class LyricsTranslationBridge(
 
         fun error(code: String, message: String, details: Any? = null) =
             finish { delegate.error(code, message, details) }
+
+        fun sdkError(code: String, message: String, failure: Exception?) {
+            // Diagnostics deliberately contain only fixed stage identifiers,
+            // bounded Java type names and numeric SDK codes. Never exception
+            // messages, stack traces, model paths, or caller/translated text.
+            val causes = generateSequence<Throwable>(failure) { it.cause }.take(3).toList()
+            val details = mutableMapOf<String, Any>(
+                "stage" to stage,
+                "exceptionTypes" to causes.map {
+                    it.javaClass.name.take(160).filter { character ->
+                        character.isLetterOrDigit() || character in "._$"
+                    }
+                },
+            )
+            causes.filterIsInstance<MlKitException>().firstOrNull()?.let {
+                details["mlKitErrorCode"] = it.errorCode
+            }
+            error(code, message, details)
+        }
 
         private fun finish(send: () -> Unit) {
             if (completed) return

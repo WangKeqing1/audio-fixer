@@ -293,6 +293,34 @@ Future<Map<String, Object?>> _probe() async {
   };
 }
 
+Map<String, Object> _nativeFailureDetails(Object? details) {
+  if (details is! Map) return const {};
+  const stages = {
+    'validate_arguments',
+    'initialize_sdk',
+    'create_language_identifier',
+    'identify_language',
+    'read_model_status',
+    'download_models',
+    'create_translator',
+    'translate_line',
+  };
+  final value = <String, Object>{};
+  final stage = details['stage'];
+  if (stage is String && stages.contains(stage)) value['stage'] = stage;
+  final types = details['exceptionTypes'];
+  if (types is List) {
+    value['exceptionTypes'] = types
+        .take(3)
+        .whereType<String>()
+        .where((type) => RegExp(r'^[A-Za-z0-9_.$]{1,160}$').hasMatch(type))
+        .toList();
+  }
+  final code = details['mlKitErrorCode'];
+  if (code is int) value['mlKitErrorCode'] = code;
+  return value;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(
@@ -318,10 +346,18 @@ Future<void> main() async {
       'passed': false,
       'phase': _phase,
       'synthetic_only': true,
-      'error': error.toString().substring(
-        0,
-        error.toString().length.clamp(0, 400),
-      ),
+      'error': error is PlatformException
+          ? 'Native operation failed; see bounded code/type diagnostics'
+          : error.toString().substring(
+              0,
+              error.toString().length.clamp(0, 400),
+            ),
+      if (error is PlatformException) ...{
+        'error_code': RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(error.code)
+            ? error.code
+            : 'PLATFORM_ERROR',
+        'native_details': _nativeFailureDetails(error.details),
+      },
     };
     _progress.value = '$_phase failed; see bounded synthetic check result';
   }
