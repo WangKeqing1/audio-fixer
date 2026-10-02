@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import struct
 
-from android_runtime_ci import CHECKPOINTS, PHASES, SMOKE_SCREENS
+from android_runtime_ci import CHECKPOINTS, PHASES, RECOVERY_PHASES, SMOKE_SCREENS
 
 
 def main() -> None:
@@ -25,7 +25,7 @@ def main() -> None:
     assert json.loads(provenance.read_text())['synthetic_only'] is True
     evidence = root / 'evidence'
     evidence.mkdir(exist_ok=False)
-    allowlist = [f'screenshots/{name}.png' for name in PHASES + CHECKPOINTS + SMOKE_SCREENS]
+    allowlist = [f'screenshots/{name}.png' for name in PHASES + CHECKPOINTS + RECOVERY_PHASES + SMOKE_SCREENS]
     allowlist += ['summary.json', 'native-test-result.json', 'native-ui-actions.json',
                   'source-baseline.json', 'independent-audio-check.json',
                   'independent-original-check.json', 'native-recovery-result.json',

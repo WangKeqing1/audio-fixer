@@ -101,17 +101,24 @@ Both the optional exported file and the updated original undergo independent
 FFmpeg decoded-sample and encoded-packet checks and existing tag/cover checks.
 
 A second native integration test launches a fresh Activity after the host seeds
-an interrupted production-format journal, valid backup and truncated app-private
-synthetic audio. The real bridge must restore byte-exact original content, clear
-the backup, retain its recovery notice until acknowledgement and decode cleanly.
-The same real native method also rejects a deliberately stale source SHA-256
-before writing, without leaving an unresolved backup.
+an interrupted production-format journal, valid original backup and a distinct
+current synthetic file. Startup inspection and reauthorization must leave the
+third-hash current version untouched. Only explicit restoration may restore the
+original; the current version must first be retained, and safe completion must
+not discard an unexported distinct version. Private content-addressed legacy
+copies remain readable for recovery, but new original-save requests are rejected.
+The main MediaStore test separately rejects a deliberately stale source SHA-256
+before writing, while retaining unchanged source bytes and a clear journal.
+
 This is deterministic persisted-state recovery coverage, not a timed crash or
-MediaStore grant-loss test. No production fault-injection hook is added.
+MediaStore grant-loss test. No production fault-injection hook is added. Check
+the actual run result before treating any individual recovery assertion as passed.
 
 The native harness resets its debug plugin registrant using `flutter pub get
 --offline --enforce-lockfile`; dependencies must already have been restored by the
-setup step. The harness never downloads packages or queries metadata providers.
+setup step. Both native test commands use `--no-uninstall`, so Flutter teardown
+cannot delete the app-private evidence before host checks and the next test.
+The harness never downloads packages or queries metadata providers.
 Run `python3 tool/android_runtime_driver_test.py` for offline tests of the dialog
 recognition/coordinate guard logic. Those tests are not Android runtime evidence.
 

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
-from android_runtime_ci import AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES
+from android_runtime_ci import AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES, RECOVERY_PHASES, RECOVERY_CHECKPOINTS
 
 
 def node(resource='', text='', kind='android.widget.TextView', **attrs):
@@ -25,6 +25,28 @@ class DialogDriverTest(unittest.TestCase):
                              'android.widget.EditText')
         self.save = node('android:id/button1', 'SAVE', 'android.widget.Button')
 
+    def test_all_native_commands_keep_disposable_qa_evidence_after_teardown(self):
+        for test_file in ('integration_test/native_flow_test.dart',
+                          'integration_test/native_recovery_test.dart'):
+            command = self.runtime.test_command(test_file)
+            self.assertEqual(command[:3], ['flutter', 'test', test_file])
+            self.assertIn('--no-uninstall', command)
+            self.assertNotIn('--uninstall', command)
+            self.assertIn('--no-pub', command)
+        self.assertEqual(self.runtime.test_command('fixture.dart', '--timeout', '11m')[-2:],
+                         ['--timeout', '11m'])
+
+    def test_native_json_read_uses_remote_exit_status(self):
+        self.runtime.adb.return_value = subprocess.CompletedProcess([], 0, stdout='{"passed": true}')
+        self.assertEqual(self.runtime.read_app_json('files/result.json'), {'passed': True})
+        self.runtime.adb.assert_called_once_with(
+            'shell', '-T', 'run-as', PACKAGE, 'cat', 'files/result.json')
+
+    def test_missing_native_evidence_propagates_remote_failure(self):
+        self.runtime.adb.side_effect = subprocess.CalledProcessError(1, ['adb'], stderr='unknown package')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.runtime.read_app_json('files/result.json')
+
     def test_phase_ignores_build_time_package_and_missing_file_diagnostics(self):
         for diagnostic in (
             "run-as: unknown package: " + PACKAGE,
@@ -41,7 +63,7 @@ class DialogDriverTest(unittest.TestCase):
             "files/native_runtime_phase", check=False)
 
     def test_phase_accepts_only_successful_known_app_phases(self):
-        for phase in PHASES + CHECKPOINTS + ("read_details", "complete"):
+        for phase in PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete"):
             with self.subTest(phase=phase):
                 self.runtime.adb.return_value = subprocess.CompletedProcess(
                     [], 0, stdout=phase + "\n")
@@ -70,6 +92,18 @@ class DialogDriverTest(unittest.TestCase):
         roots.append(node('android:id/title', 'Downloads'))
         self.assertFalse(self.runtime.act('save_confirm', list(roots.iter('node'))))
         self.runtime.tap.assert_not_called()
+
+    def test_recovery_export_requires_exact_generated_version_filename(self):
+        file_name = 'audio-fixer-recovery-preserved-1234abcd.mp3'
+        expected = node('android:id/title', file_name, 'android.widget.EditText')
+        toolbar = node('com.android.documentsui:id/toolbar')
+        toolbar.append(node('android:id/title', 'Downloads'))
+        self.assertFalse(self.runtime.act('recovery_export', [self.filename, self.save, *toolbar.iter('node')],
+                                          file_name=file_name))
+        self.runtime.tap.assert_not_called()
+        self.assertTrue(self.runtime.act('recovery_export', [expected, self.save, *toolbar.iter('node')],
+                                         file_name=file_name))
+        self.runtime.tap.assert_called_once_with(self.save, 'recovery_export')
 
     def test_save_in_other_directory_is_not_confirmed(self):
         toolbar = node('com.android.documentsui:id/toolbar')

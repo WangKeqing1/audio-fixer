@@ -31,11 +31,13 @@ internal class AudioWriteBridge(
     @Volatile private var disposed = false
     private var pendingOriginal: PendingOriginal? = null
     private var pendingDirectory: Reply? = null
+    private var pendingRecoveryExport: PendingRecoveryExport? = null
+    private data class PendingRecoveryExport(val version: OriginalSaveJournal.ExportVersion, val reply: Reply)
     private var pendingBatchConsent: PendingBatchConsent? = null
     private data class PendingBatchConsent(val chunks: List<List<Uri>>, val reply: Reply, var index: Int = 0)
     private data class PendingOriginal(val target: Uri, val tagged: File?, val sourceHash: String?,
                                        val reply: Reply, var consentRequested: Boolean = false,
-                                       val recoverOnly: Boolean = false)
+                                       val recoverOnly: Boolean = false, val restoreBackup: Boolean = false)
 
     fun dispose() { disposed = true }
     fun notices(): String? = listOfNotNull(originalJournal.notice(), exportJournal.notice())
@@ -54,7 +56,7 @@ internal class AudioWriteBridge(
         exportJournal.acknowledgeVerified(uri)
     }
 
-    fun handles(method: String) = method in setOf("saveAudioOriginal", "authorizeOriginalWrites", "retryOriginalRecovery", "chooseExportDirectory", "exportAudioToDirectory")
+    fun handles(method: String) = method in setOf("saveAudioOriginal", "authorizeOriginalWrites", "retryOriginalRecovery", "getOriginalRecoveryState", "restoreOriginalBackup", "exportOriginalRecoveryVersion", "finishOriginalRecovery", "chooseExportDirectory", "exportAudioToDirectory")
     fun onMethodCall(call: MethodCall, result: MethodChannel.Result, otherWriteActive: Boolean) {
         val reply = Reply(result)
         if (active || otherWriteActive) {
@@ -65,6 +67,10 @@ internal class AudioWriteBridge(
             "saveAudioOriginal" -> saveOriginal(call, reply)
             "authorizeOriginalWrites" -> authorizeOriginalWrites(call, reply)
             "retryOriginalRecovery" -> retryOriginalRecovery(reply)
+            "getOriginalRecoveryState" -> recoveryAction(reply) { originalJournal.state() }
+            "restoreOriginalBackup" -> retryOriginalRecovery(reply, restoreBackup = true)
+            "exportOriginalRecoveryVersion" -> exportRecoveryVersion(call, reply)
+            "finishOriginalRecovery" -> recoveryAction(reply) { originalJournal.finishRecovery(); null }
             "chooseExportDirectory" -> chooseDirectory(reply)
             "exportAudioToDirectory" -> exportToDirectory(call, reply)
         }
@@ -83,7 +89,9 @@ internal class AudioWriteBridge(
     private fun saveOriginal(call: MethodCall, reply: Reply) {
         try {
             val tagged = taggedFile(call)
-            val target = originalJournal.validateTarget(call.argument("sourceUri"), call.argument("sourcePath"))
+            val sourceUri = call.argument<String>("sourceUri")
+                ?: throw IOException("旧版导入副本使用固定内容标识，不能覆盖；请导出新副本。")
+            val target = originalJournal.validateTarget(sourceUri, null)
             val hash = call.argument<String>("sourceSha256")
             if (hash == null || !Regex("^[a-f0-9]{64}$").matches(hash)) throw IOException("缺少原音频校验信息。")
             active = true
@@ -173,7 +181,7 @@ internal class AudioWriteBridge(
         }
     }
 
-    private fun retryOriginalRecovery(reply: Reply) {
+    private fun retryOriginalRecovery(reply: Reply, restoreBackup: Boolean = false) {
         try {
             val target = originalJournal.recoveryTarget()
             active = true
@@ -187,13 +195,128 @@ internal class AudioWriteBridge(
             }
             // Uses the retained record directly; a truncated file need not be
             // parsed or have candidates before the user can authorize restore.
-            val pending = PendingOriginal(target, null, null, reply, recoverOnly = true)
+            val pending = PendingOriginal(target, null, null, reply, recoverOnly = true, restoreBackup = restoreBackup)
             pendingOriginal = pending
             requestConsent(pending)
         } catch (error: Exception) {
             active = false
             pendingOriginal = null
             reply.error("original_recovery_required", error.message ?: "无法请求原音频恢复权限。")
+        }
+    }
+
+    private fun recoveryAction(reply: Reply, action: () -> Any?) {
+        active = true
+        schedule(reply) {
+            try { reply.success(exportJournal.exclusively(action)) }
+            catch (error: Exception) { reply.error("original_recovery_required", error.message ?: "无法读取或完成恢复选择。") }
+            finally { active = false }
+        }
+    }
+
+    private fun exportRecoveryVersion(call: MethodCall, reply: Reply) {
+        val id = call.argument<String>("versionId")
+        if (id == null) { reply.error("invalid_argument", "请选择要导出的恢复版本。"); return }
+        active = true
+        schedule(reply) {
+            try {
+                val version = exportJournal.exclusively {
+                    exportJournal.recover()
+                    originalJournal.exportVersion(id)
+                }
+                handler.post {
+                    if (!disposed) try {
+                        exportJournal.record(ExportRecoveryJournal.PREPARED, version.file)
+                        pendingRecoveryExport = PendingRecoveryExport(version, reply)
+                        val header = ByteArray(12)
+                        version.file.inputStream().use { it.read(header) }
+                        val extension = when {
+                            String(header, 0, 3, Charsets.US_ASCII) == "ID3" ||
+                                ((header[0].toInt() and 255) == 255 && (header[1].toInt() and 224) == 224) -> "mp3"
+                            String(header, 0, 4, Charsets.US_ASCII) == "fLaC" -> "flac"
+                            String(header, 4, 4, Charsets.US_ASCII) == "ftyp" -> "m4a"
+                            else -> "bin"
+                        }
+                        activity.startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "application/octet-stream"
+                            putExtra(Intent.EXTRA_TITLE, "audio-fixer-recovery-${if (id == "original") "original" else "preserved"}-${version.hash.take(8)}.$extension")
+                        }, RECOVERY_EXPORT_CODE)
+                    } catch (error: Exception) {
+                        pendingRecoveryExport = null
+                        active = false
+                        reply.error("recovery_export_failed", error.message ?: "无法打开恢复副本保存位置。")
+                    }
+                }
+            } catch (error: Exception) {
+                active = false
+                reply.error("recovery_export_failed", error.message ?: "无法准备恢复版本。")
+            }
+        }
+    }
+
+    private fun completeRecoveryExport(resultCode: Int, data: Intent?) {
+        val pending = pendingRecoveryExport
+        pendingRecoveryExport = null
+        val target = if (resultCode == Activity.RESULT_OK) data?.data else null
+        if (pending == null) {
+            try { executor.execute { try { exportJournal.recoverOrphanResult(target) } catch (_: Exception) { } } }
+            catch (_: Exception) { }
+            return
+        }
+        if (target == null) {
+            active = false
+            try { exportJournal.clear() } catch (_: Exception) { }
+            pending.reply.success(null)
+            return
+        }
+        schedule(pending.reply) {
+            try {
+                val saved = exportJournal.exclusively {
+                    try {
+                        exportJournal.record(ExportRecoveryJournal.WRITING, pending.version.file, target)
+                        if (OriginalSaveJournal.hash(pending.version.file) != pending.version.hash) throw IOException("恢复版本已变化，已停止导出。")
+                        // A successful reread can come from the page cache.
+                        // Never allow finishRecovery to release the fsynced
+                        // internal snapshot until this destination also accepts
+                        // a durable flush. Unsupported provider descriptors
+                        // fail closed; this is not an atomic-provider guarantee.
+                        try {
+                            val descriptor = activity.contentResolver.openFileDescriptor(target, "rwt")
+                                ?: throw IOException("保存位置未提供可同步的文件描述符。")
+                            android.os.ParcelFileDescriptor.AutoCloseOutputStream(descriptor).use { sink ->
+                                pending.version.file.inputStream().use { OriginalSaveJournal.copyBounded(it, sink) }
+                                sink.flush()
+                                sink.fd.sync()
+                            }
+                        } catch (error: Exception) {
+                            throw IOException("无法确认恢复副本已同步写入存储；内部恢复版本仍保留，请改用其他保存位置。", error)
+                        }
+                        val actual = activity.contentResolver.openInputStream(target)?.use { source ->
+                            val digest = java.security.MessageDigest.getInstance("SHA-256")
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) { val count = source.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+                            digest.digest().joinToString("") { "%02x".format(it) }
+                        }
+                        if (actual != pending.version.hash) throw IOException("恢复副本校验失败。")
+                        exportJournal.record(ExportRecoveryJournal.VERIFIED, pending.version.file, target)
+                        originalJournal.markExported(pending.version.id, target)
+                        exportJournal.acknowledgeVerified(target.toString())
+                        target.toString()
+                    } catch (error: Exception) {
+                        // Only the newly created recovery copy can be deleted.
+                        if (exportJournal.read()?.stage != ExportRecoveryJournal.VERIFIED) {
+                            val removed = exportJournal.deleteNewDocument(target)
+                            if (removed) exportJournal.clear()
+                            else exportJournal.setNotice("恢复副本导出失败，不完整新副本无法自动移除，请检查：$target。原文件和恢复备份未修改。")
+                        }
+                        throw error
+                    }
+                }
+                pending.reply.success(saved)
+            } catch (error: Exception) {
+                pending.reply.error("recovery_export_failed", error.message ?: "恢复副本导出未完成；内部备份仍保留。")
+            } finally { active = false }
         }
     }
 
@@ -232,7 +355,7 @@ internal class AudioWriteBridge(
                         descriptor.close()
                     }
                     if (pending.recoverOnly) {
-                        originalJournal.ensureReady()
+                        if (pending.restoreBackup) originalJournal.restoreOriginalBackup() else originalJournal.recover()
                         notices()
                     } else {
                         originalJournal.save(pending.target, pending.tagged!!, pending.sourceHash!!)
@@ -306,6 +429,7 @@ internal class AudioWriteBridge(
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         when (requestCode) {
+            RECOVERY_EXPORT_CODE -> { completeRecoveryExport(resultCode, data); return true }
             BATCH_CONSENT_CODE -> {
                 // An orphan authorization result grants access only; it never
                 // starts writes without its original Dart batch caller.
@@ -433,5 +557,6 @@ internal class AudioWriteBridge(
         private const val LEGACY_WRITE_CODE = 41940
         private const val DIRECTORY_CODE = 41941
         private const val BATCH_CONSENT_CODE = 41942
+        private const val RECOVERY_EXPORT_CODE = 41943
     }
 }

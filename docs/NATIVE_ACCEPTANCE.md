@@ -32,9 +32,12 @@ security settings to work around a missing acceleration capability.
 - Updated original and optional copy both fully decode; encoded packets, decoded
   samples, existing metadata and cover match; selected lyrics have the exact value
 - Unapproved track remains byte-identical; temporary read/tag copies are released
-- A separate fresh-Activity test restores a truncated private synthetic file from
-  a seeded `writing` journal/valid backup, then verifies exact bytes and cleanup
-- The real native original-save method rejects a deliberately stale source SHA-256
+- A separate fresh-Activity test retains a third-hash current synthetic file and
+  original backup during startup inspection and reauthorization; explicit restore
+  must first preserve the current version and block unsafe cleanup
+- Legacy private imported-file new writes are rejected; existing private recovery
+  records remain readable and recoverable
+- The real native MediaStore original-save method rejects a deliberately stale source SHA-256
   before opening a truncating writer, leaving source bytes and journal state intact
 
 The seeded-journal test checks the real native recovery implementation but does
@@ -66,6 +69,8 @@ scope for every native run; preserve explicit not-run/blocked/failed distinction
 Raw local reports/audio remain ignored under `build/android_runtime/`. The CI
 artifact tool allows only named synthetic screenshots and check JSON for one day;
 never add APKs, audio, raw logs, credentials or broad directories to that allowlist.
-No user-initiated undo exists. Backups support interrupted/failed writes and are
-removed after safe resolution; do not clear app data or uninstall while a recovery
-notice says unresolved original backups remain.
+Backups support interrupted/failed writes, not general undo after every successful
+save. Unknown startup content is retained until an explicit decision; restoring
+the original first preserves the current version. Distinct unexported versions
+cannot be silently discarded when completing recovery. Do not clear app data or
+uninstall while unresolved retained versions remain.

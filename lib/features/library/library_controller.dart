@@ -44,6 +44,7 @@ class LibraryController extends ChangeNotifier {
       AudioLibraryPermission.notRequested;
   String? libraryError;
   String? exportRecoveryNotice;
+  OriginalRecoveryState? originalRecoveryState;
   String? get recoveryNotice {
     final notices = [?_snapshot.recoveryNotice, ?exportRecoveryNotice];
     return notices.isEmpty ? null : notices.join('\n\n');
@@ -55,8 +56,13 @@ class LibraryController extends ChangeNotifier {
     try {
       exportRecoveryNotice = await (recovery as AudioExportRecovery)
           .recoverInterruptedExport();
+      if (recovery is AudioOriginalRecovery) {
+        originalRecoveryState = await (recovery as AudioOriginalRecovery)
+            .getOriginalRecoveryState();
+      }
       return true;
     } catch (error) {
+      originalRecoveryState = null;
       exportRecoveryNotice = '无法检查上次音频保存的恢复记录，请重新启动应用后重试。请先核对原文件，暂不进行新的写入。';
       debugPrint('Export recovery unavailable: $error');
       return false;
@@ -64,6 +70,10 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> acknowledgeExportRecovery() => _operate(() async {
+    if (originalRecoveryState != null) {
+      _announce('请先处理原文件恢复事项并保留需要的版本，不能直接清除提醒。');
+      return;
+    }
     final recovery = exporter;
     if (recovery is! AudioExportRecovery) return;
     await (recovery as AudioExportRecovery).acknowledgeExportRecovery();
@@ -75,7 +85,7 @@ class LibraryController extends ChangeNotifier {
   Future<void> retryOriginalRecovery() => _operate(() async {
     final recovery = exporter;
     if (recovery is! AudioOriginalRecovery) return;
-    progress = '正在恢复原文件，可能需要重新允许系统写入权限…';
+    progress = '正在检查权限与恢复状态，不会自动替换当前文件…';
     _notify();
     try {
       exportRecoveryNotice = await (recovery as AudioOriginalRecovery)
@@ -86,6 +96,85 @@ class LibraryController extends ChangeNotifier {
     } on PlatformException catch (error) {
       await _recoverExport();
       _announce(error.message ?? '恢复尚未完成，备份已保留，请重新授权后重试。');
+    }
+  });
+
+  Future<void> restoreOriginalBackup() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioOriginalRecovery ||
+        originalRecoveryState?.canRestore != true) {
+      return;
+    }
+    final target = originalRecoveryState!.targetUri;
+    progress = '正在保留当前版本并恢复原始备份，请勿退出…';
+    _notify();
+    try {
+      exportRecoveryNotice = await (recovery as AudioOriginalRecovery)
+          .restoreOriginalBackup();
+      final affected = _snapshot.tracks
+          .where((track) => track.contentUri == target)
+          .map((track) => track.id)
+          .toSet();
+      final invalidated = _invalidateTasks(affected);
+      var catalogSaved = true;
+      try {
+        await _commit(tasks: invalidated);
+      } catch (_) {
+        catalogSaved = false;
+        _snapshot = LibrarySnapshot(
+          tracks: _snapshot.tracks,
+          tasks: invalidated,
+          settings: settings,
+          recoveredFromBackup: _snapshot.recoveredFromBackup,
+          batchOperation: batchOperation,
+        );
+      }
+      await _recoverExport();
+      await _syncDeviceLibrary();
+      _announce(
+        catalogSaved
+            ? exportRecoveryNotice ?? '恢复已完成，请核对原文件与保留的版本。'
+            : '原文件恢复步骤已完成，但目录记录保存失败。请查看恢复状态并重新读取歌曲，旧候选不能继续保存。',
+      );
+    } on PlatformException catch (error) {
+      await _recoverExport();
+      _announce(error.message ?? '恢复未完成，已有版本仍会保留。');
+    }
+  });
+
+  Future<void> exportOriginalRecoveryVersion(String versionId) => _operate(
+    () async {
+      final recovery = exporter;
+      if (recovery is! AudioOriginalRecovery || originalRecoveryState == null) {
+        return;
+      }
+      progress = '请选择保留版本的导出位置…';
+      _notify();
+      try {
+        final uri = await (recovery as AudioOriginalRecovery)
+            .exportOriginalRecoveryVersion(versionId);
+        await _recoverExport();
+        _announce(uri == null ? '已取消导出，恢复版本仍保留在应用中。' : '版本副本已导出并通过完整文件校验。');
+      } on PlatformException catch (error) {
+        await _recoverExport();
+        _announce(error.message ?? '版本导出未完成，恢复版本仍保留。');
+      }
+    },
+  );
+
+  Future<void> finishOriginalRecovery() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioOriginalRecovery ||
+        originalRecoveryState?.canFinish != true) {
+      return;
+    }
+    try {
+      await (recovery as AudioOriginalRecovery).finishOriginalRecovery();
+      await _recoverExport();
+      _announce('恢复事项已处理，当前原文件保持不变。');
+    } on PlatformException catch (error) {
+      await _recoverExport();
+      _announce(error.message ?? '暂不能完成恢复，请先导出需要保留的版本。');
     }
   });
 
@@ -936,7 +1025,9 @@ class LibraryController extends ChangeNotifier {
     if (exportCopy ? !canExportTrack(track) : !canSaveOriginalTrack(track)) {
       return result(
         BatchItemStatus.skipped,
-        '此格式或来源暂不支持安全${exportCopy ? '导出' : '保存原文件'}，目前支持 MP3、FLAC 和 M4A/MP4。',
+        !exportCopy && !track.isDeviceTrack && canExportTrack(track)
+            ? '这是旧版导入的应用内副本，请选择导出副本。系统音乐库原文件支持直接保存。'
+            : '此格式或来源暂不支持安全${exportCopy ? '导出' : '保存原文件'}，目前支持 MP3、FLAC 和 M4A/MP4。',
       );
     }
     progress ??= exportCopy ? '正在生成并校验副本，原音频保持不变…' : '正在校验资料并备份原文件，请勿退出…';

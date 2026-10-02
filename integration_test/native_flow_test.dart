@@ -16,6 +16,7 @@ import 'package:audio_fixer/features/library/track_detail_page.dart';
 import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
@@ -301,10 +302,29 @@ void main() {
         controller.taskForTrack(unapproved.id)!.status,
         TaskStatus.needsReview,
       );
-      controller.selectTracks({track.id, unapproved.id});
+      // Use the actual task-selection and bulk action widgets so native
+      // evidence also shows reviewed counts and the final batch result panel.
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('补全任务'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('select-all-task-tracks')),
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const ValueKey('select-all-task-tracks')));
+      await tester.pumpAndSettle();
+      expect(controller.selectedTrackIds, {track.id, unapproved.id});
+      expect(find.text('已选 2 首 · 已确认 1 首'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('bulk-save-original')),
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
       await checkpoint('bulk_review_ready');
       await phase('original_confirm');
-      final batchSave = controller.saveSelectedCandidates();
+      await tester.tap(find.byKey(const ValueKey('bulk-save-original')));
       await _waitFor(
         tester,
         () =>
@@ -313,7 +333,6 @@ void main() {
                 TaskStatus.savedOriginal,
         'real original write consent, backup, replacement, and read-back',
       );
-      await batchSave;
       expect(controller.batchOperation!.kind, BatchOperationKind.saveOriginal);
       expect(controller.batchOperation!.totalCount, 2);
       expect(controller.batchOperation!.completedCount, 2);
@@ -336,7 +355,74 @@ void main() {
             .toString(),
         coverHash,
       );
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('batch-progress')),
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('batch-progress')),
+          matching: find.text(controller.batchOperation!.summary),
+        ),
+        findsOneWidget,
+      );
       await checkpoint('saved_ready');
+
+      // The batch grant is already live for this MediaStore URI. A deliberately
+      // stale source snapshot must be rejected by the real native guard without
+      // another write or a new authorization sheet.
+      const native = MethodChannel('audio_fixer/device_library');
+      final guardWork = Directory(
+        '${cache.path}/tagged_exports/export_native_guard',
+      );
+      await guardWork.create(recursive: true);
+      String? guardReadCopy;
+      try {
+        guardReadCopy = await native.invokeMethod<String>('copyForRead', {
+          'uri': track.contentUri,
+        });
+        final currentBytes = await File(guardReadCopy!).readAsBytes();
+        final expectedHash = sha256.convert(currentBytes).toString();
+        final tagged = await File('${guardWork.path}/tagged.mp3')
+            .writeAsBytes(currentBytes);
+        await native.invokeMethod<void>('releaseReadCopy', {
+          'path': guardReadCopy,
+        });
+        guardReadCopy = null;
+        await expectLater(
+          native.invokeMethod<String>('saveAudioOriginal', {
+            'path': tagged.path,
+            'sourceUri': track.contentUri,
+            'sourcePath': null,
+            'sourceSha256': List.filled(64, '0').join(),
+          }),
+          throwsA(
+            isA<PlatformException>()
+                .having((error) => error.code, 'code', 'original_save_failed')
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('原音频已变化'),
+                ),
+          ),
+        );
+        guardReadCopy = await native.invokeMethod<String>('copyForRead', {
+          'uri': track.contentUri,
+        });
+        expect(
+          sha256.convert(await File(guardReadCopy!).readAsBytes()).toString(),
+          expectedHash,
+        );
+        expect(await native.invokeMethod<String>('recoverExport'), isNull);
+      } finally {
+        if (guardReadCopy != null) {
+          await native.invokeMethod<void>('releaseReadCopy', {
+            'path': guardReadCopy,
+          });
+        }
+        await guardWork.delete(recursive: true);
+      }
 
       for (final name in ['device_library_read', 'tagged_exports']) {
         final directory = Directory('${cache.path}/$name');
@@ -382,10 +468,13 @@ void main() {
             'system_save_retry_creates_new_document',
             'source_unchanged_after_export_and_cancel',
             'real_original_write_consent_cancel_and_retry',
+            'task_multiselect_and_bulk_save_widgets',
             'approved_only_bulk_original_save',
             'unapproved_selected_song_unchanged',
             'batch_result_counters_persisted',
             'original_tags_and_cover_reread',
+            'mediastore_stale_source_hash_rejected_before_write',
+            'source_hash_unchanged_after_native_guard_rejection',
             'temporary_copies_released',
             'original_save_record_persisted',
           ],

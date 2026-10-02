@@ -219,7 +219,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                         icon: Icons.info_outline,
                         title: '此歌曲暂不支持原位保存',
                         message: canExport
-                            ? '可以先确认资料，或选择导出副本。原位保存支持可写入的 MP3、FLAC 和 M4A/MP4。'
+                            ? !track.isDeviceTrack
+                                  ? '这首歌曲来自旧版导入的应用内副本，仅支持导出新副本。原位保存适用于系统音乐库中的可写音频，不会修改这份旧版副本。'
+                                  : '可以先确认资料，或选择导出副本。原位保存支持可写入的 MP3、FLAC 和 M4A/MP4。'
                             : '${track?.extension ?? ''} 格式当前仅支持预览和确认。保存支持 MP3、FLAC 和 M4A/MP4，并需要文件写入权限。',
                       ),
                       const SizedBox(height: 16),

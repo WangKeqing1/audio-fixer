@@ -31,6 +31,8 @@ PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
 CHECKPOINTS = ("permission_denied_ready", "details_ready", "review_ready",
                "cancelled_ready", "exported_ready", "original_cancelled_ready",
                "bulk_review_ready", "saved_ready")
+RECOVERY_PHASES = ("recovery_export",)
+RECOVERY_CHECKPOINTS = ("recovery_export_corrupted", "recovery_export_restored")
 SMOKE_SCREENS = ("packaged_library", "packaged_settings")
 
 
@@ -47,14 +49,30 @@ class AndroidRuntime:
                               capture_output=True, text=not binary,
                               timeout=timeout, check=check)
 
-    def phase(self) -> str:
+    def test_command(self, test_file: str, *extra: str) -> list[str]:
+        # Flutter 3.47 defaults to uninstalling integration apps during teardown.
+        # Keep this disposable QA install so host-side private-file evidence,
+        # fresh-Activity recovery setup and the normal packaged smoke survive.
+        return ["flutter", "test", test_file, "-d", self.serial, "--no-pub",
+                "--no-uninstall", "--reporter", "expanded", *extra]
+
+    def read_app_json(self, relative_path: str) -> dict:
+        # Shell v2 propagates run-as/cat errors instead of letting diagnostics be
+        # mistaken for JSON when an app or evidence file is missing.
+        result = self.adb("shell", "-T", "run-as", PACKAGE, "cat", relative_path)
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            raise RuntimeError("Expected a JSON object in native evidence: " + relative_path)
+        return value
+
+    def phase(self, path: str = "files/native_runtime_phase") -> str:
         # exec-out can return success while run-as reports an unknown package
         # during the initial APK build. Shell v2 propagates the remote status;
         # the allowlist also prevents diagnostics from becoming app phases.
         result = self.adb("shell", "-T", "run-as", PACKAGE, "cat",
-                          "files/native_runtime_phase", check=False)
+                          path, check=False)
         value = result.stdout.strip()
-        known = PHASES + CHECKPOINTS + ("read_details", "complete")
+        known = PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete")
         return value if result.returncode == 0 and value in known else ""
 
     def hierarchy(self) -> list[ET.Element]:
@@ -64,7 +82,7 @@ class AndroidRuntime:
         return list(ET.fromstring(xml).iter("node"))
 
     def screenshot(self, name: str) -> None:
-        assert name in PHASES + CHECKPOINTS + SMOKE_SCREENS
+        assert name in PHASES + CHECKPOINTS + RECOVERY_PHASES + SMOKE_SCREENS
         screenshots = self.output / "screenshots"
         screenshots.mkdir(exist_ok=True)
         data = self.adb("exec-out", "screencap", "-p", binary=True).stdout
@@ -85,7 +103,8 @@ class AndroidRuntime:
                              "text": node.get("text"), "bounds": node.get("bounds")})
         print(f"Native UI: {phase}: {node.get('resource-id')} {node.get('text')}", flush=True)
 
-    def act(self, phase: str, nodes: list[ET.Element]) -> bool:
+    def act(self, phase: str, nodes: list[ET.Element],
+            file_name: str = "native_fixture-fixed.mp3") -> bool:
         if phase.startswith("permission_"):
             suffix = ("permission_deny_button" if phase == "permission_deny"
                       else "permission_allow_button")
@@ -121,16 +140,18 @@ class AndroidRuntime:
             self.tap(buttons[0], phase)
             return True
 
+        if phase not in {"save_cancel", "save_confirm", "recovery_export"}:
+            return False
         document_nodes = [node for node in nodes
                           if node.get("package") == "com.android.documentsui"]
         # A create-document filename proves this is our expected save sheet.
         names = [node for node in document_nodes
                  if node.get("resource-id") == "android:id/title"
                  and node.get("class") == "android.widget.EditText"
-                 and node.get("text") == "native_fixture-fixed.mp3"]
+                 and node.get("text") == file_name]
         if names:
             self.save_observed.add(phase)
-        if phase == "save_confirm" and phase in self.save_observed:
+        if phase in {"save_confirm", "recovery_export"} and phase in self.save_observed:
             roots = [node for node in document_nodes
                      if node.get("resource-id") == "com.android.documentsui:id/roots_list"]
             downloads = [node for root in roots for node in root.iter("node")
@@ -148,7 +169,7 @@ class AndroidRuntime:
             self.screenshot(phase)
             self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
             self.actions.append({"phase": phase, "action": "back",
-                                 "observed_filename": "native_fixture-fixed.mp3"})
+                                 "observed_filename": file_name})
             print("Native UI: cancelled the observed create-document sheet", flush=True)
             return True
 
@@ -210,8 +231,7 @@ class AndroidRuntime:
         # committed lockfile without any dependency network requests.
         subprocess.run(["flutter", "pub", "get", "--offline", "--enforce-lockfile"],
                        env=env, check=True, timeout=180)
-        command = ["flutter", "test", "integration_test/native_flow_test.dart", "-d", self.serial,
-                   "--no-pub", "--reporter", "expanded", "--timeout", "11m"]
+        command = self.test_command("integration_test/native_flow_test.dart", "--timeout", "11m")
         process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
         assert process.stdout is not None
@@ -301,11 +321,16 @@ class AndroidRuntime:
         for key, value in values.items():
             ET.SubElement(document, "string", {"name": key}).text = value
         journal = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+        current_bytes = original.read_bytes()[:32]
+        current_hash = hashlib.sha256(current_bytes).hexdigest()
+        assert current_bytes.startswith(b"ID3")
+        export_name = "audio-fixer-recovery-preserved-" + current_hash[:8] + ".mp3"
         expected = json.dumps({"synthetic_only": True, "target_path": target,
-                               "backup_path": backup, "original_sha256": digest}).encode()
+                               "backup_path": backup, "original_sha256": digest,
+                               "current_sha256": current_hash}).encode()
         self.adb("shell", "run-as", PACKAGE, "mkdir", "-p", "files/audio",
                  "no_backup/original_audio_backups", "shared_prefs")
-        writes = {target: original.read_bytes()[:32], backup: original.read_bytes(),
+        writes = {target: current_bytes, backup: original.read_bytes(),
                   "shared_prefs/audio_fixer_original_recovery.xml": journal,
                   "files/native_recovery_expected.json": expected}
         for destination, data in writes.items():
@@ -314,18 +339,67 @@ class AndroidRuntime:
                            check=True, timeout=30)
         env = dict(os.environ, ORG_GRADLE_PROJECT_audioFixerQa="true")
         env.pop("AUDIO_FIXER_REAL_INPUTS", None)
-        checked = subprocess.run(["flutter", "test", "integration_test/native_recovery_test.dart",
-                                  "-d", self.serial, "--no-pub", "--reporter", "expanded"],
-                                 env=env, capture_output=True, text=True, timeout=420)
-        (self.output / "flutter-native-recovery.txt").write_text(checked.stdout + checked.stderr)
-        print(checked.stdout, flush=True)
-        if checked.returncode:
-            raise RuntimeError("Native interrupted-journal recovery test failed: " + checked.stderr[-1500:])
-        result = json.loads(self.adb("exec-out", "run-as", PACKAGE, "cat",
-                                     "files/native_recovery_result.json").stdout)
+        process = subprocess.Popen(self.test_command("integration_test/native_recovery_test.dart"),
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, bufsize=1)
+        assert process.stdout is not None
+        def log_recovery() -> None:
+            with (self.output / "flutter-native-recovery.txt").open("w") as log:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    log.write(line)
+                    log.flush()
+                    print(line, end="", flush=True)
+        reader = threading.Thread(target=log_recovery, daemon=True)
+        reader.start()
+        handled = False
+        checked_exports: set[str] = set()
+        deadline = time.monotonic() + 420
+        try:
+            while process.poll() is None:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Native conflict-recovery test exceeded seven minutes")
+                phase = self.phase("files/native_recovery_phase")
+                if phase in RECOVERY_CHECKPOINTS and phase not in checked_exports:
+                    replacement = self.output / (phase + ".bin")
+                    replacement.write_bytes(b"synthetic modified export" if phase == "recovery_export_corrupted" else current_bytes)
+                    self.adb("push", str(replacement), "/sdcard/Download/" + export_name)
+                    subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
+                                    "tee", "files/native_recovery_ack"], input=phase,
+                                   capture_output=True, text=True, check=True, timeout=15)
+                    checked_exports.add(phase)
+                if not handled and phase == "recovery_export":
+                    try:
+                        nodes = self.hierarchy()
+                    except (subprocess.CalledProcessError, ET.ParseError):
+                        time.sleep(1)
+                        continue
+                    handled = self.act("recovery_export", nodes, file_name=export_name)
+                time.sleep(1)
+            reader.join(timeout=5)
+            if process.returncode:
+                raise RuntimeError(f"Native conflict-recovery test failed with exit {process.returncode}")
+            if not handled:
+                raise RuntimeError("Native recovery did not exercise its actual preserved-version export picker")
+            if checked_exports != set(RECOVERY_CHECKPOINTS):
+                raise RuntimeError("Recovery did not revalidate its exported document before safe finish")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            (self.output / "native-ui-actions.json").write_text(json.dumps(self.actions, indent=2))
+        result = self.read_app_json("files/native_recovery_result.json")
         assert result["passed"] and result["synthetic_only"]
         assert result["injected_interrupted_journal"] is True
         assert result["mocked_native_channels"] is False
+        assert result["current_sha256"] == current_hash
+        preserved_export = self.output / "preserved-current-export.mp3"
+        self.adb("pull", "/sdcard/Download/" + export_name, str(preserved_export))
+        assert preserved_export.read_bytes() == current_bytes, "Recovery export did not preserve the third-hash bytes"
         restored = self.adb("exec-out", "run-as", PACKAGE, "cat", target, binary=True).stdout
         assert hashlib.sha256(restored).hexdigest() == digest
         restored_file = self.output / "restored-private-fixture.mp3"
@@ -337,17 +411,18 @@ class AndroidRuntime:
         summary["status"] = "passed"
         summary["native_seeded_recovery_checks"] = len(result["checks"])
         summary["native_seeded_recovery_passed"] = True
+        summary["native_preserved_version_export_sha256_exact"] = True
+        summary["real_recovery_export_dialogs"] = len(RECOVERY_PHASES)
         summary["timed_process_crash_tested"] = False
         (self.output / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2), flush=True)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
-                stream.write("- Seeded interrupted-journal native recovery restored exact source bytes and decoded successfully\n")
+                stream.write("- Native conflict recovery preserved unknown bytes, explicitly restored the original and exported the retained version exactly\n")
                 stream.write("- This verifies recovery from persisted state, not crash-timing or MediaStore permission-loss behavior\n")
 
     def verify(self, original: Path) -> None:
-        result = json.loads(self.adb("exec-out", "run-as", PACKAGE, "cat",
-                                     "files/native_runtime_result.json").stdout)
+        result = self.read_app_json("files/native_runtime_result.json")
         assert result["passed"] and result["synthetic_only"]
         assert result["mocked_native_channels"] is False
         assert result["online_provider_calls"] == 0

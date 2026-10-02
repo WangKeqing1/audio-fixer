@@ -37,9 +37,67 @@ abstract interface class AudioBatchOriginalSaver {
   Future<bool> authorizeOriginalWrites(List<AudioTrack> tracks);
 }
 
-/// Explicit recovery can request Android consent for a retained original backup.
+/// A retained recovery version; [id] is opaque except native's "original".
+class RecoveryAudioVersion {
+  const RecoveryAudioVersion({
+    required this.id,
+    required this.label,
+    required this.sha256,
+    required this.sizeBytes,
+    this.exportedUri,
+  });
+  final String id;
+  final String label;
+  final String sha256;
+  final int sizeBytes;
+  final String? exportedUri;
+  factory RecoveryAudioVersion.fromMap(Map<Object?, Object?> data) =>
+      RecoveryAudioVersion(
+        id: data['id'] as String,
+        label: data['label'] as String,
+        sha256: data['sha256'] as String,
+        sizeBytes: (data['sizeBytes'] as num).toInt(),
+        exportedUri: data['exportedUri'] as String?,
+      );
+}
+
+/// Structured recovery choices. UI must use flags, not translated notice text.
+class OriginalRecoveryState {
+  const OriginalRecoveryState({
+    required this.status,
+    required this.targetUri,
+    required this.canRestore,
+    required this.canFinish,
+    required this.versions,
+  });
+  final String status;
+  final String targetUri;
+  final bool canRestore;
+  final bool canFinish;
+  final List<RecoveryAudioVersion> versions;
+  factory OriginalRecoveryState.fromMap(Map<Object?, Object?> data) =>
+      OriginalRecoveryState(
+        status: data['status'] as String,
+        targetUri: data['targetUri'] as String,
+        canRestore: data['canRestore'] == true,
+        canFinish: data['canFinish'] == true,
+        versions: (data['versions'] as List<Object?>)
+            .map(
+              (value) => RecoveryAudioVersion.fromMap(
+                Map<Object?, Object?>.from(value! as Map),
+              ),
+            )
+            .toList(growable: false),
+      );
+}
+
+/// Rechecking/regranting permission never authorizes replacing unknown content.
 abstract interface class AudioOriginalRecovery {
   Future<String?> retryOriginalRecovery();
+  Future<OriginalRecoveryState?> getOriginalRecoveryState();
+  Future<String?> restoreOriginalBackup();
+  Future<String?> exportOriginalRecoveryVersion(String versionId);
+  Future<void> finishOriginalRecovery();
 }
 
 /// A batch chooses one destination tree and then creates separate verified files.
@@ -102,13 +160,18 @@ class SafeAudioCopyExporter
 
   @override
   bool supportsOriginal(AudioTrack track) =>
-      supports(track) && (track.isDeviceTrack || track.localPath.isNotEmpty);
+      supports(track) && track.isDeviceTrack;
 
   @override
   Future<String?> saveOriginal(
     AudioTrack track,
     List<FieldSuggestion> selected,
-  ) => _save(track, selected, original: true);
+  ) async {
+    if (!supportsOriginal(track)) {
+      throw const ExportException('旧版导入副本使用固定内容标识，不能覆盖；请导出新的音频副本。');
+    }
+    return _save(track, selected, original: true);
+  }
 
   @override
   Future<bool> authorizeOriginalWrites(List<AudioTrack> tracks) async =>
@@ -124,6 +187,28 @@ class SafeAudioCopyExporter
   @override
   Future<String?> retryOriginalRecovery() =>
       channel.invokeMethod<String>('retryOriginalRecovery');
+
+  @override
+  Future<OriginalRecoveryState?> getOriginalRecoveryState() async {
+    final value = await channel.invokeMapMethod<Object?, Object?>(
+      'getOriginalRecoveryState',
+    );
+    return value == null ? null : OriginalRecoveryState.fromMap(value);
+  }
+
+  @override
+  Future<String?> restoreOriginalBackup() =>
+      channel.invokeMethod<String>('restoreOriginalBackup');
+
+  @override
+  Future<String?> exportOriginalRecoveryVersion(String versionId) =>
+      channel.invokeMethod<String>('exportOriginalRecoveryVersion', {
+        'versionId': versionId,
+      });
+
+  @override
+  Future<void> finishOriginalRecovery() =>
+      channel.invokeMethod<void>('finishOriginalRecovery');
 
   @override
   Future<String?> chooseExportDirectory() =>

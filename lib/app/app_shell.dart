@@ -5,6 +5,7 @@ import '../features/library/library_page.dart';
 import '../features/settings/settings_page.dart';
 import '../features/tasks/tasks_page.dart';
 import '../shared/widgets/empty_state.dart';
+import '../shared/formatters.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.controller});
@@ -158,69 +159,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           bottom: wide,
           child: Column(
             children: [
-              if (controller.recoveryNotice != null)
+              if (controller.recoveryNotice != null ||
+                  controller.originalRecoveryState != null)
                 TextButton.icon(
                   onPressed: () => showDialog<void>(
                     context: context,
-                    builder: (context) => ListenableBuilder(
-                      listenable: controller,
-                      builder: (context, _) => AlertDialog(
-                        title: Text(
-                          controller.exportRecoveryNotice == null
-                              ? '本地目录已恢复'
-                              : '恢复提醒',
-                        ),
-                        content: SingleChildScrollView(
-                          child: SelectableText(
-                            controller.recoveryNotice ?? '恢复处理已完成。',
-                          ),
-                        ),
-                        actions: [
-                          if (controller.exportRecoveryNotice != null &&
-                              controller.canRetryOriginalRecovery)
-                            FilledButton.icon(
-                              key: const ValueKey('retry-original-recovery'),
-                              onPressed: controller.canOperate
-                                  ? () async {
-                                      await controller.retryOriginalRecovery();
-                                      if (context.mounted &&
-                                          controller.recoveryNotice == null) {
-                                        Navigator.pop(context);
-                                      }
-                                    }
-                                  : null,
-                              icon: const Icon(Icons.restore),
-                              label: const Text('重试原文件恢复'),
-                            ),
-                          if (controller.exportRecoveryNotice != null)
-                            TextButton(
-                              onPressed: controller.canOperate
-                                  ? () async {
-                                      await controller
-                                          .acknowledgeExportRecovery();
-                                      if (context.mounted &&
-                                          controller.recoveryNotice == null) {
-                                        Navigator.pop(context);
-                                      }
-                                    }
-                                  : null,
-                              child: const Text('已查看保存结果'),
-                            ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: Text(
-                              controller.exportRecoveryNotice == null
-                                  ? '知道了'
-                                  : '关闭',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    builder: (context) =>
+                        _RecoveryDialog(controller: controller),
                   ),
                   icon: const Icon(Icons.restore),
                   label: Text(
-                    controller.exportRecoveryNotice == null
+                    controller.exportRecoveryNotice == null &&
+                            controller.originalRecoveryState == null
                         ? '已从备份恢复目录 · 查看说明'
                         : '恢复提醒 · 查看说明',
                   ),
@@ -303,4 +253,224 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+class _RecoveryDialog extends StatelessWidget {
+  const _RecoveryDialog({required this.controller});
+  final LibraryController controller;
+
+  Future<void> _restore(BuildContext context) async {
+    final target = controller.originalRecoveryState?.targetUri;
+    if (target == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('恢复原始备份并替换当前文件？'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '当前文件可能已被其他应用更换。继续后会先单独保留当前不同的文件，再用原始备份替换它。两个版本都会保留，可在恢复页分别导出。',
+              ),
+              const SizedBox(height: 12),
+              const Text('将替换此文件：'),
+              SelectableText(target),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-restore-original'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('保留两个版本并恢复'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true ||
+        !context.mounted ||
+        !controller.canOperate ||
+        controller.originalRecoveryState?.targetUri != target ||
+        controller.originalRecoveryState?.canRestore != true) {
+      return;
+    }
+    await controller.restoreOriginalBackup();
+  }
+
+  Future<void> _finish(BuildContext context) async {
+    final route = ModalRoute.of(context);
+    final target = controller.originalRecoveryState?.targetUri;
+    if (target == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('保留当前文件并结束恢复？'),
+        content: const SingleChildScrollView(
+          child: Text(
+            '当前文件不会更改，已经导出的副本也会保留。结束后会删除应用内的本次恢复备份和记录，无法撤销。请确认已经核对并保留所需版本。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('继续保留备份'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-finish-recovery'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('结束恢复并删除内部备份'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true ||
+        !context.mounted ||
+        !controller.canOperate ||
+        controller.originalRecoveryState?.targetUri != target ||
+        controller.originalRecoveryState?.canFinish != true) {
+      return;
+    }
+    await controller.finishOriginalRecovery();
+    if (context.mounted &&
+        route?.isCurrent == true &&
+        controller.originalRecoveryState == null &&
+        controller.recoveryNotice == null) {
+      Navigator.pop(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) {
+      final recovery = controller.originalRecoveryState;
+      return AlertDialog(
+        title: Text(
+          recovery != null
+              ? '原文件恢复'
+              : controller.exportRecoveryNotice == null
+              ? '本地目录已恢复'
+              : '恢复提醒',
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                controller.recoveryNotice ??
+                    (recovery == null ? '恢复处理已完成。' : '恢复记录中仍有音频版本，请核对后决定。'),
+              ),
+              if (recovery != null) ...[
+                const SizedBox(height: 16),
+                const Text('当前文件可能已被其他应用更换，不会自动覆盖。可先导出保留的版本，再选择恢复原始备份或保留当前文件。'),
+                const SizedBox(height: 12),
+                const Text('文件位置'),
+                SelectableText(recovery.targetUri),
+                const SizedBox(height: 12),
+                for (final version in recovery.versions)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            version.label,
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(formatFileSize(version.sizeBytes)),
+                          if (version.exportedUri != null) ...[
+                            const Text('此版本已导出'),
+                            SelectableText(version.exportedUri!),
+                          ],
+                          TextButton.icon(
+                            key: ValueKey('export-recovery-${version.id}'),
+                            onPressed: controller.canOperate
+                                ? () => controller
+                                      .exportOriginalRecoveryVersion(version.id)
+                                : null,
+                            icon: const Icon(Icons.save_alt),
+                            label: Text('导出${version.label}'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (!recovery.canFinish) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    '结束恢复前，请先导出未保存在当前文件中的备份版本。所有需要保留的版本安全保存后，才能清理内部备份。',
+                  ),
+                ],
+                if (controller.isBusy) ...[
+                  const SizedBox(height: 12),
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  Text(controller.progress ?? '正在处理，请稍候…'),
+                ],
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          if (recovery != null) ...[
+            OutlinedButton.icon(
+              key: const ValueKey('retry-original-recovery'),
+              onPressed:
+                  controller.canOperate && controller.canRetryOriginalRecovery
+                  ? controller.retryOriginalRecovery
+                  : null,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重新检查权限与恢复状态'),
+            ),
+            FilledButton.icon(
+              key: const ValueKey('restore-original-backup'),
+              onPressed: controller.canOperate && recovery.canRestore
+                  ? () => _restore(context)
+                  : null,
+              icon: const Icon(Icons.restore),
+              label: const Text('恢复原始备份'),
+            ),
+            TextButton(
+              key: const ValueKey('finish-original-recovery'),
+              onPressed: controller.canOperate && recovery.canFinish
+                  ? () => _finish(context)
+                  : null,
+              child: const Text('保留当前文件并结束恢复'),
+            ),
+          ] else if (controller.exportRecoveryNotice != null)
+            TextButton(
+              onPressed: controller.canOperate
+                  ? () async {
+                      await controller.acknowledgeExportRecovery();
+                      if (context.mounted &&
+                          controller.recoveryNotice == null) {
+                        Navigator.pop(context);
+                      }
+                    }
+                  : null,
+              child: const Text('已查看保存结果'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              recovery != null
+                  ? '稍后决定'
+                  : controller.exportRecoveryNotice == null
+                  ? '知道了'
+                  : '关闭',
+            ),
+          ),
+        ],
+      );
+    },
+  );
 }
