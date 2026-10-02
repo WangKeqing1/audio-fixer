@@ -35,6 +35,15 @@ void main() {
           'getOriginalRecoveryState',
         ))!,
       );
+      Future<void> expectNoRecoveryState() async {
+        expect(
+          await channel.invokeMapMethod<String, dynamic>(
+            'getOriginalRecoveryState',
+          ),
+          isNull,
+        );
+      }
+
       expect(await hash(backup), originalHash);
       expect(await hash(target), currentHash);
       expect(currentHash, isNot(originalHash));
@@ -42,18 +51,21 @@ void main() {
       // Neither startup nor reauthorizing/checking is permission to overwrite a
       // third-hash target. Even dismissing a notice cannot discard its backup.
       expect(await channel.invokeMethod<String>('recoverExport'), isNotNull);
+      expect((await state())['status'], 'conflict');
       expect(await hash(target), currentHash);
       expect(await hash(backup), originalHash);
       expect((await state())['status'], 'conflict');
       expect((await state())['canRestore'], isTrue);
       expect((await state())['canFinish'], isFalse);
       await channel.invokeMethod<String>('retryOriginalRecovery');
+      expect((await state())['status'], 'conflict');
       expect(await hash(target), currentHash);
       expect(await hash(backup), originalHash);
       await expectLater(
         channel.invokeMethod<void>('acknowledgeExportRecovery'),
         throwsA(isA<PlatformException>()),
       );
+      expect((await state())['status'], 'conflict');
       expect(await hash(target), currentHash);
       expect(await backup.exists(), isTrue);
 
@@ -62,9 +74,9 @@ void main() {
         await channel.invokeMethod<String>('restoreOriginalBackup'),
         contains('已恢复'),
       );
+      final restoredState = await state();
       expect(await hash(target), originalHash);
       expect(await hash(backup), originalHash);
-      final restoredState = await state();
       expect(restoredState['status'], 'restored');
       expect(restoredState['canFinish'], isFalse);
       final versions = (restoredState['versions'] as List)
@@ -91,9 +103,22 @@ void main() {
           ),
         ),
       );
+      expect((await state())['canFinish'], isFalse);
       expect(await hash(target), originalHash);
       expect(await hash(preserved), currentHash);
       expect(await backup.exists(), isTrue);
+
+      await File('${support.path}/native_recovery_phase')
+          .writeAsString('recovery_export_cancel');
+      final cancelledExport = await channel.invokeMethod<String>(
+        'exportOriginalRecoveryVersion',
+        {'versionId': preservedVersion['id']},
+      );
+      expect(cancelledExport, isNull);
+      expect((await state())['canFinish'], isFalse);
+      expect(await hash(target), originalHash);
+      expect(await hash(backup), originalHash);
+      expect(await hash(preserved), currentHash);
 
       await File('${support.path}/native_recovery_phase')
           .writeAsString('recovery_export');
@@ -130,25 +155,24 @@ void main() {
           ),
         ),
       );
+      expect((await state())['canFinish'], isFalse);
       expect(await hash(target), originalHash);
       expect(await hash(backup), originalHash);
       expect(await hash(preserved), currentHash);
       await hostCheckpoint('recovery_export_restored');
       expect((await state())['canFinish'], isTrue);
       await channel.invokeMethod<void>('finishOriginalRecovery');
+      await expectNoRecoveryState();
       expect(await hash(target), originalHash);
       expect(await backup.exists(), isFalse);
       expect(await preserved.exists(), isFalse);
       expect(await backup.parent.list().toList(), isEmpty);
-      expect(
-        await channel.invokeMapMethod<String, dynamic>(
-          'getOriginalRecoveryState',
-        ),
-        isNull,
-      );
       expect(await channel.invokeMethod<String>('recoverExport'), isNotNull);
       await channel.invokeMethod<void>('acknowledgeExportRecovery');
+      await expectNoRecoveryState();
       expect(await channel.invokeMethod<String>('recoverExport'), isNull);
+      await channel.invokeMethod<String>('retryOriginalRecovery');
+      await expectNoRecoveryState();
 
       // Legacy private imports use content-addressed identities. New writes are
       // rejected while historical private recovery targets remain supported.
@@ -173,6 +197,7 @@ void main() {
                 .having((error) => error.message, 'message', contains('导出')),
           ),
         );
+        await expectNoRecoveryState();
         expect(await hash(target), originalHash);
         expect(await backup.parent.list().toList(), isEmpty);
       } finally {
@@ -197,7 +222,10 @@ void main() {
             'restored_original_sha256_exact',
             'retained_current_sha256_exact',
             'finish_rejects_unexported_distinct_version',
+            'recovery_export_cancel_keeps_both_versions',
             'actual_system_picker_exports_preserved_version',
+            'immediate_recovery_state_after_success_error_and_cancel',
+            'no_target_retry_finishes_before_responding',
             'modified_export_blocks_finish_and_retains_all_versions',
             'verified_restored_export_reenables_safe_finish',
             'safe_finish_cleans_backups_only_after_verified_export',

@@ -32,7 +32,7 @@ PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
 CHECKPOINTS = ("permission_denied_ready", "details_ready", "review_ready",
                "cancelled_ready", "exported_ready", "original_cancelled_ready",
                "bulk_review_ready", "saved_ready")
-RECOVERY_PHASES = ("recovery_export",)
+RECOVERY_PHASES = ("recovery_export_cancel", "recovery_export")
 RECOVERY_CHECKPOINTS = ("recovery_export_corrupted", "recovery_export_restored")
 SMOKE_SCREENS = ("packaged_library", "packaged_settings")
 
@@ -141,7 +141,7 @@ class AndroidRuntime:
             self.tap(buttons[0], phase)
             return True
 
-        if phase not in {"save_cancel", "save_confirm", "recovery_export"}:
+        if phase not in {"save_cancel", "save_confirm", "recovery_export_cancel", "recovery_export"}:
             return False
         document_nodes = [node for node in nodes
                           if node.get("package") == "com.android.documentsui"]
@@ -163,7 +163,7 @@ class AndroidRuntime:
                 return False
         if not names:
             return False
-        if phase == "save_cancel":
+        if phase in {"save_cancel", "recovery_export_cancel"}:
             if any(node.get("package") == "com.android.inputmethod.latin" for node in nodes):
                 self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
                 return False
@@ -353,7 +353,7 @@ class AndroidRuntime:
                     print(line, end="", flush=True)
         reader = threading.Thread(target=log_recovery, daemon=True)
         reader.start()
-        handled = False
+        handled_recovery: list[str] = []
         checked_exports: set[str] = set()
         deadline = time.monotonic() + 420
         try:
@@ -369,19 +369,22 @@ class AndroidRuntime:
                                     "tee", "files/native_recovery_ack"], input=phase,
                                    capture_output=True, text=True, check=True, timeout=15)
                     checked_exports.add(phase)
-                if not handled and phase == "recovery_export":
+                if phase in RECOVERY_PHASES and phase not in handled_recovery:
+                    if phase != RECOVERY_PHASES[len(handled_recovery)]:
+                        raise RuntimeError(f"Unexpected recovery dialog order: {handled_recovery} then {phase}")
                     try:
                         nodes = self.hierarchy()
                     except (subprocess.CalledProcessError, ET.ParseError):
                         time.sleep(1)
                         continue
-                    handled = self.act("recovery_export", nodes, file_name=export_name)
+                    if self.act(phase, nodes, file_name=export_name):
+                        handled_recovery.append(phase)
                 time.sleep(1)
             reader.join(timeout=5)
             if process.returncode:
                 raise RuntimeError(f"Native conflict-recovery test failed with exit {process.returncode}")
-            if not handled:
-                raise RuntimeError("Native recovery did not exercise its actual preserved-version export picker")
+            if handled_recovery != list(RECOVERY_PHASES):
+                raise RuntimeError("Native recovery did not exercise actual preserved-version export cancel and retry")
             if checked_exports != set(RECOVERY_CHECKPOINTS):
                 raise RuntimeError("Recovery did not revalidate its exported document before safe finish")
         finally:

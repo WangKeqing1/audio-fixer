@@ -105,6 +105,16 @@ class DialogDriverTest(unittest.TestCase):
                                          file_name=file_name))
         self.runtime.tap.assert_called_once_with(self.save, 'recovery_export')
 
+    def test_recovery_export_cancel_preserves_exact_filename_guard(self):
+        file_name = 'audio-fixer-recovery-preserved-1234abcd.mp3'
+        expected = node('android:id/title', file_name, 'android.widget.EditText')
+        self.assertFalse(self.runtime.act('recovery_export_cancel', [self.filename, self.save],
+                                          file_name=file_name))
+        self.runtime.adb.assert_not_called()
+        self.assertTrue(self.runtime.act('recovery_export_cancel', [expected, self.save],
+                                         file_name=file_name))
+        self.runtime.adb.assert_called_once_with('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+
     def test_save_in_other_directory_is_not_confirmed(self):
         toolbar = node('com.android.documentsui:id/toolbar')
         toolbar.append(node('android:id/title', 'Recent'))
@@ -179,6 +189,34 @@ class DialogDriverTest(unittest.TestCase):
 
 class IntegrationSourceContractTest(unittest.TestCase):
     """Static harness guards only; these do not claim Android UI execution."""
+
+    def test_native_recovery_releases_active_before_terminal_replies(self):
+        # Source protocol guard complements immediate Android state assertions.
+        # It does not simulate threads, provider I/O, or native execution.
+        root = Path(__file__).resolve().parents[1]
+        source = (root / 'android/app/src/main/kotlin/com/audiofixer/audio_fixer'
+                  / 'AudioWriteBridge.kt').read_text()
+
+        def method(name, next_name):
+            return source[source.index(f'    private fun {name}('):
+                          source.index(f'    private fun {next_name}(')]
+
+        for name, next_name, terminal in (
+            ('completeActiveSuccess', 'completeActiveError', 'reply.success(value)'),
+            ('completeActiveError', 'schedule', 'reply.error(code, message)'),
+        ):
+            with self.subTest(method=name):
+                body = method(name, next_name)
+                self.assertLess(body.index('active = false'), body.index(terminal))
+        action = method('recoveryAction', 'exportRecoveryVersion')
+        export = method('completeRecoveryExport', 'requestConsent')
+        self.assertIn('completeActiveSuccess(reply, value)', action)
+        self.assertIn('completeActiveError(reply,', action)
+        self.assertIn('completeActiveSuccess(pending.reply, saved)', export)
+        self.assertIn('completeActiveError(pending.reply,', export)
+        self.assertIn('recoveryAction(reply) { recover() }',
+                      method('retryOriginalRecovery', 'recoveryAction'))
+        self.assertNotRegex(source, r'finally\s*\{\s*active\s*=\s*false')
 
     def test_localized_material_navigation_has_explicit_route_guards(self):
         root = Path(__file__).resolve().parents[1]

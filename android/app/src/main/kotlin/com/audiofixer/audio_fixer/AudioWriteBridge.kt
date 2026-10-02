@@ -186,11 +186,7 @@ internal class AudioWriteBridge(
             val target = originalJournal.recoveryTarget()
             active = true
             if (target == null) {
-                schedule(reply) {
-                    try { reply.success(recover()) } catch (error: Exception) {
-                        reply.error("original_recovery_required", error.message ?: "原音频恢复未完成。")
-                    } finally { active = false }
-                }
+                recoveryAction(reply) { recover() }
                 return
             }
             // Uses the retained record directly; a truncated file need not be
@@ -208,9 +204,12 @@ internal class AudioWriteBridge(
     private fun recoveryAction(reply: Reply, action: () -> Any?) {
         active = true
         schedule(reply) {
-            try { reply.success(exportJournal.exclusively(action)) }
-            catch (error: Exception) { reply.error("original_recovery_required", error.message ?: "无法读取或完成恢复选择。") }
-            finally { active = false }
+            try {
+                val value = exportJournal.exclusively(action)
+                completeActiveSuccess(reply, value)
+            } catch (error: Exception) {
+                completeActiveError(reply, "original_recovery_required", error.message ?: "无法读取或完成恢复选择。")
+            }
         }
     }
 
@@ -313,10 +312,10 @@ internal class AudioWriteBridge(
                         throw error
                     }
                 }
-                pending.reply.success(saved)
+                completeActiveSuccess(pending.reply, saved)
             } catch (error: Exception) {
-                pending.reply.error("recovery_export_failed", error.message ?: "恢复副本导出未完成；内部备份仍保留。")
-            } finally { active = false }
+                completeActiveError(pending.reply, "recovery_export_failed", error.message ?: "恢复副本导出未完成；内部备份仍保留。")
+            }
         }
     }
 
@@ -533,6 +532,20 @@ internal class AudioWriteBridge(
             active = false
             reply.error("export_failed", error.message ?: "无法准备音频副本。")
         }
+    }
+
+    // A MethodChannel completion may immediately dispatch the caller's next
+    // request on the main thread. Release ownership BEFORE posting a terminal
+    // result, and never release it again in a trailing finally: that could
+    // incorrectly clear the next operation's active state.
+    private fun completeActiveSuccess(reply: Reply, value: Any?) {
+        active = false
+        reply.success(value)
+    }
+
+    private fun completeActiveError(reply: Reply, code: String, message: String) {
+        active = false
+        reply.error(code, message)
     }
 
     private fun schedule(reply: Reply, action: () -> Unit) {
