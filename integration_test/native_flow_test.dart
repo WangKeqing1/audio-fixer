@@ -181,9 +181,24 @@ Future<LibraryController> _verifyLibraryFilters(
         matching: find.byType(Scrollable),
       ),
     );
-    await tester.tap(control);
+    await tester.pumpAndSettle();
+    final switchControl = find.descendant(
+      of: control,
+      matching: find.byType(Switch),
+    );
+    final wasEnabled = switchControl.evaluate().isEmpty
+        ? null
+        : tester.widget<Switch>(switchControl).value;
+    final target = wasEnabled == null ? control : switchControl;
+    await Scrollable.ensureVisible(tester.element(target), alignment: 0.5);
+    await tester.pumpAndSettle();
+    expect(target.hitTestable(), findsOneWidget);
+    await tester.tap(target.hitTestable());
     await tester.pumpAndSettle();
     await _waitFor(tester, () => !controller.isBusy, '$key persistence');
+    if (wasEnabled != null) {
+      expect(tester.widget<Switch>(switchControl).value, !wasEnabled);
+    }
   }
 
   Future<void> toggleExcludedFolder() async {

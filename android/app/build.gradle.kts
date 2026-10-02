@@ -80,6 +80,9 @@ android {
         }
     }
     buildTypes.named("release") {
+        // Preserve the small manifest-reflection/JNI boundary used by ML Kit.
+        // Flutter's normal release shrinking and optimization remain enabled.
+        proguardFiles("proguard-rules.pro")
         // TODO: Add your own signing config for the release build.
         // Signing with the debug keys for now, so `flutter run --release` works.
         signingConfig = signingConfigs.getByName("debug")

@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/translation-runtime.yml'
       - 'android/app/build.gradle.kts'
+      - 'android/app/proguard-rules.pro'
       - 'android/app/src/main/AndroidManifest.xml'
       - 'android/app/src/main/kotlin/**/LyricsTranslationBridge.kt'
       - 'android/app/src/main/kotlin/**/MainActivity.kt'
