@@ -98,7 +98,7 @@ jobs:
         run: flutter pub get --enforce-lockfile
 
       - name: Check Dart formatting
-        run: dart format --output=none --set-exit-if-changed lib test tool 2>&1 | tee build/ci/format.txt
+        run: dart format --output=none --set-exit-if-changed lib test tool integration_test 2>&1 | tee build/ci/format.txt
 
       - name: Analyze all Dart code
         run: flutter analyze --no-pub 2>&1 | tee build/ci/analyze.txt
@@ -220,8 +220,8 @@ jobs:
           apk=build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           test -s "$apk"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > build/ci/apk-badging.txt
-          grep -q "^package: name='com.audiofixer.audio_fixer.qa' " build/ci/apk-badging.txt
-          grep -q "^application-label:'Audio Fixer QA'$" build/ci/apk-badging.txt
+          grep -q "^package: name='com.audiofixer.audio_fixer.qa.v030' " build/ci/apk-badging.txt
+          grep -q "^application-label:'Audio Fixer QA 0.3'$" build/ci/apk-badging.txt
           grep -q "^native-code: 'arm64-v8a'$" build/ci/apk-badging.txt
           if grep -q '^application-debuggable' build/ci/apk-badging.txt; then
             echo '::error::The optimized QA APK must not be debuggable.'
@@ -251,7 +251,7 @@ jobs:
               'checkout_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'run_id': os.environ['GITHUB_RUN_ID'],
               'package_id': attributes['name'],
-              'label': 'Audio Fixer QA',
+              'label': 'Audio Fixer QA 0.3',
               'version_name': attributes['versionName'],
               'version_code': attributes['versionCode'],
               'abi': 'arm64-v8a',

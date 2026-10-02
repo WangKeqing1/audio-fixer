@@ -22,7 +22,8 @@ import xml.etree.ElementTree as ET
 from generate_audio_fixtures import generate
 from validate_audio import compare, inspect
 
-PACKAGE = "com.audiofixer.audio_fixer.qa"
+PACKAGE = "com.audiofixer.audio_fixer.qa.v030"
+APP_LABEL = "Audio Fixer QA 0.3"
 SOURCE_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_fixture.mp3"
 UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
@@ -126,7 +127,7 @@ class AndroidRuntime:
                 "com.android.providers.media.module", "com.google.android.providers.media.module",
                 "com.android.providers.media"}]
             words = " ".join(node.get("text", "") for node in media_nodes).lower()
-            if not ("audio fixer qa" in words and "modify" in words and "audio" in words):
+            if not (APP_LABEL.lower() in words and "modify" in words and "audio" in words):
                 return False
             button_id = "android:id/button2" if phase == "original_cancel" else "android:id/button1"
             labels = {"don't allow", "don’t allow", "deny", "cancel"} if phase == "original_cancel" else {"allow"}

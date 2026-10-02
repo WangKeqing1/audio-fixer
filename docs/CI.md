@@ -14,7 +14,7 @@ From the repository root on Linux:
 
 ```sh
 flutter pub get --enforce-lockfile
-dart format --output=none --set-exit-if-changed lib test tool
+dart format --output=none --set-exit-if-changed lib test tool integration_test
 flutter analyze --no-pub
 env -u AUDIO_FIXER_REAL_INPUTS flutter test --no-pub --coverage --concurrency=2 --reporter expanded
 ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi \
@@ -55,7 +55,7 @@ cannot silently expand this package list. The approved main terms are
 ## Results and limits
 
 The output is `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`. CI verifies
-`com.audiofixer.audio_fixer.qa`, the **Audio Fixer QA** label, the pubspec version
+`com.audiofixer.audio_fixer.qa.v030`, the **Audio Fixer QA 0.3** label, the pubspec version
 with `-qa` suffix, the ARM64 split version code, and the single `arm64-v8a` ABI. It
 also checks that the APK is **not debuggable**, verifies its signature and Android
 Debug test signer, and records its SHA-256 and size.
@@ -64,6 +64,11 @@ Debug test signer, and records its SHA-256 and size.
 **debug TEST signing, not production signing**. This is a side-by-side QA build
 for ARM64 devices, not a production release. It can coexist with the normal app;
 without the opt-in property, the normal package identity remains unchanged.
+The 0.3 QA namespace also differs from the prior `com.audiofixer.audio_fixer.qa`
+package: it installs alongside the old QA, preserving that app's private data.
+The new QA has independent settings/tasks and requests its own media permission;
+it does not migrate or delete the old private copies. Long-term release updates
+still require a future user-controlled stable signing setup.
 
 The workflow retains an exact allowlist consisting of the verified ARM64 QA APK,
 its identity/provenance JSON, SHA-256, signature report and package badging for

@@ -137,7 +137,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
           apk=build/app/outputs/flutter-apk/app-x86_64-release.apk
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | tee build/android_runtime/packaged-apk-local.txt
-          grep -q "^package: name='com.audiofixer.audio_fixer.qa' " build/android_runtime/packaged-apk-local.txt
+          grep -q "^package: name='com.audiofixer.audio_fixer.qa.v030' " build/android_runtime/packaged-apk-local.txt
           grep -q "^native-code: 'x86_64'$" build/android_runtime/packaged-apk-local.txt
           if grep -q '^application-debuggable' build/android_runtime/packaged-apk-local.txt; then
             echo '::error::Packaged normal-entrypoint smoke requires a non-debuggable optimized QA build.'

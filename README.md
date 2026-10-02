@@ -53,7 +53,7 @@ flutter build apk --debug
 ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi --target-platform android-arm64
 ```
 
-产物为 `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。QA 开关适用于所有构建模式，使用独立包名 `com.audiofixer.audio_fixer.qa`、显示名 `Audio Fixer QA` 和 `-qa` 版本后缀，可与正常应用并存。未设置开关时保留原包名与名称。
+产物为 `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。QA 开关适用于所有构建模式，使用独立包名 `com.audiofixer.audio_fixer.qa.v030`、显示名 `Audio Fixer QA 0.3` 和 `-qa` 版本后缀，可与正常应用及旧版 QA 并存。0.3 QA 使用独立应用数据，旧 QA 的私有副本与任务记录不会迁移或删除；系统音乐库仍需重新授权。无需卸载旧 QA。未设置开关时保留原包名与名称。
 
 这是 AOT 优化、测试签名的 QA 包，不是正式发布签名。签名不同的 APK 无法覆盖更新旧版；不要为绕过签名冲突而直接卸载旧应用，以免丢失本地目录/私有副本。自动质量流程见 [CI 说明](docs/CI.md)。
 

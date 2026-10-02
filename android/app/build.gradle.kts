@@ -4,7 +4,8 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Opt-in test identity for safe side-by-side QA installs in every build mode.
+// Versioned opt-in QA identity: CI test signers cannot replace older local QA
+// installs safely. Keep the previous QA package/private data alongside 0.3.
 // Normal builds keep the application's existing identity.
 val audioFixerQa = providers.gradleProperty("audioFixerQa")
     .map { it.equals("true", ignoreCase = true) }
@@ -39,9 +40,9 @@ android {
     buildTypes {
         configureEach {
             if (audioFixerQa) {
-                applicationIdSuffix = ".qa"
+                applicationIdSuffix = ".qa.v030"
                 versionNameSuffix = "-qa"
-                manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA"
+                manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.3"
             }
         }
         release {

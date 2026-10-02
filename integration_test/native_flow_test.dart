@@ -304,8 +304,12 @@ void main() {
       );
       // Use the actual task-selection and bulk action widgets so native
       // evidence also shows reviewed counts and the final batch result panel.
-      await tester.pageBack();
+      // pageBack() matches the English 'Back' tooltip, not this Chinese UI.
+      expect(find.byType(TrackDetailPage), findsOneWidget);
+      expect(find.byType(BackButton), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
+      expect(find.byType(TrackDetailPage), findsNothing);
       await tester.tap(find.text('补全任务'));
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
