@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/models/app_settings.dart';
+import '../../core/models/audio_folder.dart';
 import '../../core/models/audio_track.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
@@ -190,7 +191,13 @@ class LibraryController extends ChangeNotifier {
   bool _batchStopRequested = false;
   bool _writeRecordUncertain = false;
   bool get hasRetryableBatchFailures =>
-      !isBusy && (batchOperation?.failedCount ?? 0) > 0;
+      !isBusy &&
+      (batchOperation?.items.any(
+            (item) =>
+                item.status == BatchItemStatus.failed &&
+                trackById(item.trackId) != null,
+          ) ??
+          false);
 
   void toggleTrackSelection(String id) {
     if (!canOperate || trackById(id) == null) return;
@@ -202,6 +209,15 @@ class LibraryController extends ChangeNotifier {
     if (!canOperate) return;
     _selectedTrackIds.addAll(ids.where((id) => trackById(id) != null));
     _notify();
+  }
+
+  void retainSelection(Iterable<String> allowedIds) {
+    // Removing hidden choices is safe even while a batch owns its frozen scope.
+    // Never let a search changed during work revive selections for a later batch.
+    final allowed = allowedIds.toSet();
+    final before = _selectedTrackIds.length;
+    _selectedTrackIds.removeWhere((id) => !allowed.contains(id));
+    if (_selectedTrackIds.length != before) _notify();
   }
 
   void clearSelection() {
@@ -282,7 +298,11 @@ class LibraryController extends ChangeNotifier {
   Future<void> retryFailedBatch() async {
     if (!canOperate || batchOperation == null) return;
     final failed = batchOperation!.items
-        .where((item) => item.status == BatchItemStatus.failed)
+        .where(
+          (item) =>
+              item.status == BatchItemStatus.failed &&
+              trackById(item.trackId) != null,
+        )
         .map((item) => item.trackId)
         .toSet();
     if (failed.isEmpty) return;
@@ -299,18 +319,50 @@ class LibraryController extends ChangeNotifier {
   bool get usesDeviceLibrary => deviceLibrary != null;
   bool get canReadDeviceLibrary =>
       !usesDeviceLibrary || libraryPermission == AudioLibraryPermission.granted;
-  List<AudioTrack> get tracks => List.unmodifiable(
+  List<AudioTrack> get allTracks => List.unmodifiable(
     _snapshot.tracks.where(
       (track) => !track.isDeviceTrack || canReadDeviceLibrary,
     ),
   );
+  List<AudioTrack> get tracks =>
+      List.unmodifiable(allTracks.where((track) => !isTrackExcluded(track)));
+  bool isTrackExcluded(AudioTrack track) => settings.excludes(track);
+  int get excludedTrackCount => allTracks.where(isTrackExcluded).length;
+  int get unknownDurationCount =>
+      tracks.where((track) => !track.hasKnownDuration).length;
+  int get unknownFolderCount =>
+      allTracks.where((track) => track.folder == null).length;
+  List<AudioFolder> get folderChoices {
+    final folders = <AudioFolder>{...settings.excludedFolders};
+    for (final track in allTracks) {
+      folders.addAll(track.folder?.ancestors ?? const <AudioFolder>[]);
+    }
+    for (final folder in settings.excludedFolders) {
+      folders.addAll(folder.ancestors);
+    }
+    final sorted = folders.toList()
+      ..sort((a, b) {
+        final volumeOrder = a.volumeName.compareTo(b.volumeName);
+        return volumeOrder == 0
+            ? a.normalizedPath.compareTo(b.normalizedPath)
+            : volumeOrder;
+      });
+    return List.unmodifiable(sorted);
+  }
+
   List<CompletionTask> get tasks => List.unmodifiable(_snapshot.tasks);
   AppSettings get settings => _snapshot.settings;
   int get incompleteCount =>
       tracks.where((track) => track.needsCompletion).length;
   bool get canOperate => !isLoading && !isBusy && loadError == null;
 
+  void _pruneSelection() {
+    final eligibleIds = tracks.map((track) => track.id).toSet();
+    _selectedTrackIds.removeWhere((id) => !eligibleIds.contains(id));
+  }
+
   void _notify() {
+    _pruneSelection();
     if (!_disposed) notifyListeners();
   }
 
@@ -433,7 +485,9 @@ class LibraryController extends ChangeNotifier {
             (old.dateModifiedMs != track.dateModifiedMs ||
                 old.sizeBytes != track.sizeBytes ||
                 old.fileName != track.fileName ||
-                old.contentUri != track.contentUri)) {
+                old.contentUri != track.contentUri ||
+                old.folder != track.folder ||
+                old.indexedDurationMs != track.indexedDurationMs)) {
           changedIds.add(track.id);
         }
         if (old == null ||
@@ -441,7 +495,9 @@ class LibraryController extends ChangeNotifier {
             old.dateModifiedMs != track.dateModifiedMs ||
             old.sizeBytes != track.sizeBytes ||
             old.fileName != track.fileName ||
-            old.contentUri != track.contentUri) {
+            old.contentUri != track.contentUri ||
+            old.folder != track.folder ||
+            old.indexedDurationMs != track.indexedDurationMs) {
           return track;
         }
         return track.withDetails(
@@ -534,9 +590,7 @@ class LibraryController extends ChangeNotifier {
     );
     await store.save(next);
     _snapshot = next;
-    _selectedTrackIds.removeWhere(
-      (id) => !_snapshot.tracks.any((track) => track.id == id),
-    );
+    _pruneSelection();
     _notify();
   }
 
@@ -559,8 +613,8 @@ class LibraryController extends ChangeNotifier {
   Future<void> importAudio() => _operate(() async {
     final selected = await picker.pick();
     if (selected.isEmpty) return;
-    final next = [...tracks];
-    final existing = tracks.map((track) => track.id).toSet();
+    final next = [..._snapshot.tracks];
+    final existing = _snapshot.tracks.map((track) => track.id).toSet();
     var imported = 0;
     var duplicates = 0;
     var readErrors = 0;
@@ -598,10 +652,39 @@ class LibraryController extends ChangeNotifier {
     );
   });
 
+  bool get _hasLibraryExclusions =>
+      settings.excludeShortAudio || settings.excludedFolders.isNotEmpty;
+
+  // Revalidate the native metadata while filters are active. A stale folder or
+  // duration must not become an online query/write simply because it was once
+  // selected. A failed refresh is not permission to act on old metadata.
+  Future<bool> _refreshForExclusions({Iterable<String>? trackIds}) async {
+    if (!_hasLibraryExclusions || !usesDeviceLibrary) return true;
+    final requestedIds = trackIds?.toSet();
+    if (!_snapshot.tracks.any(
+      (track) =>
+          track.isDeviceTrack &&
+          (requestedIds == null || requestedIds.contains(track.id)),
+    )) {
+      return true;
+    }
+    await _syncDeviceLibrary();
+    if (!canReadDeviceLibrary || libraryError != null) {
+      _announce('无法重新确认排除条件，请恢复音乐库访问并刷新后重试。');
+      return false;
+    }
+    return true;
+  }
+
   Future<void> complete({
     AudioTrack? track,
     Set<String>? trackIds,
   }) => _operate(() async {
+    if (!await _refreshForExclusions(
+      trackIds: track != null ? [track.id] : trackIds,
+    )) {
+      return;
+    }
     final targets = track != null
         ? [?trackById(track.id)]
         : trackIds != null
@@ -626,6 +709,18 @@ class LibraryController extends ChangeNotifier {
       for (var index = 0; index < targets.length; index++) {
         if (_batchStopRequested || _disposed) break;
         var item = targets[index];
+        if (item.isDeviceTrack &&
+            !await _refreshForExclusions(trackIds: [item.id])) {
+          _batchStopRequested = true;
+          break;
+        }
+        final eligible = trackById(item.id);
+        if (eligible == null || isTrackExcluded(eligible)) {
+          _setBatchItem(item.id, BatchItemStatus.skipped, '已被音乐库排除条件过滤，未查询。');
+          await _commit();
+          continue;
+        }
+        item = eligible;
         progress = '正在查询 ${index + 1} / ${targets.length}：${item.displayTitle}';
         _setBatchItem(item.id, BatchItemStatus.running, '正在检查和查询');
         await _commit();
@@ -635,6 +730,16 @@ class LibraryController extends ChangeNotifier {
               (!item.detailsLoaded || item.readError != null) &&
               completion.sources.isNotEmpty) {
             item = await deviceLibrary!.readDetails(item);
+          }
+          if (isTrackExcluded(item)) {
+            _setBatchItem(item.id, BatchItemStatus.skipped, '读取后符合排除条件，未查询。');
+            await _commit(
+              tracks: _snapshot.tracks
+                  .map((current) => current.id == item.id ? item : current)
+                  .toList(),
+              tasks: _invalidateTasks({item.id}),
+            );
+            continue;
           }
           if (item.readError != null) throw StateError(item.readError!);
           task = await completion.preview(item, settings);
@@ -739,6 +844,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   bool canQueryTrack(AudioTrack track) =>
+      !isTrackExcluded(track) &&
       track.readError == null &&
       settings.enabledFields.isNotEmpty &&
       (!track.detailsLoaded ||
@@ -748,7 +854,8 @@ class LibraryController extends ChangeNotifier {
       .where((track) => canQueryTrack(track) && !_hasReviewableResult(track))
       .length;
 
-  bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
+  bool canExportTrack(AudioTrack track) =>
+      !isTrackExcluded(track) && (exporter?.supports(track) ?? false);
 
   CompletionTask? taskForTrack(String id) {
     for (final task in tasks) {
@@ -759,7 +866,8 @@ class LibraryController extends ChangeNotifier {
 
   bool canSaveOriginalTrack(AudioTrack track) {
     final writer = exporter;
-    return writer is AudioOriginalSaver &&
+    return !isTrackExcluded(track) &&
+        writer is AudioOriginalSaver &&
         (writer as AudioOriginalSaver).supportsOriginal(track);
   }
 
@@ -769,13 +877,7 @@ class LibraryController extends ChangeNotifier {
       selected.every(
         (item) =>
             hasText(item.value) &&
-            task.suggestions.any(
-              (candidate) =>
-                  candidate.field == item.field &&
-                  candidate.value == item.value &&
-                  candidate.source == item.source &&
-                  candidate.sourceUrl == item.sourceUrl,
-            ),
+            task.suggestions.any((candidate) => candidate.permits(item)),
       );
 
   List<FieldSuggestion> approvedSuggestionsFor(CompletionTask task) {
@@ -891,13 +993,21 @@ class LibraryController extends ChangeNotifier {
     return saved;
   }
 
-  Future<void> saveSelectedCandidates({bool exportCopies = false}) =>
-      _saveBatch(selectedTrackIds, exportCopies: exportCopies);
+  Future<void> saveSelectedCandidates({
+    bool exportCopies = false,
+    Set<String>? trackIds,
+  }) => _saveBatch(
+    trackIds == null
+        ? selectedTrackIds
+        : selectedTrackIds.intersection(trackIds),
+    exportCopies: exportCopies,
+  );
 
   Future<void> _saveBatch(
     Set<String> ids, {
     required bool exportCopies,
   }) => _operate(() async {
+    if (!await _refreshForExclusions(trackIds: ids)) return;
     final targets = tracks.where((track) => ids.contains(track.id)).toList();
     if (targets.isEmpty) {
       _announce('请先选择歌曲。');
@@ -1014,7 +1124,49 @@ class LibraryController extends ChangeNotifier {
           status: status,
           message: message,
         );
-    final track = trackById(task.trackId);
+    if (!await _refreshForExclusions(trackIds: [task.trackId])) {
+      return result(BatchItemStatus.skipped, '无法确认最新排除条件，未保存。');
+    }
+    var candidateTrack = trackById(task.trackId);
+    if (candidateTrack == null) {
+      return result(BatchItemStatus.skipped, '歌曲不可用或已被音乐库排除条件过滤，未保存。');
+    }
+    if (_hasLibraryExclusions &&
+        candidateTrack.isDeviceTrack &&
+        deviceLibrary != null) {
+      try {
+        final updated = await deviceLibrary!.readDetails(candidateTrack);
+        final changed =
+            candidateTrack.title != updated.title ||
+            candidateTrack.artist != updated.artist ||
+            candidateTrack.album != updated.album ||
+            candidateTrack.durationMs != updated.durationMs ||
+            candidateTrack.lyrics != updated.lyrics ||
+            candidateTrack.artworkPath != updated.artworkPath ||
+            updated.readError != null;
+        await _commit(
+          tracks: _snapshot.tracks
+              .map((item) => item.id == updated.id ? updated : item)
+              .toList(),
+          tasks: changed ? _invalidateTasks({updated.id}) : null,
+        );
+        if (isTrackExcluded(updated)) {
+          return result(BatchItemStatus.skipped, '读取后符合排除条件，未保存。');
+        }
+        candidateTrack = trackById(task.trackId);
+      } catch (error) {
+        if (error is PlatformException && error.code == 'permission_denied') {
+          libraryPermission = AudioLibraryPermission.denied;
+          _batchStopRequested = true;
+          _notify();
+        }
+        return result(
+          BatchItemStatus.failed,
+          _writeErrorMessage(error, exportCopy),
+        );
+      }
+    }
+    final track = candidateTrack;
     final current = taskForTrack(task.trackId);
     if (track == null || current == null || !isTaskCurrent(task)) {
       return result(BatchItemStatus.skipped, '歌曲或候选已更新，请返回重新打开结果。');

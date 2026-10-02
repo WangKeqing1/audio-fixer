@@ -1,11 +1,13 @@
-# Original-save and bulk Android acceptance (0.3.0)
+# Original-save, bulk and library-filter Android acceptance (0.3.1)
 
 ## Synthetic-only runtime
 
 Use a clean disposable emulator and the QA package identity. Do not run the host
-driver against a phone containing personal music. The driver creates only
-`Music/AudioFixerSynthetic/native_fixture.mp3` and `native_unapproved.mp3`, using
-FFmpeg-generated signals and an authored cover. It never calls an online source,
+driver against a phone containing personal music. The driver creates 36 indexed
+files under `Music/AudioFixerSynthetic/`: the two original MP3 fixtures plus 34
+authored PCM WAVs. These include exact 59.999/60.000/60.001-second boundaries,
+parent/nested/prefix-sibling folders and enough short rows to scroll a long list.
+All files use generated signals and an authored cover. It never calls an online source,
 uploads audio or operates arbitrary MediaStore entries.
 
 ```sh
@@ -24,6 +26,14 @@ security settings to work around a missing acceleration capability.
 
 - Real permission denial, retry/grant and MediaStore query/read through content URIs
 - Unicode existing metadata and embedded cover; no mock native MethodChannels
+- Selection toolbar stays in the same on-screen rectangle after long scrolling,
+  with hit-testable select-all/query controls and a cancelled query retaining selection
+- Actual settings controls exclude strictly sub-60-second audio and parent-folder
+  descendants while preserving the 60-second boundary and similarly named sibling
+- Excluded selections are removed and do not reappear when rules are toggled off;
+  all backing rows and 34 filter-fixture file hashes remain unchanged
+- Fresh controller/store initialization and MediaStore rescan preserve filter rules
+  and eligible rows. This is initialization coverage, not process-kill coverage
 - New candidate values start unchecked and need explicit selection
 - Optional export cancel/retry through the real Android document picker
 - Source whole-file SHA-256 unchanged after export and original-write consent cancel
@@ -59,7 +69,9 @@ Do not mark these passed merely because automated test files exist:
   alternate export-directory cancellation and document-provider cleanup failure
 - Playback in the user's usual player, without uploading or committing music
 
-Unit/Flutter tests cover many failure-state transitions, but those do not replace
+Unit/Flutter tests additionally cover unknown/nonpositive duration, separate storage
+volumes, settings failures, stale indexed-vs-parsed duration, exclusion-aware retries,
+and narrow screens with large text. Unit/Flutter tests cover many failure-state transitions, but those do not replace
 real Android API behavior for permission and storage failures. A green APK build
 is compilation evidence only. Record command, commit, device API/ABI, outcome and
 scope for every native run; preserve explicit not-run/blocked/failed distinctions.

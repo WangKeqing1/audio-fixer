@@ -457,6 +457,12 @@ class DeviceLibraryBridge(
         volume: String,
         rows: MutableList<Map<String, Any?>>,
     ) {
+        val folderColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.MediaColumns.RELATIVE_PATH
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.MediaColumns.DATA
+        }
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -469,6 +475,7 @@ class DeviceLibraryBridge(
             MediaStore.MediaColumns.DATE_ADDED,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.Audio.AudioColumns.IS_MUSIC,
+            folderColumn,
         )
         val selectionParts = mutableListOf(
             "${MediaStore.Audio.AudioColumns.IS_MUSIC} != 0",
@@ -501,6 +508,7 @@ class DeviceLibraryBridge(
             val durationIndex = cursor.getColumnIndex(MediaStore.Audio.AudioColumns.DURATION)
             val addedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
             val modifiedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+            val folderIndex = cursor.getColumnIndex(folderColumn)
 
             while (cursor.moveToNext()) {
                 if (idIndex < 0 || sizeIndex < 0 || cursor.isNull(idIndex) || cursor.isNull(sizeIndex)) continue
@@ -515,6 +523,21 @@ class DeviceLibraryBridge(
                 val dateModifiedMs = cursor.getLongOrNull(modifiedIndex)?.secondsToMillis() ?: 0L
                 val year = cursor.getIntOrNull(yearIndex)?.takeIf { it > 0 }
 
+                // DATA is used only for a folder label on pre-29 devices.
+                // It is never opened and never derived from the content URI.
+                val folderPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getStringOrNull(folderIndex)
+                } else {
+                    cursor.getStringOrNull(folderIndex)
+                        ?.takeIf { it.startsWith("/") }
+                        ?.let { File(it).parent }
+                }
+                val folderVolume = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    volume
+                } else {
+                    "legacy-filesystem"
+                }
+
                 rows += linkedMapOf(
                     "id" to "media:$volume:$id",
                     "contentUri" to contentUri,
@@ -527,6 +550,8 @@ class DeviceLibraryBridge(
                     "durationMs" to cursor.getLongOrNull(durationIndex),
                     "dateAddedMs" to dateAddedMs,
                     "dateModifiedMs" to dateModifiedMs,
+                    "volumeName" to folderVolume,
+                    "relativePath" to folderPath,
                 )
             }
         }

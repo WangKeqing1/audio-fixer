@@ -104,12 +104,17 @@ udev rule is required.
 The native integration test uses the production widgets, controller, MediaStore
 bridge, tag exporter and system document picker. Only the online metadata source
 is replaced with explicitly synthetic, offline lyrics. The host generates and
-indexes a covered MP3, then operates freshly observed Android permission and
+indexes two MP3s plus 34 authored WAVs (36 rows), then operates freshly observed Android permission and
 save dialogs. Assertions cover permission denial/retry, content-URI reading,
 Unicode tags, initially unchecked candidates, explicit field review, optional
 export cancellation/retry, original-write consent cancellation/retry, an approved
 song saved in a batch alongside an unapproved skipped song, persisted per-song
-results/batch counters and temporary-copy cleanup. The host verifies the source
+results/batch counters and temporary-copy cleanup. Library tests also assert a fixed
+selection toolbar after long scrolling, strict 60-second and folder-hierarchy
+exclusions, restored settings and selection safety on fresh controller/store
+initialization. Four synthetic screenshots show the toolbar before/after scrolling
+and filter settings before/after reloading; unknown duration and cross-volume
+matching receive unit coverage. Process kill is not claimed for filter persistence. The host verifies the source
 hash at cancellation checkpoints and the unapproved song's final exact hash.
 Both the optional exported file and the updated original undergo independent
 FFmpeg decoded-sample and encoded-packet checks and existing tag/cover checks.

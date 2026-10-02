@@ -178,6 +178,18 @@ void main() {
 
     await showApp();
     await capture('library');
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('toggle-library-selection')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('toggle-library-selection')).hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('select-visible-tracks')));
+    await tester.pumpAndSettle();
+    await capture('library-selection-fixed');
+    await tester.tap(find.byKey(const ValueKey('toggle-library-selection')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('补全任务'));
     await tester.pumpAndSettle();
     await capture('tasks');
@@ -222,6 +234,18 @@ void main() {
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -480));
     await tester.pumpAndSettle();
     await capture('library-dark-large-text-scrolled');
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('toggle-library-selection')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('toggle-library-selection')).hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('select-visible-tracks')));
+    await tester.pumpAndSettle();
+    await capture('library-selection-large-text');
+    await tester.tap(find.byKey(const ValueKey('toggle-library-selection')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
     // Settings has its own saved scroll position; reset it for the overview.
@@ -243,7 +267,7 @@ void main() {
       0,
       reason: 'Settings overview starts at top',
     );
-    expect(find.text('补全内容').hitTestable(), findsOneWidget);
+    expect(find.text('音乐库排除规则').hitTestable(), findsOneWidget);
     await capture('settings-dark-large-text');
     await tester.tap(find.text('补全任务'));
     await tester.pumpAndSettle();

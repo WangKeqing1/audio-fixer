@@ -62,12 +62,18 @@ class CompletionService {
             .lookup(track, Set.unmodifiable(fields))
             .timeout(const Duration(seconds: 45));
         suggestions.addAll(
-          candidates.where(
-            (candidate) =>
-                fields.contains(candidate.field) &&
-                hasText(candidate.value) &&
-                hasText(candidate.source),
-          ),
+          candidates
+              .map(
+                (candidate) => candidate.withChineseTranslation(
+                  settings.includeChineseTranslation,
+                ),
+              )
+              .where(
+                (candidate) =>
+                    fields.contains(candidate.field) &&
+                    hasText(candidate.value) &&
+                    hasText(candidate.source),
+              ),
         );
       } catch (error) {
         failedSources.add(

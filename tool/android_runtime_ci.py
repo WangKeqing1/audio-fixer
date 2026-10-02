@@ -20,6 +20,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from generate_audio_fixtures import generate
+from android_runtime_fixtures import generate_library_fixtures
 from validate_audio import compare, inspect
 
 PACKAGE = "com.audiofixer.audio_fixer.qa.v030"
@@ -29,7 +30,9 @@ UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
 PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
           "original_cancel", "original_confirm")
-CHECKPOINTS = ("permission_denied_ready", "details_ready", "review_ready",
+CHECKPOINTS = ("permission_denied_ready", "selection_toolbar_top",
+               "selection_toolbar_scrolled", "library_filters_ready",
+               "library_filters_reloaded", "details_ready", "review_ready",
                "cancelled_ready", "exported_ready", "original_cancelled_ready",
                "bulk_review_ready", "saved_ready")
 RECOVERY_PHASES = ("recovery_export_cancel", "recovery_export")
@@ -205,9 +208,15 @@ class AndroidRuntime:
         assert baseline["full_decode_ok"] and baseline["cover_count"] == 1
         assert not baseline["lyrics_present"]
         (self.output / "source-baseline.json").write_text(json.dumps(baseline, indent=2))
-        self.adb("shell", "mkdir", "-p", "/sdcard/Music/AudioFixerSynthetic")
-        for destination in (SOURCE_DEVICE, UNAPPROVED_DEVICE):
-            self.adb("push", str(original), destination)
+        library_fixtures = self.output / "library-fixtures"
+        library_manifest = generate_library_fixtures(library_fixtures)
+        destinations = [(original, SOURCE_DEVICE), (original, UNAPPROVED_DEVICE)]
+        destinations += [(library_fixtures / entry["file"], entry["device_path"])
+                         for entry in library_manifest["entries"]]
+        self.adb("shell", "mkdir", "-p", *sorted({str(Path(destination).parent)
+                                                for _, destination in destinations}))
+        for local, destination in destinations:
+            self.adb("push", str(local), destination)
             self.adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
                      "-d", "file://" + destination)
         deadline = time.monotonic() + 60
@@ -217,12 +226,12 @@ class AndroidRuntime:
                               "_id:_display_name:is_music", check=False)
             if all(any("_display_name=" + name in line and "is_music=1" in line
                        for line in result.stdout.splitlines())
-                   for name in ("native_fixture.mp3", "native_unapproved.mp3")):
+                   for name in [Path(destination).name for _, destination in destinations]):
                 (self.output / "mediastore-seed.txt").write_text(result.stdout)
-                print("Synthetic covered MP3 is indexed as music by Android MediaStore", flush=True)
+                print(f"{len(destinations)} synthetic MP3/WAV fixtures are indexed as music by Android MediaStore", flush=True)
                 return original
             time.sleep(2)
-        raise RuntimeError("Synthetic MP3 was not indexed in MediaStore within 60 seconds")
+        raise RuntimeError("Synthetic MP3/WAV fixtures were not indexed in MediaStore within 60 seconds")
 
     def test(self) -> None:
         env = dict(os.environ, ORG_GRADLE_PROJECT_audioFixerQa="true")
@@ -436,6 +445,15 @@ class AndroidRuntime:
         assert result["original_save_status"] == "savedOriginal"
         assert result["batch_saved_original"] == 1
         assert result["batch_skipped_unapproved"] == 1
+        fixtures = json.loads((self.output / "library-fixtures/manifest.json").read_text())
+        assert fixtures["synthetic_only"] is True
+        fixture_hashes = self.adb("shell", "sha256sum", *[
+            entry["device_path"] for entry in fixtures["entries"]
+        ]).stdout.splitlines()
+        actual_hashes = {line.split(maxsplit=1)[1].strip(): line.split(maxsplit=1)[0]
+                         for line in fixture_hashes}
+        expected_hashes = {entry["device_path"]: entry["sha256"] for entry in fixtures["entries"]}
+        assert actual_hashes == expected_hashes, "Library filtering changed or removed a synthetic source"
         backups = self.adb("exec-out", "run-as", PACKAGE, "ls",
                            "no_backup/original_audio_backups").stdout.strip()
         assert not backups, "Verified original backup was not acknowledged after task persistence"
@@ -472,6 +490,8 @@ class AndroidRuntime:
         summary = {"passed": False, "status": "awaiting_native_recovery",
                    "original_flow_passed": True, "synthetic_only": True,
                    "native_checks": len(result["checks"]),
+                   "library_filter_checks": result["library_filters"],
+                   "library_fixture_source_hashes_unchanged": len(expected_hashes),
                    "real_system_dialogs": len(PHASES),
                    "independent_audio_checks": len(checked["checks"]),
                    "source_unchanged_after_export_and_cancel": True,

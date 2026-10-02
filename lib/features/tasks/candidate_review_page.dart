@@ -20,6 +20,7 @@ class CandidateReviewPage extends StatefulWidget {
 
 class _CandidateReviewPageState extends State<CandidateReviewPage> {
   final Map<AudioField, FieldSuggestion> _selected = {};
+  final Map<FieldSuggestion, bool> _translationChoices = {};
   final ScrollController _scrollController = ScrollController();
   bool _exporting = false;
   String? _exportNotice;
@@ -29,14 +30,11 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     super.initState();
     final approved = widget.controller.approvedSuggestionsFor(widget.task);
     for (final candidate in widget.task.suggestions) {
-      if (approved.any(
-        (item) =>
-            item.field == candidate.field &&
-            item.value == candidate.value &&
-            item.source == candidate.source &&
-            item.sourceUrl == candidate.sourceUrl,
-      )) {
+      final matches = approved.where(candidate.permits);
+      if (matches.isNotEmpty) {
         _selected[candidate.field] = candidate;
+        _translationChoices[candidate] =
+            matches.first.includeChineseTranslation;
       }
     }
   }
@@ -122,6 +120,12 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       final theme = Theme.of(context);
       final selected = _selected.values
           .where((candidate) => !hasText(track?.valueOf(candidate.field)))
+          .map(
+            (candidate) => candidate.withChineseTranslation(
+              _translationChoices[candidate] ??
+                  controller.settings.includeChineseTranslation,
+            ),
+          )
           .toList();
       final String? unavailableReason;
       if (track == null) {
@@ -359,18 +363,22 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                   if (candidate.field == AudioField.artwork)
                                     _ArtworkPreview(value: candidate.value)
                                   else if (candidate.field == AudioField.lyrics)
-                                    ConstrainedBox(
-                                      constraints: const BoxConstraints(
-                                        maxHeight: 260,
-                                      ),
-                                      child: Scrollbar(
-                                        child: SingleChildScrollView(
-                                          primary: false,
-                                          child: SelectableText(
-                                            candidate.value,
-                                          ),
-                                        ),
-                                      ),
+                                    _LyricsPreview(
+                                      candidate: candidate,
+                                      includeTranslation:
+                                          _translationChoices[candidate] ??
+                                          controller
+                                              .settings
+                                              .includeChineseTranslation,
+                                      onChanged:
+                                          controller.canOperate &&
+                                              !_exporting &&
+                                              canReview
+                                          ? (value) => setState(() {
+                                              _translationChoices[candidate] =
+                                                  value;
+                                            })
+                                          : null,
                                     )
                                   else
                                     SelectableText(
@@ -502,6 +510,64 @@ class _ArtworkPreview extends StatelessWidget {
                 child: Center(child: CircularProgressIndicator()),
               ),
       ),
+    );
+  }
+}
+
+class _LyricsPreview extends StatelessWidget {
+  const _LyricsPreview({
+    required this.candidate,
+    required this.includeTranslation,
+    required this.onChanged,
+  });
+  final FieldSuggestion candidate;
+  final bool includeTranslation;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = candidate.lyricsContent!;
+    Widget preview(String value) => ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 220),
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          primary: false,
+          child: SelectableText(value),
+        ),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('原歌词', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        preview(content.original),
+        const SizedBox(height: 12),
+        if (content.hasChineseTranslation) ...[
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('附加中文翻译'),
+            subtitle: Text(
+              content.hasIncompatibleOffsets
+                  ? content.status
+                  : includeTranslation
+                  ? '保存原文和来源提供的译文'
+                  : '不加翻译，仅保存原歌词',
+            ),
+            value: includeTranslation && content.canIncludeTranslation,
+            onChanged: content.canIncludeTranslation ? onChanged : null,
+          ),
+          if (includeTranslation) ...[
+            Text(
+              '中文译文 · ${candidate.source}',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: 8),
+            preview(content.chineseTranslation!),
+          ],
+        ] else
+          Text(content.status, style: Theme.of(context).textTheme.bodySmall),
+      ],
     );
   }
 }

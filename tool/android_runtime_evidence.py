@@ -29,7 +29,7 @@ def main() -> None:
     allowlist += ['summary.json', 'native-test-result.json', 'native-ui-actions.json',
                   'source-baseline.json', 'independent-audio-check.json',
                   'independent-original-check.json', 'native-recovery-result.json',
-                  'packaged-smoke.json']
+                  'packaged-smoke.json', 'library-fixtures/manifest.json']
     manifest = {'synthetic_only': True, 'retention_days': 1,
                 'commit': os.environ.get('GITHUB_SHA'), 'files': []}
     for relative in allowlist:

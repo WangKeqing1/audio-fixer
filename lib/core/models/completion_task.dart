@@ -1,4 +1,5 @@
 import 'audio_track.dart';
+import 'lyrics_content.dart';
 
 enum TaskStatus {
   waitingForSource('等待数据源'),
@@ -22,6 +23,9 @@ class FieldSuggestion {
     required this.source,
     this.sourceUrl,
     this.matchDescription,
+    this.originalLyrics,
+    this.chineseTranslation,
+    this.includeChineseTranslation = true,
   });
 
   final AudioField field;
@@ -29,6 +33,49 @@ class FieldSuggestion {
   final String source;
   final String? sourceUrl;
   final String? matchDescription;
+  final String? originalLyrics;
+  final String? chineseTranslation;
+  final bool includeChineseTranslation;
+
+  LyricsContent? get lyricsContent => field == AudioField.lyrics
+      ? LyricsContent(
+          originalLyrics ?? value,
+          chineseTranslation: chineseTranslation,
+        )
+      : null;
+
+  FieldSuggestion withChineseTranslation(bool include) {
+    final content = lyricsContent;
+    if (content == null) return this;
+    return FieldSuggestion(
+      field: field,
+      value: content.render(includeTranslation: include),
+      source: source,
+      sourceUrl: sourceUrl,
+      matchDescription: matchDescription,
+      originalLyrics: content.original,
+      chineseTranslation: chineseTranslation,
+      includeChineseTranslation: include,
+    );
+  }
+
+  /// Only the two exact renderings of an existing candidate may be approved.
+  /// An edited translation or fabricated source is never an allowed variant.
+  bool permits(FieldSuggestion item) =>
+      field == item.field &&
+      source == item.source &&
+      sourceUrl == item.sourceUrl &&
+      (field != AudioField.lyrics
+          ? value == item.value
+          : lyricsContent!.original == item.lyricsContent!.original &&
+                chineseTranslation == item.chineseTranslation &&
+                (value == item.value ||
+                    (lyricsContent!.hasChineseTranslation &&
+                        item.value ==
+                            lyricsContent!.render(
+                              includeTranslation:
+                                  item.includeChineseTranslation,
+                            ))));
 
   Map<String, Object?> toJson() => {
     'field': field.name,
@@ -36,6 +83,9 @@ class FieldSuggestion {
     'source': source,
     'sourceUrl': sourceUrl,
     'matchDescription': matchDescription,
+    'originalLyrics': originalLyrics,
+    'chineseTranslation': chineseTranslation,
+    'includeChineseTranslation': includeChineseTranslation,
   };
 
   factory FieldSuggestion.fromJson(Map<String, dynamic> json) =>
@@ -45,6 +95,10 @@ class FieldSuggestion {
         source: json['source'] as String,
         sourceUrl: json['sourceUrl'] as String?,
         matchDescription: json['matchDescription'] as String?,
+        originalLyrics: json['originalLyrics'] as String?,
+        chineseTranslation: json['chineseTranslation'] as String?,
+        includeChineseTranslation:
+            json['includeChineseTranslation'] as bool? ?? true,
       );
 }
 

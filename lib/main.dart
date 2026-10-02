@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -10,15 +12,25 @@ import 'core/services/sources/online_sources.dart';
 import 'core/storage/library_store.dart';
 import 'features/library/library_controller.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  Directory? sourceCache;
+  try {
+    final support = await getApplicationSupportDirectory();
+    sourceCache = Directory('${support.path}/source-cache');
+  } catch (_) {
+    // Cache persistence is optional. Still launch the app so the catalog can
+    // display its own recoverable storage error instead of a blank startup.
+  }
   runApp(
     AudioFixerApp(
       controller: LibraryController(
         store: JsonLibraryStore(getApplicationSupportDirectory),
         picker: SystemAudioPicker(),
         importer: LocalAudioImporter(getApplicationSupportDirectory),
-        completion: CompletionService(sources: createOnlineSources()),
+        completion: CompletionService(
+          sources: createOnlineSources(cacheDirectory: sourceCache),
+        ),
         deviceLibrary: AndroidMusicLibrary(getApplicationSupportDirectory),
         exporter: SafeAudioCopyExporter(getTemporaryDirectory),
       ),

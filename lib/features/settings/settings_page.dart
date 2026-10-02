@@ -4,6 +4,7 @@ import '../../core/models/app_settings.dart';
 import '../../core/models/audio_track.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../library/library_controller.dart';
+import 'library_filters.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -19,6 +20,9 @@ class SettingsPage extends StatelessWidget {
       key: const PageStorageKey('settings'),
       padding: EdgeInsets.fromLTRB(horizontal, 8, horizontal, 32),
       children: [
+        const _SectionTitle('音乐库排除规则'),
+        LibraryFilterSettings(controller: controller),
+        const SizedBox(height: 28),
         const _SectionTitle('补全内容', description: '仅查找缺失的资料，保留已有信息。'),
         Card(
           child: Column(
@@ -41,6 +45,18 @@ class SettingsPage extends StatelessWidget {
                 onChanged: controller.canOperate
                     ? (value) => controller.updateSettings(
                         settings.copyWith(lyrics: value),
+                      )
+                    : null,
+              ),
+              const _InsetDivider(),
+              SwitchListTile(
+                key: const ValueKey('include-chinese-translation'),
+                title: const Text('附加中文翻译'),
+                subtitle: const Text('候选页默认附加来源已有译文，可单独关闭。已确认的选择保持不变。'),
+                value: settings.includeChineseTranslation,
+                onChanged: controller.canOperate && settings.lyrics
+                    ? (value) => controller.updateSettings(
+                        settings.copyWith(includeChineseTranslation: value),
                       )
                     : null,
               ),
@@ -87,7 +103,10 @@ class SettingsPage extends StatelessWidget {
               : null,
         ),
         const SizedBox(height: 28),
-        const _SectionTitle('数据源', description: '仅在查找候选或测试连接时访问在线服务。'),
+        const _SectionTitle(
+          '数据源',
+          description: '查询会复用本机缓存。同一来源顺序请求；限流后暂停，不连续重试。',
+        ),
         Card(
           child: Column(
             children: [
@@ -128,6 +147,12 @@ class SettingsPage extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         const NoticePanel(
+          icon: Icons.info_outline,
+          title: '网易云音乐为实验性来源',
+          message: '使用公开匿名只读接口，不是官方 OpenAPI。接口可能变更或限制访问；失败时保留其他来源。仅获取来源已有中文译文，不上传整首歌词到翻译服务。',
+        ),
+        const SizedBox(height: 12),
+        const NoticePanel(
           icon: Icons.privacy_tip_outlined,
           title: '不上传音频，确认后再保存',
           message: '检索时仅发送歌名、歌手、专辑和时长。逐项确认后默认将缺失资料保存到原文件，不覆盖已有资料；也可选择导出副本。原位保存可能需要系统授权。',
@@ -143,7 +168,7 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.1.2 · 在线资料查询',
+                  '0.3.1 · 音乐库筛选与批量整理',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),

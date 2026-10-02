@@ -13,6 +13,7 @@ import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:audio_fixer/features/library/track_detail_page.dart';
+import 'package:audio_fixer/features/settings/settings_page.dart';
 import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -74,6 +75,256 @@ Future<void> _waitFor(
   await tester.pump();
 }
 
+// This runs against indexed synthetic Android media and production widgets.
+// Re-mounting a new controller checks persisted initialization, not process kill.
+Future<LibraryController> _verifyLibraryFilters(
+  WidgetTester tester,
+  LibraryController controller,
+  LibraryController Function() createController,
+  Future<void> Function(String) checkpoint,
+) async {
+  const seededRows = 36;
+  expect(controller.settings.excludeShortAudio, isFalse);
+  expect(controller.settings.excludedFolders, isEmpty);
+  expect(controller.allTracks.length, seededRows);
+  expect(controller.tracks.length, seededRows);
+  final initialIds = controller.allTracks.map((track) => track.id).toSet();
+  AudioTrack named(String name) =>
+      controller.allTracks.singleWhere((track) => track.fileName == name);
+  for (final milliseconds in [59999, 60000, 60001]) {
+    expect(
+      named('native_duration_$milliseconds.wav').durationMs,
+      milliseconds,
+      reason:
+          'Native MediaStore duration must preserve the exact WAV boundary.',
+    );
+    expect(
+      named('native_duration_$milliseconds.wav').indexedDurationMs,
+      milliseconds,
+    );
+  }
+  final excludedParent = named('native_parent.wav');
+  final excludedNested = named('native_nested.wav');
+  final retainedSibling = named('native_neighbor.wav');
+  expect(excludedParent.folder, isNotNull);
+  expect(excludedParent.volumeName, isNotEmpty);
+  expect(excludedParent.relativePath, 'Music/AudioFixerSynthetic/Exclude/');
+  expect(
+    excludedNested.relativePath,
+    'Music/AudioFixerSynthetic/Exclude/Nested/',
+  );
+  expect(
+    retainedSibling.relativePath,
+    'Music/AudioFixerSynthetic/ExcludeNeighbor/',
+  );
+  expect(excludedNested.volumeName, excludedParent.volumeName);
+  final excludedFolder = excludedParent.folder!;
+
+  final list = find.byKey(const PageStorageKey('library-scroll-view'));
+  final toolbar = find.byKey(const ValueKey('fixed-library-selection-toolbar'));
+  final selectVisible = find.byKey(const ValueKey('select-visible-tracks'));
+  final toggleSelection = find.byKey(
+    const ValueKey('toggle-library-selection'),
+  );
+  await tester.scrollUntilVisible(
+    toggleSelection,
+    220,
+    scrollable: find
+        .descendant(of: list, matching: find.byType(Scrollable))
+        .first,
+  );
+  await tester.tap(toggleSelection);
+  await tester.pumpAndSettle();
+  expect(toolbar, findsOneWidget);
+  await tester.tap(selectVisible);
+  await tester.pumpAndSettle();
+  expect(controller.selectedTrackIds, initialIds);
+  final toolbarBefore = tester.getRect(toolbar);
+  final query = find.byKey(const ValueKey('bulk-query-selected'));
+  expect(query.hitTestable(), findsOneWidget);
+  await checkpoint('selection_toolbar_top');
+  for (var gesture = 0; gesture < 7; gesture++) {
+    await tester.drag(list, const Offset(0, -640));
+    await tester.pumpAndSettle();
+  }
+  final scrollable = tester.state<ScrollableState>(
+    find.descendant(of: list, matching: find.byType(Scrollable)).first,
+  );
+  expect(scrollable.position.pixels, greaterThan(1200));
+  expect(tester.getRect(toolbar), toolbarBefore);
+  expect(query.hitTestable(), findsOneWidget);
+  expect(selectVisible.hitTestable(), findsOneWidget);
+  await tester.tap(query);
+  await tester.pumpAndSettle();
+  expect(find.byType(AlertDialog), findsOneWidget);
+  await tester.tap(find.text('取消'));
+  await tester.pumpAndSettle();
+  expect(find.byType(AlertDialog), findsNothing);
+  expect(controller.selectedTrackIds, initialIds);
+  expect(tester.getRect(toolbar), toolbarBefore);
+  expect(tester.takeException(), isNull);
+  await checkpoint('selection_toolbar_scrolled');
+
+  Future<void> openSettings() async {
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsPage), findsOneWidget);
+  }
+
+  Future<void> tapSetting(String key) async {
+    final control = find.byKey(ValueKey(key));
+    await tester.scrollUntilVisible(
+      control,
+      240,
+      scrollable: find.descendant(
+        of: find.byType(SettingsPage),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(control);
+    await tester.pumpAndSettle();
+    await _waitFor(tester, () => !controller.isBusy, '$key persistence');
+  }
+
+  Future<void> toggleExcludedFolder() async {
+    await tapSetting('manage-excluded-folders');
+    final page = find.byKey(const ValueKey('folder-filter-page'));
+    expect(page, findsOneWidget);
+    final row = find.byKey(ValueKey('exclude-folder-${excludedFolder.id}'));
+    await tester.scrollUntilVisible(
+      row,
+      240,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey('exclude-folder-list')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+      maxScrolls: 50,
+    );
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('apply-folder-exclusions')));
+    await _waitFor(
+      tester,
+      () => !controller.isBusy && page.evaluate().isEmpty,
+      'folder exclusion persistence',
+    );
+    await tester.pumpAndSettle();
+  }
+
+  await openSettings();
+  await tapSetting('exclude-short-audio');
+  expect(controller.settings.excludeShortAudio, isTrue);
+  expect(
+    controller.tracks.map((track) => track.fileName),
+    isNot(contains('native_duration_59999.wav')),
+  );
+  expect(
+    controller.tracks.map((track) => track.fileName),
+    containsAll(['native_duration_60000.wav', 'native_duration_60001.wav']),
+  );
+  expect(controller.tracks.length, 5);
+  expect(
+    controller.selectedTrackIds,
+    controller.tracks.map((track) => track.id).toSet(),
+  );
+  final durationEligibleIds = controller.selectedTrackIds;
+  await tapSetting('exclude-short-audio');
+  expect(controller.tracks.length, seededRows);
+  expect(
+    controller.selectedTrackIds,
+    durationEligibleIds,
+    reason: 'Restoring short audio must not silently reselect excluded songs.',
+  );
+  await tapSetting('exclude-short-audio');
+  expect(controller.tracks.length, 5);
+  await toggleExcludedFolder();
+  expect(
+    controller.settings.excludedFolders.map((folder) => folder.id),
+    contains(excludedFolder.id),
+  );
+  expect(controller.tracks.length, 3);
+  expect(controller.trackById(excludedParent.id), isNull);
+  expect(controller.trackById(excludedNested.id), isNull);
+  expect(
+    controller.tracks.map((track) => track.id),
+    isNot(contains(excludedParent.id)),
+  );
+  expect(
+    controller.tracks.map((track) => track.id),
+    isNot(contains(excludedNested.id)),
+  );
+  expect(
+    controller.tracks.map((track) => track.id),
+    contains(retainedSibling.id),
+  );
+  expect(controller.allTracks.map((track) => track.id).toSet(), initialIds);
+  expect(
+    controller.selectedTrackIds,
+    controller.tracks.map((track) => track.id).toSet(),
+  );
+  final folderEligibleIds = controller.selectedTrackIds;
+  await toggleExcludedFolder();
+  expect(controller.tracks.length, 5);
+  expect(
+    controller.selectedTrackIds,
+    folderEligibleIds,
+    reason: 'Restoring a folder must not silently reselect excluded songs.',
+  );
+  await toggleExcludedFolder();
+  expect(controller.tracks.length, 3);
+  expect(controller.selectedTrackIds, folderEligibleIds);
+  await checkpoint('library_filters_ready');
+  final stored = await JsonLibraryStore(getApplicationSupportDirectory).load();
+  expect(stored.tracks.map((track) => track.id).toSet(), initialIds);
+  expect(stored.settings.excludeShortAudio, isTrue);
+  expect(
+    stored.settings.excludedFolders.map((folder) => folder.id),
+    contains(excludedFolder.id),
+  );
+
+  // Dispose the original app/controller and create a real new one over the same
+  // JSON store and Android bridge. No native channels or storage are mocked.
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.pumpAndSettle();
+  controller = createController();
+  await tester.pumpWidget(AudioFixerApp(controller: controller));
+  await _waitFor(
+    tester,
+    () => !controller.isLoading && !controller.isBusy,
+    'fresh persisted filter initialization and MediaStore rescan',
+  );
+  expect(controller.loadError, isNull);
+  expect(controller.libraryError, isNull);
+  expect(controller.settings.excludeShortAudio, isTrue);
+  expect(
+    controller.settings.excludedFolders.map((folder) => folder.id),
+    contains(excludedFolder.id),
+  );
+  expect(controller.allTracks.map((track) => track.id).toSet(), initialIds);
+  expect(controller.tracks.map((track) => track.fileName).toSet(), {
+    'native_duration_60000.wav',
+    'native_duration_60001.wav',
+    'native_neighbor.wav',
+  });
+  expect(controller.selectedTrackIds, isEmpty);
+  await checkpoint('library_filters_reloaded');
+
+  // Restore visibility through the same controls before running the pre-existing
+  // short-MP3 review/export/original-save acceptance flow.
+  await openSettings();
+  await toggleExcludedFolder();
+  await tapSetting('exclude-short-audio');
+  expect(controller.settings.excludedFolders, isEmpty);
+  expect(controller.settings.excludeShortAudio, isFalse);
+  expect(controller.tracks.map((track) => track.id).toSet(), initialIds);
+  expect(controller.selectedTrackIds, isEmpty);
+  await tester.tap(find.text('音乐库'));
+  await tester.pumpAndSettle();
+  return controller;
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -100,7 +351,7 @@ void main() {
 
       final source = _OfflineFixtureSource();
       final library = AndroidMusicLibrary(getApplicationSupportDirectory);
-      final controller = LibraryController(
+      LibraryController createController() => LibraryController(
         store: JsonLibraryStore(getApplicationSupportDirectory),
         picker: SystemAudioPicker(),
         importer: LocalAudioImporter(getApplicationSupportDirectory),
@@ -108,6 +359,7 @@ void main() {
         deviceLibrary: library,
         exporter: SafeAudioCopyExporter(getTemporaryDirectory),
       );
+      var controller = createController();
       expect(
         await library.permissionStatus(),
         AudioLibraryPermission.notRequested,
@@ -135,6 +387,12 @@ void main() {
       );
       expect(await library.permissionStatus(), AudioLibraryPermission.granted);
       expect(controller.libraryError, isNull);
+      controller = await _verifyLibraryFilters(
+        tester,
+        controller,
+        createController,
+        checkpoint,
+      );
       final track = controller.tracks.singleWhere(
         (item) => item.fileName == _fileName,
       );
@@ -162,6 +420,7 @@ void main() {
       expect(find.byType(TrackDetailPage), findsOneWidget);
       final detailed = controller.trackById(track.id)!;
       expect(detailed.readError, isNull);
+      expect(detailed.indexedDurationMs, track.indexedDurationMs);
       expect(detailed.title, '夜空 – Café 🎵');
       expect(detailed.artist, '演奏者 / Sigur Rós');
       expect(detailed.album, '試験アルバム №1');
@@ -453,6 +712,17 @@ void main() {
           'mocked_native_channels': false,
           'online_provider_calls': 0,
           'offline_source_calls': source.calls,
+          'library_filters': {
+            'native_boundary_duration_ms': [59999, 60000, 60001],
+            'seeded_media_rows': 36,
+            'fixed_toolbar_after_long_scroll': true,
+            'strict_under_one_minute': true,
+            'parent_folder_includes_nested_not_prefix_sibling': true,
+            'excluded_tracks_retained_in_store': true,
+            'selection_pruned_to_eligible_tracks': true,
+            'fresh_controller_initialization': true,
+            'physical_process_restart': false,
+          },
           'source_uri': track.contentUri,
           'export_uri': exported.exportedCopyUri,
           'original_save_status': savedOriginal.status.name,
@@ -465,6 +735,14 @@ void main() {
             'real_permission_deny_and_retry_grant',
             'mediastore_query_and_content_uri_read',
             'real_widgets_and_native_bridge',
+            'fixed_library_selection_toolbar_after_long_scroll',
+            'fixed_toolbar_query_dialog_cancel_keeps_selection',
+            'native_duration_59999_60000_60001_boundary',
+            'native_volume_aware_parent_folder_exclusion',
+            'folder_sibling_prefix_stays_visible',
+            'filters_persist_across_real_controller_initialization',
+            'excluded_backing_tracks_persist_and_selection_is_pruned',
+            'disabling_filters_restores_native_tracks',
             'unicode_tags_and_embedded_cover_read',
             'offline_candidate_review',
             'new_candidates_unchecked_until_explicit_review',

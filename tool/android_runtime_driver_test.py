@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Offline host-driver unit checks; these are not Android runtime evidence."""
 from pathlib import Path
+from contextlib import chdir, redirect_stdout
+import io
+import hashlib
+import json
+import tempfile
+import wave
 import subprocess
 import unittest
 from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
 from android_runtime_ci import AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES, RECOVERY_PHASES, RECOVERY_CHECKPOINTS
+from android_runtime_fixtures import BOUNDARY_DURATIONS_MS, generate_library_fixtures
+from android_runtime_evidence import main as prepare_evidence
 
 
 def node(resource='', text='', kind='android.widget.TextView', **attrs):
@@ -185,6 +193,63 @@ class DialogDriverTest(unittest.TestCase):
         allow.set('enabled', 'false')
         self.assertFalse(self.runtime.act('original_confirm', [title, allow, deny]))
         self.runtime.tap.assert_not_called()
+
+
+class NativeLibraryFixtureTest(unittest.TestCase):
+    """Fixture integrity and boundaries, not native Android execution."""
+
+    def test_wav_boundaries_and_scoped_synthetic_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = generate_library_fixtures(root)
+            self.assertTrue(manifest['synthetic_only'])
+            self.assertEqual(manifest['list_row_count'], 28)
+            self.assertEqual(len(manifest['entries']), 34)
+            self.assertEqual(json.loads((root / 'manifest.json').read_text()), manifest)
+            entries = {entry['file_name']: entry for entry in manifest['entries']}
+            self.assertEqual(len(entries), 34)
+            for entry in manifest['entries']:
+                with self.subTest(file=entry['file']):
+                    path = root / entry['file']
+                    self.assertTrue(path.is_relative_to(root))
+                    self.assertTrue(entry['device_path'].startswith('/sdcard/Music/AudioFixerSynthetic/'))
+                    self.assertNotIn('..', Path(entry['device_path']).parts)
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), entry['sha256'])
+                    with wave.open(str(path), 'rb') as stream:
+                        self.assertEqual(stream.getnchannels(), 1)
+                        self.assertEqual(stream.getsampwidth(), 2)
+                        self.assertEqual(stream.getframerate(), 8000)
+                        self.assertEqual(stream.getnframes(), entry['duration_ms'] * 8)
+                        self.assertEqual(len(stream.readframes(stream.getnframes())), entry['duration_ms'] * 16)
+            for milliseconds in BOUNDARY_DURATIONS_MS:
+                self.assertEqual(entries[f'native_duration_{milliseconds}.wav']['duration_ms'], milliseconds)
+            self.assertEqual(entries['native_parent.wav']['file'], 'Exclude/native_parent.wav')
+            self.assertEqual(entries['native_nested.wav']['file'], 'Exclude/Nested/native_nested.wav')
+            self.assertEqual(entries['native_neighbor.wav']['file'], 'ExcludeNeighbor/native_neighbor.wav')
+
+    def test_filter_manifest_is_evidence_but_audio_and_logs_are_not(self):
+        with tempfile.TemporaryDirectory() as directory, chdir(directory):
+            root = Path('build/android_runtime')
+            (root / 'generated').mkdir(parents=True)
+            (root / 'generated/manifest.json').write_text('{"synthetic_only": true}')
+            generate_library_fixtures(root / 'library-fixtures')
+            (root / 'private-file.log').write_text('Synthetic forbidden fixture')
+            (root / 'app-debug.apk').write_bytes(b'Synthetic forbidden fixture')
+            with redirect_stdout(io.StringIO()):
+                prepare_evidence()
+            evidence = root / 'evidence'
+            self.assertEqual({str(path.relative_to(evidence))
+                              for path in evidence.rglob('*') if path.is_file()},
+                             {'manifest.json', 'library-fixtures/manifest.json'})
+            manifest = json.loads((evidence / 'manifest.json').read_text())
+            self.assertTrue(manifest['synthetic_only'])
+            self.assertEqual(manifest['retention_days'], 1)
+            self.assertEqual(len(manifest['files']), 1)
+
+    def test_filter_checkpoints_are_explicit_and_unique(self):
+        self.assertEqual(len(CHECKPOINTS), len(set(CHECKPOINTS)))
+        self.assertTrue({'selection_toolbar_top', 'selection_toolbar_scrolled',
+                         'library_filters_ready', 'library_filters_reloaded'}.issubset(CHECKPOINTS))
 
 
 class IntegrationSourceContractTest(unittest.TestCase):

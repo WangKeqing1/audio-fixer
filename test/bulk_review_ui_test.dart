@@ -78,7 +78,7 @@ Future<void> _tap(WidgetTester tester, Finder target) async {
 
 void main() {
   testWidgets(
-    'select all applies to visible rows and preserves hidden selections',
+    'search drops hidden selections and select all stays scoped to visible rows',
     (tester) async {
       final controller = _controller(withTasks: false);
       await tester.pumpWidget(AudioFixerApp(controller: controller));
@@ -91,11 +91,12 @@ void main() {
       expect(controller.selectedTrackIds, {'one', 'two'});
       await tester.enterText(find.byType(TextField), '第一首');
       await tester.pumpAndSettle();
-      expect(find.textContaining('另有 1 首已选歌曲不在当前筛选中'), findsOneWidget);
+      expect(controller.selectedTrackIds, {'one'});
+      expect(find.textContaining('仍会参与批量操作'), findsNothing);
       await _tap(tester, find.byKey(const ValueKey('select-visible-tracks')));
-      expect(controller.selectedTrackIds, {'two'});
+      expect(controller.selectedTrackIds, isEmpty);
       await _tap(tester, find.byKey(const ValueKey('select-visible-tracks')));
-      expect(controller.selectedTrackIds, {'one', 'two'});
+      expect(controller.selectedTrackIds, {'one'});
       await _tap(
         tester,
         find.byKey(const ValueKey('toggle-library-selection')),

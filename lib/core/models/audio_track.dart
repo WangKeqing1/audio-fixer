@@ -1,3 +1,5 @@
+import 'audio_folder.dart';
+
 enum AudioField {
   title('歌名'),
   artist('歌手'),
@@ -21,12 +23,15 @@ class AudioTrack {
     this.album,
     this.year,
     this.durationMs,
+    this.indexedDurationMs,
     this.lyrics,
     this.artworkPath,
     this.readError,
     this.contentUri,
     this.dateModifiedMs,
     this.detailsLoaded = true,
+    this.volumeName,
+    this.relativePath,
   });
 
   final String id;
@@ -39,12 +44,28 @@ class AudioTrack {
   final String? album;
   final int? year;
   final int? durationMs;
+  // The native index and tag parser can differ slightly (e.g. MP3 padding).
+  // Compare index to index on refresh, without discarding exact parsed duration.
+  final int? indexedDurationMs;
   final String? lyrics;
   final String? artworkPath;
   final String? readError;
   final String? contentUri;
   final int? dateModifiedMs;
   final bool detailsLoaded;
+  final String? volumeName;
+  final String? relativePath;
+
+  AudioFolder? get folder {
+    if (volumeName == null || relativePath == null) return null;
+    final result = AudioFolder(
+      volumeName: volumeName!,
+      relativePath: relativePath!,
+    );
+    return result.isValid ? result : null;
+  }
+
+  bool get hasKnownDuration => durationMs != null && durationMs! > 0;
 
   bool get isDeviceTrack => contentUri != null;
 
@@ -84,11 +105,14 @@ class AudioTrack {
     importedAt: importedAt,
     contentUri: contentUri,
     dateModifiedMs: dateModifiedMs,
+    volumeName: volumeName,
+    relativePath: relativePath,
     title: title,
     artist: artist,
     album: album,
     year: year,
     durationMs: durationMs,
+    indexedDurationMs: indexedDurationMs,
     lyrics: lyrics,
     artworkPath: artworkPath,
     readError: readError,
@@ -117,12 +141,15 @@ class AudioTrack {
     'album': album,
     'year': year,
     'durationMs': durationMs,
+    'indexedDurationMs': indexedDurationMs,
     'lyrics': lyrics,
     'artworkPath': artworkPath,
     'readError': readError,
     'contentUri': contentUri,
     'dateModifiedMs': dateModifiedMs,
     'detailsLoaded': detailsLoaded,
+    'volumeName': volumeName,
+    'relativePath': relativePath,
   };
 
   factory AudioTrack.fromJson(Map<String, dynamic> json) => AudioTrack(
@@ -136,12 +163,17 @@ class AudioTrack {
     album: json['album'] as String?,
     year: json['year'] as int?,
     durationMs: json['durationMs'] as int?,
+    indexedDurationMs: json.containsKey('indexedDurationMs')
+        ? json['indexedDurationMs'] as int?
+        : json['durationMs'] as int?,
     lyrics: json['lyrics'] as String?,
     artworkPath: json['artworkPath'] as String?,
     readError: json['readError'] as String?,
     contentUri: json['contentUri'] as String?,
     dateModifiedMs: json['dateModifiedMs'] as int?,
     detailsLoaded: json['detailsLoaded'] as bool? ?? true,
+    volumeName: json['volumeName'] as String?,
+    relativePath: json['relativePath'] as String?,
   );
 }
 
