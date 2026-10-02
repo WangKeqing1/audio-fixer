@@ -65,10 +65,19 @@ Debug test signer, and records its SHA-256 and size.
 for ARM64 devices, not a production release. It can coexist with the normal app;
 without the opt-in property, the normal package identity remains unchanged.
 
-The workflow does not upload APKs or artifacts, create releases, install on a
-device, or publish to a store. Build logs and a compact test/package/checksum
-summary are available on the Actions run. APK delivery remains separate and
-requires the requested delivery destination.
+The workflow retains an exact allowlist consisting of the verified ARM64 QA APK,
+its identity/provenance JSON, SHA-256, signature report and package badging for
+**one day** as an Actions artifact. This permits delivery even if a development
+workspace disappears. It does not create a release or publish to a store. No
+music, private inputs, signing keys, credentials, broad logs or build directories
+are included. The final APK can be delivered separately through the requested
+file destination after exact-head checks pass.
+
+The CI debug TEST signing key is ephemeral and may differ between runs or from
+previous local QA builds. Compare the certificate before claiming update
+compatibility. A different signature cannot replace an installed package with
+the same ID; do not uninstall an older app without preserving its private data.
+This pipeline does not generate or distribute a production signing identity.
 
 Only generated synthetic media is used. No private input, audio files, device
 logs, credentials, keystores or broad build/cache directories are uploaded.

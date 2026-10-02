@@ -214,6 +214,8 @@ jobs:
 
       - name: Verify optimized QA identity, ARM64, TEST signature and checksum
         id: apk
+        env:
+          AUDIO_FIXER_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           apk=build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           test -s "$apk"
@@ -232,7 +234,9 @@ jobs:
           grep -Eq '^Signer #1 certificate DN: .*CN=Android Debug(,|$)' build/ci/apk-signature.txt
           python3 - <<'PY'
           import json
+          import os
           import re
+          import subprocess
           from pathlib import Path
           badging = Path('build/ci/apk-badging.txt').read_text()
           package = next(line for line in badging.splitlines() if line.startswith('package: '))
@@ -243,6 +247,9 @@ jobs:
           # Flutter's split APK version-code offset for ARM64 is 2000.
           assert int(attributes['versionCode']) == int(code) + 2000, attributes
           info = {
+              'head_sha': os.environ['AUDIO_FIXER_HEAD_SHA'],
+              'checkout_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'run_id': os.environ['GITHUB_RUN_ID'],
               'package_id': attributes['name'],
               'label': 'Audio Fixer QA',
               'version_name': attributes['versionName'],
@@ -258,12 +265,28 @@ jobs:
           PY
           sha256sum "$apk" | tee build/ci/apk-sha256.txt
 
-      - name: Summarize checked results without publishing binaries
+      - name: Retain only the verified QA APK and its identity evidence for delivery
+        if: ${{ success() && steps.apk.outcome == 'success' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-qa-arm64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/ci/apk-info.json
+            build/ci/apk-sha256.txt
+            build/ci/apk-signature.txt
+            build/ci/apk-badging.txt
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Summarize checked results without publishing a release
         if: ${{ !cancelled() }}
         run: |
           {
             echo '## Audio Fixer quality'
-            echo 'APK files are built and verified only; this workflow does not publish binaries or releases.'
+            echo 'The verified QA APK and exact identity evidence are retained as a one-day Actions artifact for delivery; this workflow does not create releases or publish to a store.'
             if [[ -f build/ci/test-summary.json ]]; then
               echo '```json'
               cat build/ci/test-summary.json
