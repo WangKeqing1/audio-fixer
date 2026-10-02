@@ -19,7 +19,7 @@ def main() -> None:
     runtime = AndroidRuntime('emulator-5554', Path('build/android_runtime'))
     prior = json.loads((runtime.output / 'summary.json').read_text())
     assert prior['passed'] and prior['synthetic_only']
-    apk = Path('build/app/outputs/flutter-apk/app-release.apk')
+    apk = Path('build/app/outputs/flutter-apk/app-x86_64-release.apk')
     assert apk.is_file()
     runtime.adb('install', '-r', str(apk), timeout=90)
     runtime.adb('shell', 'am', 'force-stop', PACKAGE)
