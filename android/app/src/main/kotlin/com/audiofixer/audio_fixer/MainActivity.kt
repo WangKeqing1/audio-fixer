@@ -7,9 +7,15 @@ import io.flutter.embedding.engine.FlutterEngine
 class MainActivity : FlutterActivity() {
     private var deviceLibraryBridge: DeviceLibraryBridge? = null
     private var lyricsTranslationBridge: LyricsTranslationBridge? = null
+    private var audioPreviewBridge: AudioPreviewBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        disposeAudioPreviewBridge()
+        audioPreviewBridge = AudioPreviewBridge(
+            activity = this,
+            messenger = flutterEngine.dartExecutor.binaryMessenger,
+        )
         disposeDeviceLibraryBridge()
         deviceLibraryBridge = DeviceLibraryBridge(
             activity = this,
@@ -23,6 +29,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        disposeAudioPreviewBridge()
         disposeLyricsTranslationBridge()
         disposeDeviceLibraryBridge()
         super.cleanUpFlutterEngine(flutterEngine)
@@ -43,9 +50,25 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        disposeAudioPreviewBridge()
         disposeLyricsTranslationBridge()
         disposeDeviceLibraryBridge()
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        audioPreviewBridge?.onResume()
+    }
+
+    override fun onPause() {
+        audioPreviewBridge?.onPause()
+        super.onPause()
+    }
+
+    private fun disposeAudioPreviewBridge() {
+        audioPreviewBridge?.dispose()
+        audioPreviewBridge = null
     }
 
     private fun disposeLyricsTranslationBridge() {

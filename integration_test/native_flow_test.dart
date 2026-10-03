@@ -6,6 +6,7 @@ import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/batch_operation.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/audio_importer.dart';
+import 'package:audio_fixer/core/services/audio_preview_service.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/device_music_library.dart';
 import 'package:audio_fixer/core/services/export/audio_copy_exporter.dart';
@@ -27,6 +28,7 @@ import 'package:path_provider/path_provider.dart';
 // Android-owned dialogs from fresh UI hierarchies. No MethodChannel is mocked.
 const _fileName = 'native_fixture.mp3';
 const _unapprovedFileName = 'native_unapproved.mp3';
+const _previewChannel = MethodChannel('audio_fixer/audio_preview');
 const _lyrics =
     '[00:00.00]Synthetic Android runtime fixture only\n'
     '[00:00.60]Native save cancellation and retry';
@@ -157,6 +159,330 @@ Future<void> _waitFor(
     await tester.pump();
   }
   await tester.pump();
+}
+
+Future<Map<String, dynamic>> _nativePreviewState() async =>
+    (await _previewChannel.invokeMapMethod<String, dynamic>('getState'))!;
+
+Future<Map<String, dynamic>> _waitForNativePreview(
+  WidgetTester tester,
+  bool Function(Map<String, dynamic>) condition,
+  String description,
+) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 25));
+  while (true) {
+    final state = await _nativePreviewState();
+    if (condition(state)) return state;
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Timed out waiting for $description; native state: $state');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await tester.pump();
+  }
+}
+
+// Actual MediaPlayer state is read independently of the Flutter display. Only
+// generated MediaStore WAVs and app-private copies of those WAVs are played.
+Future<Map<String, Object?>> _verifyAudioPreview(
+  WidgetTester tester,
+  LibraryController controller,
+  Future<void> Function(String) checkpoint,
+  Future<void> Function(String) phase,
+  Directory support,
+) async {
+  final first = controller.tracks.singleWhere(
+    (track) => track.fileName == 'native_duration_60000.wav',
+  );
+  final second = controller.tracks.singleWhere(
+    (track) => track.fileName == 'native_duration_60001.wav',
+  );
+  expect(first.contentUri, startsWith('content://media/'));
+  final preview = controller.preview;
+  final list = find.byKey(const PageStorageKey('library-scroll-view'));
+  final scrollable = find
+      .descendant(of: list, matching: find.byType(Scrollable))
+      .first;
+  final player = find.byKey(const ValueKey('audio-preview-player'));
+  final toggle = find.byKey(const ValueKey('audio-preview-toggle'));
+  Future<void> show(Finder target) async {
+    tester.state<ScrollableState>(scrollable).position.jumpTo(0);
+    await tester.pump();
+    await tester.scrollUntilVisible(target, 220, scrollable: scrollable);
+    await tester.pumpAndSettle();
+    await Scrollable.ensureVisible(tester.element(target), alignment: 0.5);
+    await tester.pumpAndSettle();
+    expect(target.hitTestable(), findsOneWidget);
+  }
+
+  // Enter selection through its real controls, then establish an independent
+  // selection whose identity every playback action must preserve.
+  await show(find.byKey(const ValueKey('toggle-library-selection')));
+  await tester.tap(find.byKey(const ValueKey('toggle-library-selection')));
+  await tester.pumpAndSettle();
+  final selected = find.byKey(ValueKey('select-track-${first.id}'));
+  await show(selected);
+  await tester.tap(selected);
+  await tester.pumpAndSettle();
+  final selection = Set<String>.of(controller.selectedTrackIds);
+  expect(selection, {first.id});
+  Future<void> playRow(AudioTrack track) async {
+    final play = find.byKey(ValueKey('preview-track-${track.id}'));
+    await show(play);
+    await tester.tap(play.hitTestable());
+    await _waitForNativePreview(
+      tester,
+      (state) => state['trackId'] == track.id && state['status'] == 'playing',
+      'the actual MediaStore preview for ${track.fileName}',
+    );
+    await _waitFor(tester, () => preview.isPlaying, 'playing UI event');
+    expect(controller.selectedTrackIds, selection);
+  }
+
+  await playRow(first);
+  final progressing = await _waitForNativePreview(
+    tester,
+    (state) => (state['positionMs'] as num) >= 750,
+    'native playback position advancing',
+  );
+  expect(progressing['durationMs'], inInclusiveRange(59900, 60100));
+  expect(first.detailsLoaded, isFalse);
+  expect(controller.trackById(first.id)!.detailsLoaded, isFalse);
+  await tester.pumpAndSettle();
+  final playerRect = tester.getRect(player);
+  for (var gesture = 0; gesture < 7; gesture++) {
+    await tester.drag(list, const Offset(0, -640));
+    await tester.pumpAndSettle();
+  }
+  expect(
+    tester.state<ScrollableState>(scrollable).position.pixels,
+    greaterThan(1200),
+  );
+  expect(tester.getRect(player), playerRect);
+  expect(toggle.hitTestable(), findsOneWidget);
+  expect(
+    find.byKey(const ValueKey('fixed-library-selection-toolbar')),
+    findsOneWidget,
+  );
+  expect(controller.selectedTrackIds, selection);
+  await checkpoint('preview_playing_scrolled');
+
+  await tester.tap(toggle.hitTestable());
+  final paused = await _waitForNativePreview(
+    tester,
+    (state) => state['status'] == 'paused',
+    'native pause',
+  );
+  await Future<void>.delayed(const Duration(milliseconds: 800));
+  final stillPaused = await _nativePreviewState();
+  expect(stillPaused['status'], 'paused');
+  expect(
+    (stillPaused['positionMs'] as num) - (paused['positionMs'] as num),
+    inInclusiveRange(0, 150),
+  );
+  await tester.pumpAndSettle();
+  final seek = find.byKey(const ValueKey('audio-preview-seek'));
+  expect(tester.widget<Slider>(seek).onChanged, isNotNull);
+  await tester.tapAt(tester.getRect(seek).center);
+  final sought = await _waitForNativePreview(
+    tester,
+    (state) =>
+        state['status'] == 'paused' &&
+        (state['positionMs'] as num) >= 25000 &&
+        (state['positionMs'] as num) <= 35000,
+    'native seek through the visible slider',
+  );
+  expect(controller.selectedTrackIds, selection);
+  await checkpoint('preview_paused_seeked');
+  await tester.tap(toggle.hitTestable());
+  await _waitForNativePreview(
+    tester,
+    (state) => state['status'] == 'playing',
+    'native resume',
+  );
+
+  // Move up to the other long row without changing the search or selection.
+  final scrollState = tester.state<ScrollableState>(scrollable);
+  scrollState.position.jumpTo(0);
+  await tester.pumpAndSettle();
+  await playRow(second);
+  final switched = await _nativePreviewState();
+  expect(switched['requestId'], isNot(progressing['requestId']));
+  expect(switched['trackId'], second.id);
+  await tester.tap(find.byKey(const ValueKey('audio-preview-close')));
+  await _waitForNativePreview(
+    tester,
+    (state) => state['status'] == 'stopped',
+    'native close/release',
+  );
+  await tester.pumpAndSettle();
+  expect(player, findsNothing);
+  expect(controller.selectedTrackIds, selection);
+
+  await controller.refreshLibrary();
+  await tester.pumpAndSettle();
+  await playRow(controller.trackById(first.id)!);
+  await tester.tap(find.text('设置'));
+  await tester.pumpAndSettle();
+  await _waitForNativePreview(
+    tester,
+    (state) => state['status'] == 'stopped',
+    'tab departure release',
+  );
+  await tester.tap(find.text('音乐库'));
+  await tester.pumpAndSettle();
+  // A row tap in selection mode intentionally selects. Leave that mode through
+  // its visible control before testing normal detail navigation.
+  await tester.tap(find.byKey(const ValueKey('toggle-library-selection')));
+  await tester.pumpAndSettle();
+  expect(controller.selectedTrackIds, isEmpty);
+  selection.clear();
+  await playRow(controller.trackById(first.id)!);
+  final title = find.text(first.displayTitle);
+  // The same title is also visible in the player; tap only the library row.
+  final rowTitle = find.descendant(of: list, matching: title);
+  await show(rowTitle);
+  await tester.tap(rowTitle.hitTestable());
+  await _waitFor(
+    tester,
+    () =>
+        find.byType(TrackDetailPage).evaluate().isNotEmpty &&
+        !controller.isBusy,
+    'detail navigation',
+  );
+  expect((await _nativePreviewState())['status'], 'stopped');
+  await tester.tap(find.byType(BackButton));
+  await tester.pumpAndSettle();
+  await playRow(controller.trackById(first.id)!);
+
+  // Host presses Android Home, observes the launcher, and relaunches this QA
+  // Activity. No synthetic Flutter lifecycle event stands in for backgrounding.
+  await phase('preview_background');
+  final ack = File('${support.path}/native_runtime_ack');
+  final deadline = DateTime.now().add(const Duration(seconds: 35));
+  while (!await ack.exists() ||
+      await ack.readAsString() != 'preview_background') {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Host did not background/resume QA app');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    await tester.pump();
+  }
+  await _waitForNativePreview(
+    tester,
+    (state) => state['status'] == 'stopped',
+    'Android background release',
+  );
+  await _waitFor(tester, () => !controller.isBusy, 'resume refresh');
+  expect(preview.track, isNull);
+  expect(controller.selectedTrackIds, selection);
+  await checkpoint('preview_background_stopped');
+
+  // Import from a temporary native read copy using the production importer.
+  // The source descriptor and copied fixture are released before cleanup.
+  const libraryChannel = MethodChannel('audio_fixer/device_library');
+  final readCopy = await libraryChannel.invokeMethod<String>('copyForRead', {
+    'uri': first.contentUri,
+  });
+  late AudioTrack imported;
+  try {
+    imported = await LocalAudioImporter(getApplicationSupportDirectory).import(
+      AudioSelection(name: first.fileName, openRead: File(readCopy!).openRead),
+    );
+  } finally {
+    await libraryChannel.invokeMethod<void>('releaseReadCopy', {
+      'path': readCopy,
+    });
+  }
+  expect(imported.isDeviceTrack, isFalse);
+  expect(imported.localPath, startsWith(support.path));
+  final importedHash = sha256
+      .convert(await File(imported.localPath).readAsBytes())
+      .toString();
+  expect(imported.id, importedHash);
+  await preview.play(imported);
+  await _waitForNativePreview(
+    tester,
+    (state) => state['trackId'] == imported.id && state['status'] == 'playing',
+    'app-private imported-copy playback',
+  );
+  await preview.stop();
+  expect((await _nativePreviewState())['status'], 'stopped');
+  await File(imported.localPath).delete();
+
+  final corrupt = File('${support.path}/native_preview_corrupt.wav');
+  await corrupt.writeAsString('authored synthetic invalid audio');
+  Future<String> expectPreviewError(String id, String path) async {
+    await preview.play(
+      AudioTrack(
+        id: id,
+        fileName: '$id.wav',
+        localPath: path,
+        sizeBytes: 0,
+        importedAt: DateTime.now(),
+      ),
+    );
+    final failure = await _waitForNativePreview(
+      tester,
+      (state) => state['trackId'] == id && state['status'] == 'error',
+      'native failure for $id',
+    );
+    await _waitFor(
+      tester,
+      () => preview.status == AudioPreviewStatus.error,
+      'visible preview error',
+    );
+    expect(preview.errorMessage, isNotEmpty);
+    expect(controller.selectedTrackIds, selection);
+    return failure['errorCode'] as String;
+  }
+
+  late String corruptError;
+  late String missingError;
+  try {
+    corruptError = await expectPreviewError(
+      'native-preview-corrupt',
+      corrupt.path,
+    );
+    expect({
+      'unsupported_format',
+      'playback_failed',
+      'source_unavailable',
+    }, contains(corruptError));
+    missingError = await expectPreviewError(
+      'native-preview-missing',
+      '${support.path}/native_preview_missing.wav',
+    );
+    expect(missingError, 'source_unavailable');
+    await checkpoint('preview_missing_error');
+  } finally {
+    await preview.stop();
+    await corrupt.delete();
+  }
+  await playRow(controller.trackById(second.id)!);
+  await preview.stop();
+  expect((await _nativePreviewState())['status'], 'stopped');
+  await tester.pumpAndSettle();
+  expect(controller.selectedTrackIds, isEmpty);
+  expect(tester.takeException(), isNull);
+  return {
+    'source_kind': 'mediastore_and_private_import',
+    'first_duration_ms': progressing['durationMs'],
+    'first_progress_ms': progressing['positionMs'],
+    'paused_position_ms': paused['positionMs'],
+    'paused_after_wait_ms': stillPaused['positionMs'],
+    'seek_position_ms': sought['positionMs'],
+    'imported_copy_sha256': importedHash,
+    'corrupt_error_code': corruptError,
+    'missing_error_code': missingError,
+    'selection_unchanged': true,
+    'player_pinned_after_scroll': true,
+    'pause_resume_seek_switch_stop': true,
+    'replay_after_refresh': true,
+    'detail_and_tab_release': true,
+    'android_home_resume_release': true,
+    'error_then_valid_replay': true,
+    'speaker_output_assessed': false,
+  };
 }
 
 // This runs against indexed synthetic Android media and production widgets.
@@ -518,6 +844,13 @@ void main() {
         checkpoint,
         'initial_cover_reloaded',
       );
+      final previewEvidence = await _verifyAudioPreview(
+        tester,
+        controller,
+        checkpoint,
+        phase,
+        support,
+      );
       final track = controller.tracks.singleWhere(
         (item) => item.fileName == _fileName,
       );
@@ -771,9 +1104,35 @@ void main() {
       );
       await tester.tap(find.byType(Checkbox).first);
       await tester.pumpAndSettle();
-      await phase('original_cancel');
+      final previewSource = controller.tracks.singleWhere(
+        (item) => item.fileName == 'native_duration_60000.wav',
+      );
+      await controller.preview.play(previewSource);
+      await _waitForNativePreview(
+        tester,
+        (state) =>
+            state['trackId'] == previewSource.id &&
+            state['status'] == 'playing',
+        'preview before original-save release barrier',
+      );
       await tester.ensureVisible(find.byKey(const ValueKey('save-original')));
       await tester.tap(find.byKey(const ValueKey('save-original')));
+      await _waitFor(
+        tester,
+        () => controller.preview.isBlocked,
+        'write lock while actual consent is pending',
+      );
+      await _waitForNativePreview(
+        tester,
+        (state) => state['status'] == 'stopped',
+        'release while write consent awaits a response',
+      );
+      await controller.preview.play(previewSource);
+      expect(controller.preview.track, isNull);
+      expect((await _nativePreviewState())['status'], 'stopped');
+      previewEvidence['original_save_release_before_consent_response'] = true;
+      previewEvidence['play_blocked_during_original_write'] = true;
+      await phase('original_cancel');
       await _waitFor(
         tester,
         () =>
@@ -783,6 +1142,9 @@ void main() {
       );
       expect(find.byType(CandidateReviewPage), findsOneWidget);
       expect((await library.readDetails(track)).lyrics, isNull);
+      expect(controller.preview.isBlocked, isFalse);
+      expect((await _nativePreviewState())['status'], 'stopped');
+      previewEvidence['cancelled_write_never_autoplays'] = true;
       await checkpoint('original_cancelled_ready');
 
       // Persist one explicit approval; the other selected song stays unreviewed.
@@ -964,6 +1326,7 @@ void main() {
           'mocked_native_channels': false,
           'online_provider_calls': 0,
           'offline_source_calls': source.calls,
+          'audio_preview': previewEvidence,
           'initial_artwork': {
             'before_detail_read': true,
             'real_native_embedded_thumbnail': true,
@@ -1003,6 +1366,12 @@ void main() {
             'real_permission_deny_and_retry_grant',
             'mediastore_query_and_content_uri_read',
             'real_widgets_and_native_bridge',
+            'real_mediastore_preview_progress_pause_resume_and_seek',
+            'preview_selection_isolation_and_pinned_controls',
+            'preview_switch_close_refresh_and_error_retry',
+            'preview_releases_on_detail_tab_and_android_home',
+            'private_import_preview_and_corrupt_missing_errors',
+            'original_save_blocks_preview_before_consent_response',
             'initial_cover_loaded_before_any_detail_read',
             'native_cover_survives_scroll_and_fresh_controller_reload',
             'missing_cover_uses_placeholder_without_marking_details_read',

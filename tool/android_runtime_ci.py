@@ -30,16 +30,42 @@ UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
 PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
           "original_cancel", "original_confirm")
+PREVIEW_PHASES = ("preview_background",)
 CHECKPOINTS = ("permission_denied_ready", "initial_cover_ready",
                "initial_cover_reloaded", "instrumental_marked_ready",
                "instrumental_unmarked_ready", "selection_toolbar_top",
                "selection_toolbar_scrolled", "library_filters_ready",
                "library_filters_reloaded", "details_ready", "review_ready",
+               "preview_playing_scrolled", "preview_paused_seeked",
+               "preview_background_stopped", "preview_missing_error",
                "cancelled_ready", "exported_ready", "original_cancelled_ready",
                "bulk_review_ready", "saved_ready")
 RECOVERY_PHASES = ("recovery_export_cancel", "recovery_export")
 RECOVERY_CHECKPOINTS = ("recovery_export_corrupted", "recovery_export_restored")
 SMOKE_SCREENS = ("packaged_library", "packaged_settings")
+PREVIEW_CHECKS = ("selection_unchanged", "player_pinned_after_scroll",
+                  "pause_resume_seek_switch_stop", "replay_after_refresh",
+                  "detail_and_tab_release", "android_home_resume_release",
+                  "error_then_valid_replay", "original_save_release_before_consent_response",
+                  "play_blocked_during_original_write", "cancelled_write_never_autoplays")
+
+
+def validate_preview_evidence(result: dict, fixtures: dict) -> dict:
+    """Reject absent or contradictory app assertions, not infer playback from PNGs."""
+    preview = result["audio_preview"]
+    assert preview["source_kind"] == "mediastore_and_private_import"
+    assert all(preview.get(name) is True for name in PREVIEW_CHECKS)
+    assert preview["speaker_output_assessed"] is False
+    assert 59900 <= preview["first_duration_ms"] <= 60100
+    assert 750 <= preview["first_progress_ms"] < preview["first_duration_ms"]
+    assert 0 <= preview["paused_after_wait_ms"] - preview["paused_position_ms"] <= 150
+    assert 25000 <= preview["seek_position_ms"] <= 35000
+    assert preview["corrupt_error_code"] in {"unsupported_format", "playback_failed", "source_unavailable"}
+    assert preview["missing_error_code"] == "source_unavailable"
+    wav = next(entry for entry in fixtures["entries"]
+               if entry["file_name"] == "native_duration_60000.wav")
+    assert preview["imported_copy_sha256"] == wav["sha256"]
+    return preview
 
 
 class AndroidRuntime:
@@ -78,7 +104,7 @@ class AndroidRuntime:
         result = self.adb("shell", "-T", "run-as", PACKAGE, "cat",
                           path, check=False)
         value = result.stdout.strip()
-        known = PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete")
+        known = PHASES + PREVIEW_PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete")
         return value if result.returncode == 0 and value in known else ""
 
     def hierarchy(self) -> list[ET.Element]:
@@ -108,6 +134,26 @@ class AndroidRuntime:
         self.actions.append({"phase": phase, "resource_id": node.get("resource-id"),
                              "text": node.get("text"), "bounds": node.get("bounds")})
         print(f"Native UI: {phase}: {node.get('resource-id')} {node.get('text')}", flush=True)
+
+    def background_preview(self) -> None:
+        # This flow is scoped to the already-verified disposable QA foreground
+        # app. A real Home transition is required, not a Flutter lifecycle mock.
+        if not any(node.get("package") == PACKAGE for node in self.hierarchy()):
+            raise RuntimeError("QA app is not foreground before preview background test")
+        self.adb("shell", "input", "keyevent", "KEYCODE_HOME")
+        nodes = self.hierarchy()
+        if any(node.get("package") == PACKAGE for node in nodes) or not any(
+                node.get("package") in {"com.android.launcher3", "com.google.android.apps.nexuslauncher"}
+                for node in nodes):
+            raise RuntimeError("Android launcher was not observed after Home")
+        self.actions.append({"phase": "preview_background", "action": "home",
+                             "launcher_observed": True})
+        self.adb("shell", "am", "start", "-W", "-n",
+                 PACKAGE + "/com.audiofixer.audio_fixer.MainActivity")
+        self.actions.append({"phase": "preview_background", "action": "resume_qa_activity"})
+        subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
+                        "tee", "files/native_runtime_ack"], input="preview_background",
+                       capture_output=True, text=True, check=True, timeout=15)
 
     def act(self, phase: str, nodes: list[ET.Element],
             file_name: str = "native_fixture-fixed.mp3") -> bool:
@@ -260,6 +306,7 @@ class AndroidRuntime:
         reader.start()
         handled: list[str] = []
         captured: set[str] = set()
+        preview_background_done = False
         last_phase = ""
         phase_started = time.monotonic()
         overall_deadline = time.monotonic() + 22 * 60
@@ -287,6 +334,9 @@ class AndroidRuntime:
                                     "tee", "files/native_runtime_ack"],
                                    input=phase, capture_output=True, text=True, check=True, timeout=15)
                     captured.add(phase)
+                if phase == "preview_background" and not preview_background_done:
+                    self.background_preview()
+                    preview_background_done = True
                 if phase in PHASES and phase not in handled:
                     if phase != PHASES[len(handled)]:
                         raise RuntimeError(f"Unexpected native dialog order: {handled} then {phase}")
@@ -306,6 +356,8 @@ class AndroidRuntime:
                 raise RuntimeError(f"Not all actual Android dialogs were exercised: {handled}")
             if captured != set(CHECKPOINTS):
                 raise RuntimeError(f"Missing synthetic app screenshot checkpoints: {captured}")
+            if not preview_background_done:
+                raise RuntimeError("Actual Android Home/resume preview lifecycle was not exercised")
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -325,6 +377,8 @@ class AndroidRuntime:
         assert app_root in {"/data/user/0/" + PACKAGE, "/data/data/" + PACKAGE}, app_root
         digest = hashlib.sha256(original.read_bytes()).hexdigest()
         target = app_root + "/files/audio/" + digest + ".audio"
+        preview_path = app_root + "/files/native_preview_recovery.wav"
+        preview_bytes = (self.output / "library-fixtures/Duration/native_duration_60000.wav").read_bytes()
         backup = app_root + "/no_backup/original_audio_backups/00000000-0000-4000-8000-000000000003.backup"
         values = {"stage": "writing", "target": "file://" + target,
                   "backup": backup, "originalHash": digest,
@@ -339,10 +393,13 @@ class AndroidRuntime:
         export_name = "audio-fixer-recovery-preserved-" + current_hash[:8] + ".mp3"
         expected = json.dumps({"synthetic_only": True, "target_path": target,
                                "backup_path": backup, "original_sha256": digest,
+                               "preview_path": preview_path,
+                               "preview_sha256": hashlib.sha256(preview_bytes).hexdigest(),
                                "current_sha256": current_hash}).encode()
         self.adb("shell", "run-as", PACKAGE, "mkdir", "-p", "files/audio",
                  "no_backup/original_audio_backups", "shared_prefs")
         writes = {target: current_bytes, backup: original.read_bytes(),
+                  preview_path: preview_bytes,
                   "shared_prefs/audio_fixer_original_recovery.xml": journal,
                   "files/native_recovery_expected.json": expected}
         for destination, data in writes.items():
@@ -412,6 +469,9 @@ class AndroidRuntime:
         assert result["injected_interrupted_journal"] is True
         assert result["mocked_native_channels"] is False
         assert result["current_sha256"] == current_hash
+        assert result["preview_recovery"]["real_paused_decoder_released"] is True
+        assert result["preview_recovery"]["recovery_write_lock_blocks_play"] is True
+        assert result["preview_recovery"]["no_autoplay_after_recovery"] is True
         preserved_export = self.output / "preserved-current-export.mp3"
         self.adb("pull", "/sdcard/Download/" + export_name, str(preserved_export))
         assert preserved_export.read_bytes() == current_bytes, "Recovery export did not preserve the third-hash bytes"
@@ -426,6 +486,7 @@ class AndroidRuntime:
         summary["status"] = "passed"
         summary["native_seeded_recovery_checks"] = len(result["checks"])
         summary["native_seeded_recovery_passed"] = True
+        summary["preview_recovery_checks"] = result["preview_recovery"]
         summary["native_preserved_version_export_sha256_exact"] = True
         summary["real_recovery_export_dialogs"] = len(RECOVERY_PHASES)
         summary["timed_process_crash_tested"] = False
@@ -449,6 +510,7 @@ class AndroidRuntime:
         assert result["batch_skipped_unapproved"] == 1
         fixtures = json.loads((self.output / "library-fixtures/manifest.json").read_text())
         assert fixtures["synthetic_only"] is True
+        preview = validate_preview_evidence(result, fixtures)
         fixture_hashes = self.adb("shell", "sha256sum", *[
             entry["device_path"] for entry in fixtures["entries"]
         ]).stdout.splitlines()
@@ -495,6 +557,7 @@ class AndroidRuntime:
                    "library_filter_checks": result["library_filters"],
                    "initial_artwork_checks": result["initial_artwork"],
                    "instrumental_annotation_checks": result["instrumental_annotation"],
+                   "audio_preview_checks": preview,
                    "library_fixture_source_hashes_unchanged": len(expected_hashes),
                    "real_system_dialogs": len(PHASES),
                    "independent_audio_checks": len(checked["checks"]),
@@ -513,6 +576,8 @@ class AndroidRuntime:
                 stream.write("### Android native original-save/export flow: PASS\n")
                 stream.write(f"- {summary['native_checks']} app/native checks; six real Android dialogs\n")
                 stream.write(f"- {summary['independent_audio_checks']} independent FFmpeg checks\n")
+                stream.write("- Real MediaStore/private-copy preview state: progress, pause, seek, switch, lifecycle release, and original-write lock\n")
+                stream.write("- Preview state assertions do not assess speaker output or physical-device audio focus behavior\n")
                 stream.write("- Export/cancel and unapproved-song hashes unchanged; approved original updated with audio and cover preserved\n")
                 stream.write("- Synthetic fixtures only; no audio or APKs published\n")
                 stream.write("- Allowlisted synthetic screenshots and sanitized check summaries retained for one day\n")

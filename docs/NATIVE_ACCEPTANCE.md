@@ -1,4 +1,10 @@
-# Original-save, library-artwork and instrumental Android acceptance (0.3.2)
+# Audio-preview and original-save Android acceptance (0.3.3)
+
+The 0.3.3 preview assertions below are prepared native test coverage. They have
+not yet been executed on an emulator or physical device in this implementation
+session. Host unit tests, Flutter checks and an APK build cannot establish native
+playback success. Retain the exact commit/device/run result when this harness is
+executed; earlier native results do not cover these new assertions.
 
 ## Synthetic-only runtime
 
@@ -26,6 +32,22 @@ security settings to work around a missing acceleration capability.
 
 - Real permission denial, retry/grant and MediaStore query/read through content URIs
 - Unicode existing metadata and embedded cover; no mock native MethodChannels
+- The 60-second synthetic MediaStore WAV plays through the row button without
+  changing selected tracks or causing a full tag read. Native `getState` must
+  independently report advancing position and the expected duration
+- A pinned player and the selection toolbar remain available after long list
+  scrolling. Visible player controls pause, keep position stable, seek around
+  the middle of the WAV, resume, switch tracks and close/release
+- Playback can be restarted after refresh and after a failed file. Opening a
+  detail page or another tab releases playback. The host presses Android Home,
+  verifies the actual launcher, resumes the QA Activity and checks that playback
+  stays stopped; it does not inject a Flutter lifecycle event
+- A production-imported, app-private copy of the synthetic WAV plays, and its
+  SHA-256 matches the host fixture. Authored corrupt and missing app-private
+  inputs produce native failure events plus a visible error instead of hanging
+- Starting an original save while preview plays stops the native player before
+  host consent handling, blocks further play while consent is pending, and
+  never restarts playback after cancellation
 - Initial rows show decoded, per-file embedded thumbnails before a full detail
   read; missing-artwork rows keep a placeholder. Fresh controller reload still
   loads the correct thumbnail without falsely marking tags inspected
@@ -52,6 +74,11 @@ security settings to work around a missing acceleration capability.
 - A separate fresh-Activity test retains a third-hash current synthetic file and
   original backup during startup inspection and reauthorization; explicit restore
   must first preserve the current version and block unsafe cleanup
+- The recovery test holds an actual decoder paused on a separate synthetic WAV,
+  then exercises the production Dart write lock before startup inspection,
+  retry and explicit restore. It asserts native stop/release and blocks new play
+  inside the lock. This checks the lock over real recovery calls; controller unit
+  tests separately check that production recovery actions acquire that lock
 - Legacy private imported-file new writes are rejected; existing private recovery
   records remain readable and recoverable
 - The real native MediaStore original-save method rejects a deliberately stale source SHA-256
@@ -75,6 +102,9 @@ Do not mark these passed merely because automated test files exist:
 - Batch stop midway, restart handling, retry failures without touching success,
   alternate export-directory cancellation and document-provider cleanup failure
 - Playback in the user's usual player, without uploading or committing music
+- Speaker/headphone output, audio focus interruption by another app, headset
+  disconnection, and physical-device codec/provider behavior. A progressing
+  MediaPlayer state does not prove sound was audible
 
 Unit/Flutter tests additionally cover unknown/nonpositive duration, separate storage
 volumes, settings failures, stale indexed-vs-parsed duration, exclusion-aware retries,
@@ -93,3 +123,10 @@ save. Unknown startup content is retained until an explicit decision; restoring
 the original first preserves the current version. Distinct unexported versions
 cannot be silently discarded when completing recovery. Do not clear app data or
 uninstall while unresolved retained versions remain.
+
+The preview report records native duration, progress, pause/seek positions,
+failure codes, imported-copy hash and the explicit lifecycle/write-lock
+assertions. Host validation rejects missing assertions or inconsistent values.
+Synthetic screenshots illustrate the UI; they are never treated as proof that
+audio played. Recovery reports explicitly distinguish the release barrier from
+controller wiring and a seeded journal from a timed process crash.

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/services/audio_preview_service.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,6 +32,50 @@ void main() {
       final currentHash = fixture['current_sha256'] as String;
       Future<String> hash(File file) async =>
           sha256.convert(await file.readAsBytes()).toString();
+      const previewChannel = MethodChannel('audio_fixer/audio_preview');
+      final preview = AudioPreviewController();
+      final previewFile = File(fixture['preview_path'] as String);
+      expect(await hash(previewFile), fixture['preview_sha256']);
+      final previewTrack = AudioTrack(
+        id: 'native-recovery-preview',
+        fileName: 'native_preview_recovery.wav',
+        localPath: previewFile.path,
+        sizeBytes: await previewFile.length(),
+        importedAt: DateTime.now(),
+        durationMs: 60000,
+      );
+      Future<Map<String, dynamic>> previewState() async =>
+          (await previewChannel.invokeMapMethod<String, dynamic>('getState'))!;
+      Future<void> waitForPreview(String status) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 25));
+        while ((await previewState())['status'] != status ||
+            preview.status.name != status) {
+          if (DateTime.now().isAfter(deadline)) {
+            fail('Native preview did not reach $status');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          await tester.pump();
+        }
+      }
+
+      Future<void> holdDecoder() async {
+        await preview.play(previewTrack);
+        await waitForPreview('playing');
+        await preview.pause();
+        await waitForPreview('paused');
+      }
+
+      // Exercise the production Dart release barrier over the actual recovery
+      // bridge. Separate controller tests verify that each UI action uses it.
+      Future<String?> guardedRecovery(String method) =>
+          preview.withWriteLock(() async {
+            expect(preview.isBlocked, isTrue);
+            expect((await previewState())['status'], 'stopped');
+            await preview.play(previewTrack);
+            expect(preview.track, isNull);
+            expect((await previewState())['status'], 'stopped');
+            return channel.invokeMethod<String>(method);
+          });
       Future<Map<String, dynamic>> state() async => Map<String, dynamic>.from(
         (await channel.invokeMapMethod<String, dynamic>(
           'getOriginalRecoveryState',
@@ -50,14 +96,18 @@ void main() {
 
       // Neither startup nor reauthorizing/checking is permission to overwrite a
       // third-hash target. Even dismissing a notice cannot discard its backup.
-      expect(await channel.invokeMethod<String>('recoverExport'), isNotNull);
+      await holdDecoder();
+      expect(await guardedRecovery('recoverExport'), isNotNull);
+      expect(preview.isBlocked, isFalse);
+      expect((await previewState())['status'], 'stopped');
       expect((await state())['status'], 'conflict');
       expect(await hash(target), currentHash);
       expect(await hash(backup), originalHash);
       expect((await state())['status'], 'conflict');
       expect((await state())['canRestore'], isTrue);
       expect((await state())['canFinish'], isFalse);
-      await channel.invokeMethod<String>('retryOriginalRecovery');
+      await holdDecoder();
+      await guardedRecovery('retryOriginalRecovery');
       expect((await state())['status'], 'conflict');
       expect(await hash(target), currentHash);
       expect(await hash(backup), originalHash);
@@ -70,10 +120,10 @@ void main() {
       expect(await backup.exists(), isTrue);
 
       // A distinct, explicit restore must first retain the current bytes.
-      expect(
-        await channel.invokeMethod<String>('restoreOriginalBackup'),
-        contains('已恢复'),
-      );
+      await holdDecoder();
+      expect(await guardedRecovery('restoreOriginalBackup'), contains('已恢复'));
+      expect(preview.isBlocked, isFalse);
+      expect((await previewState())['status'], 'stopped');
       final restoredState = await state();
       expect(await hash(target), originalHash);
       expect(await hash(backup), originalHash);
@@ -203,6 +253,9 @@ void main() {
       } finally {
         await work.delete(recursive: true);
       }
+      await preview.stop();
+      preview.dispose();
+      await previewFile.delete();
       await File('${support.path}/native_recovery_result.json').writeAsString(
         jsonEncode({
           'passed': true,
@@ -213,7 +266,16 @@ void main() {
           'original_sha256': originalHash,
           'current_sha256': currentHash,
           'preserved_export_uri': exportUri,
+          'preview_recovery': {
+            'real_paused_decoder_released': true,
+            'recovery_write_lock_blocks_play': true,
+            'no_autoplay_after_recovery': true,
+            'library_controller_wiring_exercised': false,
+          },
           'checks': [
+            'production_preview_lock_releases_before_native_recovery',
+            'production_preview_lock_blocks_play_during_native_recovery',
+            'recovery_unlock_does_not_resume_preview',
             'fresh_activity_reads_persisted_interrupted_journal',
             'startup_preserves_third_hash_target_and_original_backup',
             'reauthorization_does_not_overwrite_unknown_current_version',

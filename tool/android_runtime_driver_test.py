@@ -9,10 +9,12 @@ import tempfile
 import wave
 import subprocess
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
-from android_runtime_ci import AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES, RECOVERY_PHASES, RECOVERY_CHECKPOINTS
+from android_runtime_ci import (AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES,
+                                PREVIEW_PHASES, PREVIEW_CHECKS, RECOVERY_PHASES,
+                                RECOVERY_CHECKPOINTS, validate_preview_evidence)
 from android_runtime_fixtures import BOUNDARY_DURATIONS_MS, generate_library_fixtures
 from android_runtime_evidence import main as prepare_evidence
 
@@ -71,7 +73,7 @@ class DialogDriverTest(unittest.TestCase):
             "files/native_runtime_phase", check=False)
 
     def test_phase_accepts_only_successful_known_app_phases(self):
-        for phase in PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete"):
+        for phase in PHASES + PREVIEW_PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete"):
             with self.subTest(phase=phase):
                 self.runtime.adb.return_value = subprocess.CompletedProcess(
                     [], 0, stdout=phase + "\n")
@@ -79,6 +81,32 @@ class DialogDriverTest(unittest.TestCase):
                 self.runtime.adb.return_value = subprocess.CompletedProcess(
                     [], 1, stdout=phase)
                 self.assertEqual(self.runtime.phase(), "")
+
+    def test_background_requires_observed_qa_then_launcher_before_resume(self):
+        self.runtime.hierarchy = Mock(side_effect=[
+            [node(package=PACKAGE)], [node(package='com.android.launcher3')]])
+        with patch('android_runtime_ci.subprocess.run') as run:
+            self.runtime.background_preview()
+        self.runtime.adb.assert_any_call('shell', 'input', 'keyevent', 'KEYCODE_HOME')
+        self.runtime.adb.assert_any_call('shell', 'am', 'start', '-W', '-n',
+                                        PACKAGE + '/com.audiofixer.audio_fixer.MainActivity')
+        self.assertEqual([action['action'] for action in self.runtime.actions],
+                         ['home', 'resume_qa_activity'])
+        self.assertEqual(run.call_args.kwargs['input'], 'preview_background')
+
+    def test_background_does_not_operate_an_unexpected_foreground_app(self):
+        self.runtime.hierarchy = Mock(return_value=[node(package='unrelated.app')])
+        with self.assertRaisesRegex(RuntimeError, 'not foreground'):
+            self.runtime.background_preview()
+        self.runtime.adb.assert_not_called()
+
+    def test_background_does_not_claim_a_failed_home_transition(self):
+        self.runtime.hierarchy = Mock(return_value=[node(package=PACKAGE)])
+        with patch('android_runtime_ci.subprocess.run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'launcher was not observed'):
+                self.runtime.background_preview()
+        self.runtime.adb.assert_called_once_with('shell', 'input', 'keyevent', 'KEYCODE_HOME')
+        run.assert_not_called()
 
     def test_downloads_toolbar_title_is_never_tapped_as_drawer_root(self):
         toolbar = node('com.android.documentsui:id/toolbar')
@@ -250,6 +278,55 @@ class NativeLibraryFixtureTest(unittest.TestCase):
         self.assertEqual(len(CHECKPOINTS), len(set(CHECKPOINTS)))
         self.assertTrue({'selection_toolbar_top', 'selection_toolbar_scrolled',
                          'library_filters_ready', 'library_filters_reloaded'}.issubset(CHECKPOINTS))
+
+
+class PreviewEvidenceContractTest(unittest.TestCase):
+    """Sanitized report validation only; no player or Android execution here."""
+
+    def setUp(self):
+        self.preview = dict.fromkeys(PREVIEW_CHECKS, True)
+        self.preview.update(source_kind='mediastore_and_private_import',
+                            speaker_output_assessed=False, first_duration_ms=60000,
+                            first_progress_ms=850, paused_position_ms=2000,
+                            paused_after_wait_ms=2000, seek_position_ms=30000,
+                            corrupt_error_code='unsupported_format',
+                            missing_error_code='source_unavailable',
+                            imported_copy_sha256='a' * 64)
+        self.fixtures = {'entries': [{'file_name': 'native_duration_60000.wav',
+                                     'sha256': 'a' * 64}]}
+
+    def validate(self):
+        return validate_preview_evidence({'audio_preview': self.preview}, self.fixtures)
+
+    def test_complete_runtime_report_is_accepted(self):
+        self.assertEqual(self.validate(), self.preview)
+        self.assertEqual(len(PREVIEW_CHECKS), len(set(PREVIEW_CHECKS)))
+        self.assertTrue({'preview_playing_scrolled', 'preview_paused_seeked',
+                         'preview_background_stopped', 'preview_missing_error'}.issubset(CHECKPOINTS))
+
+    def test_missing_runtime_assertion_is_not_inferred_from_other_evidence(self):
+        for key in PREVIEW_CHECKS:
+            with self.subTest(key=key):
+                self.preview[key] = False
+                with self.assertRaises(AssertionError):
+                    self.validate()
+                self.preview[key] = True
+        with self.assertRaises(KeyError):
+            validate_preview_evidence({}, self.fixtures)
+
+    def test_nonprogressing_pause_drift_wrong_seek_and_wrong_copy_are_rejected(self):
+        invalid = {'first_progress_ms': 0, 'first_duration_ms': 1000,
+                   'paused_after_wait_ms': 2800, 'seek_position_ms': 0,
+                   'imported_copy_sha256': 'b' * 64,
+                   'missing_error_code': 'playback_failed',
+                   'speaker_output_assessed': True}
+        for key, value in invalid.items():
+            with self.subTest(key=key):
+                previous = self.preview[key]
+                self.preview[key] = value
+                with self.assertRaises(AssertionError):
+                    self.validate()
+                self.preview[key] = previous
 
 
 class IntegrationSourceContractTest(unittest.TestCase):

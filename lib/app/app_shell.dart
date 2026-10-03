@@ -19,6 +19,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _selected = 0;
+  int _libraryNavigationRevision = 0;
   int _noticeRevision = 0;
   String? _inlineNotice;
   Timer? _noticeTimer;
@@ -38,11 +39,22 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      unawaited(widget.controller.preview.stop());
+    }
     if (state == AppLifecycleState.resumed &&
         widget.controller.usesDeviceLibrary &&
         widget.controller.canOperate) {
       widget.controller.refreshLibrary();
     }
+  }
+
+  void _selectTab(int value) {
+    if (_selected != value) _libraryNavigationRevision++;
+    if (_selected == 0 && value != 0) {
+      unawaited(widget.controller.preview.stop());
+    }
+    setState(() => _selected = value);
   }
 
   void _showNotice() {
@@ -65,6 +77,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   void dispose() {
     widget.controller.removeListener(_showNotice);
     _noticeTimer?.cancel();
+    unawaited(widget.controller.preview.stop());
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -93,11 +106,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             children: [
               LibraryPage(
                 controller: controller,
-                onOpenTasks: () => setState(() => _selected = 1),
+                isActive: _selected == 0,
+                navigationToken: () =>
+                    _selected == 0 ? _libraryNavigationRevision : null,
+                onOpenTasks: () => _selectTab(1),
               ),
               TasksPage(
                 controller: controller,
-                onOpenSettings: () => setState(() => _selected = 2),
+                onOpenSettings: () => _selectTab(2),
               ),
               SettingsPage(controller: controller),
             ],
@@ -106,7 +122,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     return PopScope(
       canPop: _selected == 0,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) setState(() => _selected = 0);
+        if (!didPop) _selectTab(0);
       },
       child: Scaffold(
         appBar: AppBar(
@@ -152,7 +168,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                           ),
                         );
                         if (confirmed != true || !mounted) return;
-                        setState(() => _selected = 1);
+                        _selectTab(1);
                         await controller.complete();
                       }
                     : null,
@@ -224,8 +240,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                       NavigationRail(
                         selectedIndex: _selected,
                         labelType: NavigationRailLabelType.all,
-                        onDestinationSelected: (value) =>
-                            setState(() => _selected = value),
+                        onDestinationSelected: _selectTab,
                         destinations: [
                           for (var index = 0; index < _labels.length; index++)
                             NavigationRailDestination(
@@ -255,8 +270,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             ? null
             : NavigationBar(
                 selectedIndex: _selected,
-                onDestinationSelected: (value) =>
-                    setState(() => _selected = value),
+                onDestinationSelected: _selectTab,
                 destinations: [
                   for (var index = 0; index < _labels.length; index++)
                     NavigationDestination(

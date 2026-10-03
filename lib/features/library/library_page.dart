@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
 import '../../core/services/device_artwork_cache.dart';
 import '../../core/services/device_music_library.dart';
+import '../../core/services/audio_preview_service.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
@@ -12,6 +15,7 @@ import 'track_detail_page.dart';
 import '../tasks/bulk_action_panel.dart';
 import '../settings/library_filters.dart';
 import 'library_selection_toolbar.dart';
+import 'audio_preview_player.dart';
 
 enum _LibraryFilter {
   all('全部'),
@@ -31,9 +35,17 @@ enum _LibraryFilter {
 }
 
 class LibraryPage extends StatefulWidget {
-  const LibraryPage({super.key, required this.controller, this.onOpenTasks});
+  const LibraryPage({
+    super.key,
+    required this.controller,
+    this.onOpenTasks,
+    this.isActive = true,
+    this.navigationToken,
+  });
   final LibraryController controller;
   final VoidCallback? onOpenTasks;
+  final bool isActive;
+  final int? Function()? navigationToken;
 
   @override
   State<LibraryPage> createState() => _LibraryPageState();
@@ -43,10 +55,39 @@ class _LibraryPageState extends State<LibraryPage> {
   final _search = TextEditingController();
   _LibraryFilter _filter = _LibraryFilter.all;
   bool _selectionMode = false;
+  bool _openingDetails = false;
+  int _navigationRevision = 0;
   DeviceArtworkCache? _artworkCache;
+  int? get _currentNavigationToken => widget.navigationToken != null
+      ? widget.navigationToken!()
+      : widget.isActive
+      ? _navigationRevision
+      : null;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_stopHiddenPreview);
+  }
+
+  @override
+  void didUpdateWidget(covariant LibraryPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isActive != widget.isActive ||
+        oldWidget.controller != widget.controller) {
+      _navigationRevision++;
+    }
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_stopHiddenPreview);
+      unawaited(oldWidget.controller.preview.stop());
+      widget.controller.addListener(_stopHiddenPreview);
+    }
+  }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_stopHiddenPreview);
+    unawaited(widget.controller.preview.stop());
     _search.dispose();
     _artworkCache?.dispose();
     super.dispose();
@@ -61,10 +102,49 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 
   void _viewChanged(VoidCallback change) {
+    _navigationRevision++;
     setState(change);
     widget.controller.retainSelection(
       widget.controller.tracks.where(_matchesView).map((track) => track.id),
     );
+    _stopHiddenPreview();
+  }
+
+  void _stopHiddenPreview() {
+    final controller = widget.controller;
+    final playing = controller.preview.track;
+    if (playing == null) return;
+    if (!controller.canReadDeviceLibrary ||
+        !controller.tracks.any(
+          (track) => track.id == playing.id && _matchesView(track),
+        )) {
+      unawaited(controller.preview.stop());
+    }
+  }
+
+  Future<void> _openTrack(AudioTrack track) async {
+    final shellToken = _currentNavigationToken;
+    if (_openingDetails || !widget.isActive || shellToken == null) return;
+    final navigationRevision = _navigationRevision;
+    setState(() => _openingDetails = true);
+    await widget.controller.preview.stop();
+    if (!mounted) return;
+    if (widget.isActive &&
+        shellToken == _currentNavigationToken &&
+        navigationRevision == _navigationRevision &&
+        widget.controller.canOperate &&
+        widget.controller.tracks.any(
+          (item) => item.id == track.id && _matchesView(item),
+        ) &&
+        widget.controller.preview.errorMessage == null) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              TrackDetailPage(track: track, controller: widget.controller),
+        ),
+      );
+    }
+    if (mounted) setState(() => _openingDetails = false);
   }
 
   void _resetSearch() => _viewChanged(() {
@@ -346,6 +426,13 @@ class _LibraryPageState extends State<LibraryPage> {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _TrackTile(
                             track: track,
+                            preview: controller.preview,
+                            previewCanActivate: () =>
+                                _currentNavigationToken != null,
+                            previewEnabled:
+                                widget.isActive &&
+                                !_openingDetails &&
+                                controller.canReadDeviceLibrary,
                             artworkCache: _artworkCache,
                             selectionMode: selectionMode,
                             selected: controller.selectedTrackIds.contains(
@@ -355,16 +442,9 @@ class _LibraryPageState extends State<LibraryPage> {
                                 ? () =>
                                       controller.toggleTrackSelection(track.id)
                                 : null,
-                            onTap: !controller.canOperate
+                            onTap: !controller.canOperate || _openingDetails
                                 ? null
-                                : () => Navigator.of(context).push(
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => TrackDetailPage(
-                                        track: track,
-                                        controller: controller,
-                                      ),
-                                    ),
-                                  ),
+                                : () => _openTrack(track),
                           ),
                         );
                       },
@@ -374,25 +454,38 @@ class _LibraryPageState extends State<LibraryPage> {
               ],
             ),
           ),
-          if (selectionMode)
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: constraints.maxHeight * 0.5,
-              ),
-              child: SingleChildScrollView(
-                child: LibrarySelectionToolbar(
-                  controller: controller,
-                  visibleIds: visibleIds,
-                  selectedIds: selectedVisibleIds,
-                  allVisibleSelected: allVisibleSelected,
-                  onEnd: () {
-                    controller.clearSelection();
-                    setState(() => _selectionMode = false);
-                  },
-                  onOpenTasks: widget.onOpenTasks,
-                ),
+          ConstrainedBox(
+            key: const ValueKey('fixed-library-bottom-controls'),
+            constraints: BoxConstraints(maxHeight: constraints.maxHeight * 0.6),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AudioPreviewPlayer(
+                    preview: controller.preview,
+                    canActivate: () => _currentNavigationToken != null,
+                    enabled:
+                        widget.isActive &&
+                        !_openingDetails &&
+                        controller.canReadDeviceLibrary,
+                    bottomSafeArea: !selectionMode,
+                  ),
+                  if (selectionMode)
+                    LibrarySelectionToolbar(
+                      controller: controller,
+                      visibleIds: visibleIds,
+                      selectedIds: selectedVisibleIds,
+                      allVisibleSelected: allVisibleSelected,
+                      onEnd: () {
+                        controller.clearSelection();
+                        setState(() => _selectionMode = false);
+                      },
+                      onOpenTasks: widget.onOpenTasks,
+                    ),
+                ],
               ),
             ),
+          ),
         ],
       ),
     );
@@ -479,6 +572,9 @@ class _LibraryOverview extends StatelessWidget {
 class _TrackTile extends StatelessWidget {
   const _TrackTile({
     required this.track,
+    required this.preview,
+    required this.previewEnabled,
+    required this.previewCanActivate,
     required this.onTap,
     required this.selectionMode,
     required this.selected,
@@ -486,6 +582,9 @@ class _TrackTile extends StatelessWidget {
     this.onSelectionChanged,
   });
   final AudioTrack track;
+  final AudioPreviewController preview;
+  final bool previewEnabled;
+  final bool Function() previewCanActivate;
   final DeviceArtworkCache? artworkCache;
   final VoidCallback? onTap;
   final bool selectionMode;
@@ -583,12 +682,11 @@ class _TrackTile extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
-                ExcludeSemantics(
-                  child: Icon(
-                    Icons.chevron_right,
-                    size: 20,
-                    color: colors.onSurfaceVariant,
-                  ),
+                AudioPreviewButton(
+                  preview: preview,
+                  track: track,
+                  enabled: previewEnabled,
+                  canActivate: previewCanActivate,
                 ),
               ],
             ),

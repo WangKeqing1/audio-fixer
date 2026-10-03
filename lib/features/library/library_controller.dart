@@ -9,6 +9,7 @@ import '../../core/models/audio_track.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/services/audio_importer.dart';
+import '../../core/services/audio_preview_service.dart';
 import '../../core/services/audio_tag_reader.dart';
 import '../../core/services/completion_service.dart';
 import '../../core/services/device_music_library.dart';
@@ -25,7 +26,8 @@ class LibraryController extends ChangeNotifier {
     required this.completion,
     this.deviceLibrary,
     this.exporter,
-  });
+    AudioPreviewController? preview,
+  }) : preview = preview ?? AudioPreviewController();
 
   final LibraryStore store;
   final AudioPicker picker;
@@ -33,6 +35,7 @@ class LibraryController extends ChangeNotifier {
   final CompletionService completion;
   final DeviceMusicLibrary? deviceLibrary;
   final AudioCopyExporter? exporter;
+  final AudioPreviewController preview;
   LibrarySnapshot _snapshot = const LibrarySnapshot();
   bool _disposed = false;
   bool isLoading = true;
@@ -55,8 +58,10 @@ class LibraryController extends ChangeNotifier {
     final recovery = exporter;
     if (recovery is! AudioExportRecovery) return true;
     try {
-      exportRecoveryNotice = await (recovery as AudioExportRecovery)
-          .recoverInterruptedExport();
+      await preview.withWriteLock(() async {
+        exportRecoveryNotice = await (recovery as AudioExportRecovery)
+            .recoverInterruptedExport();
+      });
       if (recovery is AudioOriginalRecovery) {
         originalRecoveryState = await (recovery as AudioOriginalRecovery)
             .getOriginalRecoveryState();
@@ -98,7 +103,7 @@ class LibraryController extends ChangeNotifier {
       await _recoverExport();
       _announce(error.message ?? '恢复尚未完成，备份已保留，请重新授权后重试。');
     }
-  });
+  }, mutatesAudio: true);
 
   Future<void> restoreOriginalBackup() => _operate(() async {
     final recovery = exporter;
@@ -141,7 +146,7 @@ class LibraryController extends ChangeNotifier {
       await _recoverExport();
       _announce(error.message ?? '恢复未完成，已有版本仍会保留。');
     }
-  });
+  }, mutatesAudio: true);
 
   Future<void> exportOriginalRecoveryVersion(String versionId) => _operate(
     () async {
@@ -161,6 +166,7 @@ class LibraryController extends ChangeNotifier {
         _announce(error.message ?? '版本导出未完成，恢复版本仍保留。');
       }
     },
+    mutatesAudio: true,
   );
 
   Future<void> finishOriginalRecovery() => _operate(() async {
@@ -177,7 +183,7 @@ class LibraryController extends ChangeNotifier {
       await _recoverExport();
       _announce(error.message ?? '暂不能完成恢复，请先导出需要保留的版本。');
     }
-  });
+  }, mutatesAudio: true);
 
   bool isCompleting = false;
   bool completionStopRequested = false;
@@ -686,15 +692,26 @@ class LibraryController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> _operate(Future<void> Function() action) async {
+  Future<void> _operate(
+    Future<void> Function() action, {
+    bool mutatesAudio = false,
+  }) async {
     if (!canOperate) return;
     isBusy = true;
     _notify();
     try {
-      await action();
+      if (mutatesAudio) {
+        await preview.withWriteLock(action);
+      } else {
+        await action();
+      }
     } catch (error, stack) {
       debugPrint('Library operation failed: $error\n$stack');
-      _announce('操作未完成。请检查文件访问权限和可用空间后重试。');
+      _announce(
+        error is AudioPreviewException
+            ? error.message
+            : '操作未完成。请检查文件访问权限和可用空间后重试。',
+      );
     } finally {
       isBusy = false;
       progress = null;
@@ -1088,7 +1105,7 @@ class LibraryController extends ChangeNotifier {
           result.status == BatchItemStatus.savedOriginal ||
           result.status == BatchItemStatus.exported;
       _announce(result.message);
-    });
+    }, mutatesAudio: true);
     return saved;
   }
 
@@ -1208,7 +1225,7 @@ class LibraryController extends ChangeNotifier {
         '${_batchStopRequested ? '已停止。' : ''}${batchOperation!.summary}',
       );
     }
-  });
+  }, mutatesAudio: true);
 
   Future<BatchItemResult> _writeCandidates(
     CompletionTask task,
@@ -1440,6 +1457,7 @@ class LibraryController extends ChangeNotifier {
     completionStopRequested = true;
     _batchStopRequested = true;
     _disposed = true;
+    preview.dispose();
     super.dispose();
   }
 }

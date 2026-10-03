@@ -179,7 +179,7 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.3.2 · 初始封面与纯音乐标记',
+                  '0.3.3 · 列表试听、封面与纯音乐标记',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),
