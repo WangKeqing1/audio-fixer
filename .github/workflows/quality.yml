@@ -2,7 +2,7 @@ name: Audio Fixer quality
 
 on:
   push:
-    branches: [dev/audio-fixer-quality]
+    branches: [main, dev/audio-fixer-quality]
   pull_request:
 
 permissions:

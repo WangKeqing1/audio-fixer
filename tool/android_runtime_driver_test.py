@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Offline host-driver unit checks; these are not Android runtime evidence."""
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
-from android_runtime_ci import AndroidRuntime
+from android_runtime_ci import AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES
 
 
 def node(resource='', text='', kind='android.widget.TextView', **attrs):
@@ -23,6 +24,31 @@ class DialogDriverTest(unittest.TestCase):
         self.filename = node('android:id/title', 'native_fixture-fixed.mp3',
                              'android.widget.EditText')
         self.save = node('android:id/button1', 'SAVE', 'android.widget.Button')
+
+    def test_phase_ignores_build_time_package_and_missing_file_diagnostics(self):
+        for diagnostic in (
+            "run-as: unknown package: " + PACKAGE,
+            "cat: files/native_runtime_phase: No such file or directory",
+            "unexpected_phase",
+            "",
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                self.runtime.adb.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout=diagnostic + "\n")
+                self.assertEqual(self.runtime.phase(), "")
+        self.runtime.adb.assert_called_with(
+            "shell", "-T", "run-as", PACKAGE, "cat",
+            "files/native_runtime_phase", check=False)
+
+    def test_phase_accepts_only_successful_known_app_phases(self):
+        for phase in PHASES + CHECKPOINTS + ("read_details", "complete"):
+            with self.subTest(phase=phase):
+                self.runtime.adb.return_value = subprocess.CompletedProcess(
+                    [], 0, stdout=phase + "\n")
+                self.assertEqual(self.runtime.phase(), phase)
+                self.runtime.adb.return_value = subprocess.CompletedProcess(
+                    [], 1, stdout=phase)
+                self.assertEqual(self.runtime.phase(), "")
 
     def test_downloads_toolbar_title_is_never_tapped_as_drawer_root(self):
         toolbar = node('com.android.documentsui:id/toolbar')

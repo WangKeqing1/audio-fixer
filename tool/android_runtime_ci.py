@@ -45,9 +45,14 @@ class AndroidRuntime:
                               timeout=timeout, check=check)
 
     def phase(self) -> str:
-        result = self.adb("exec-out", "run-as", PACKAGE, "cat",
+        # exec-out can return success while run-as reports an unknown package
+        # during the initial APK build. Shell v2 propagates the remote status;
+        # the allowlist also prevents diagnostics from becoming app phases.
+        result = self.adb("shell", "-T", "run-as", PACKAGE, "cat",
                           "files/native_runtime_phase", check=False)
-        return result.stdout.strip() if result.returncode == 0 else ""
+        value = result.stdout.strip()
+        known = PHASES + CHECKPOINTS + ("read_details", "complete")
+        return value if result.returncode == 0 and value in known else ""
 
     def hierarchy(self) -> list[ET.Element]:
         # Fresh UI evidence supplies every coordinate; never hardcode a tap.
