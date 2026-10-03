@@ -83,6 +83,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     onPressed:
                         controller.canOperate &&
                             track.detailsLoaded &&
+                            !track.requiresTagRefresh &&
                             track.readError == null
                         ? () => Navigator.of(context).push(
                             MaterialPageRoute<void>(
@@ -102,6 +103,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     onPressed:
                         controller.canOperate &&
                             track.detailsLoaded &&
+                            !track.requiresTagRefresh &&
                             track.readError == null
                         ? () => Navigator.of(context).push(
                             MaterialPageRoute<void>(
@@ -122,10 +124,17 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 20),
-                  if (!track.detailsLoaded) ...[
+                  if (!track.detailsLoaded || track.requiresTagRefresh) ...[
                     if (controller.isBusy) const LinearProgressIndicator(),
                     const SizedBox(height: 12),
-                    Text(controller.isBusy ? '正在读取文件标签…' : '文件标签尚未检查。'),
+                    Text(
+                      controller.isBusy
+                          ? '正在读取文件标签…'
+                          : track.readError ?? '文件标签尚未检查。',
+                      style: !controller.isBusy && track.readError != null
+                          ? TextStyle(color: theme.colorScheme.error)
+                          : null,
+                    ),
                     if (!controller.isBusy)
                       TextButton(
                         onPressed: () => controller.readDetails(track.id),
@@ -161,7 +170,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                   // MediaStore can lag an external tag edit. A successful
                   // cached read must not make the real file impossible to
                   // inspect again after the exporter detects a change.
-                  if (track.detailsLoaded && track.isDeviceTrack)
+                  if (track.detailsLoaded && controller.canRereadTrack(track))
                     TextButton.icon(
                       onPressed: controller.canOperate
                           ? () => controller.readDetails(track.id, force: true)

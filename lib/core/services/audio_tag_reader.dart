@@ -62,6 +62,7 @@ AudioTrack _read(AudioTrack track, String path, String root) {
       composer: standard.composer,
       comment: riffText('ICMT', standard.comment),
       tagReadWarnings: standard.warnings,
+      tagReadVersion: AudioTrack.currentTagReadVersion,
       durationMs:
           _readOpusDurationMs(file) ??
           metadata.duration?.inMilliseconds ??

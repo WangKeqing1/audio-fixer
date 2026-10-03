@@ -48,6 +48,10 @@ enum AudioField {
 }
 
 class AudioTrack {
+  // Version 2 reads the complete common tag set and fingerprints cover bytes.
+  // Old serialized caches need a real reread before review can trust absence.
+  static const currentTagReadVersion = 2;
+
   const AudioTrack({
     required this.id,
     required this.fileName,
@@ -77,6 +81,7 @@ class AudioTrack {
     this.contentUri,
     this.dateModifiedMs,
     this.detailsLoaded = true,
+    this.tagReadVersion = currentTagReadVersion,
     this.volumeName,
     this.relativePath,
   });
@@ -114,6 +119,7 @@ class AudioTrack {
   final String? contentUri;
   final int? dateModifiedMs;
   final bool detailsLoaded;
+  final int tagReadVersion;
   final String? volumeName;
   final String? relativePath;
 
@@ -129,6 +135,9 @@ class AudioTrack {
   bool get hasKnownDuration => durationMs != null && durationMs! > 0;
 
   bool get isDeviceTrack => contentUri != null;
+
+  bool get requiresTagRefresh =>
+      detailsLoaded && tagReadVersion < currentTagReadVersion;
 
   String get displayTitle => hasText(title) ? title! : fileName;
   String get extension => fileName.split('.').last.toUpperCase();
@@ -178,6 +187,7 @@ class AudioTrack {
     Object? composer = _unchangedTag,
     Object? comment = _unchangedTag,
     List<String>? tagReadWarnings,
+    int? tagReadVersion,
     required int? durationMs,
     required String? lyrics,
     required String? artworkPath,
@@ -230,6 +240,7 @@ class AudioTrack {
         : artworkSha256 as String?,
     readError: readError,
     detailsLoaded: true,
+    tagReadVersion: tagReadVersion ?? this.tagReadVersion,
   );
 
   AudioTrack withReadError(String error) => withDetails(
@@ -272,6 +283,7 @@ class AudioTrack {
     contentUri: contentUri,
     dateModifiedMs: dateModifiedMs,
     detailsLoaded: detailsLoaded,
+    tagReadVersion: tagReadVersion,
     volumeName: volumeName,
     relativePath: relativePath,
   );
@@ -305,6 +317,7 @@ class AudioTrack {
     'contentUri': contentUri,
     'dateModifiedMs': dateModifiedMs,
     'detailsLoaded': detailsLoaded,
+    'tagReadVersion': tagReadVersion,
     'volumeName': volumeName,
     'relativePath': relativePath,
   };
@@ -342,6 +355,7 @@ class AudioTrack {
     contentUri: json['contentUri'] as String?,
     dateModifiedMs: json['dateModifiedMs'] as int?,
     detailsLoaded: json['detailsLoaded'] as bool? ?? true,
+    tagReadVersion: json['tagReadVersion'] as int? ?? 0,
     volumeName: json['volumeName'] as String?,
     relativePath: json['relativePath'] as String?,
   );

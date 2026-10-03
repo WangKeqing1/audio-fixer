@@ -41,9 +41,54 @@ abstract interface class AudioImporter {
   Future<void> prune(Set<String> retainedIds);
 }
 
-class LocalAudioImporter implements AudioImporter {
+/// Optional capability for upgrading/rechecking imported private audio copies.
+abstract interface class AudioDetailsImporter {
+  Future<AudioTrack> readDetails(AudioTrack track);
+}
+
+class LocalAudioImporter implements AudioImporter, AudioDetailsImporter {
   LocalAudioImporter(this.directoryProvider);
   final DirectoryProvider directoryProvider;
+
+  @override
+  Future<AudioTrack> readDetails(AudioTrack track) async {
+    if (track.isDeviceTrack ||
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(track.id) ||
+        track.localPath.isEmpty) {
+      return track.withReadError('只能重新读取本应用保留的音频副本。');
+    }
+    try {
+      final root = await directoryProvider();
+      final audioDirectory = Directory(p.join(root.path, 'audio'));
+      final expectedPath = p.normalize(
+        p.absolute(p.join(audioDirectory.path, '${track.id}.audio')),
+      );
+      if (!p.equals(p.normalize(p.absolute(track.localPath)), expectedPath) ||
+          await FileSystemEntity.type(expectedPath, followLinks: false) !=
+              FileSystemEntityType.file) {
+        return track.withReadError('音频副本路径无效或文件已不存在，请重新导入。');
+      }
+      // Resolving the app root supports normal platform directory aliases;
+      // a redirected audio directory or file must not expand read access.
+      final resolvedRoot = await root.resolveSymbolicLinks();
+      final resolvedDirectory = await audioDirectory.resolveSymbolicLinks();
+      final source = File(expectedPath);
+      final resolvedFile = await source.resolveSymbolicLinks();
+      if (!p.equals(resolvedDirectory, p.join(resolvedRoot, 'audio')) ||
+          !p.equals(
+            resolvedFile,
+            p.join(resolvedDirectory, '${track.id}.audio'),
+          )) {
+        return track.withReadError('音频副本路径已变化，请重新导入。');
+      }
+      if (await source.length() > 512 * 1024 * 1024) {
+        return track.withReadError('音频超过 512 MiB，目前无法读取完整标签。');
+      }
+      return await readTrackTags(track, resolvedFile, root.path);
+    } on FileSystemException {
+      return track.withReadError('无法读取保留的音频副本，文件可能已移动或删除，请重新导入。');
+    }
+  }
 
   @override
   Future<void> prune(Set<String> retainedIds) async {

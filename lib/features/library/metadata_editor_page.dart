@@ -89,6 +89,8 @@ class _MetadataEditorPageState extends State<MetadataEditorPage> {
     final current = widget.controller.trackById(widget.track.id);
     return current == null ||
         !current.detailsLoaded ||
+        current.requiresTagRefresh ||
+        widget.track.requiresTagRefresh ||
         current.readError != null ||
         current.dateModifiedMs != widget.track.dateModifiedMs ||
         current.sizeBytes != widget.track.sizeBytes ||

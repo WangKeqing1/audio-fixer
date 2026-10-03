@@ -558,20 +558,34 @@ class LibraryController extends ChangeNotifier {
     _notify();
   }
 
+  bool canRereadTrack(AudioTrack track) => track.isDeviceTrack
+      ? deviceLibrary != null && canReadDeviceLibrary
+      : importer is AudioDetailsImporter;
+
+  Future<AudioTrack> _readCurrentTrackDetails(AudioTrack track) async {
+    final AudioTrack updated;
+    if (track.isDeviceTrack && deviceLibrary != null) {
+      updated = await deviceLibrary!.readDetails(track);
+    } else if (importer is AudioDetailsImporter) {
+      updated = await (importer as AudioDetailsImporter).readDetails(track);
+    } else {
+      return track.withReadError('此音频来源暂不能重新读取标签，请从系统音乐库重新选择。');
+    }
+    return updated.withInstrumental(track.isInstrumental);
+  }
+
   Future<void> readDetails(String id, {bool force = false}) =>
       _operate(() async {
         final track = trackById(id);
         if (track == null ||
-            !track.isDeviceTrack ||
-            !canReadDeviceLibrary ||
-            (track.detailsLoaded && !force)) {
+            !canRereadTrack(track) ||
+            (track.detailsLoaded && !track.requiresTagRefresh && !force)) {
           return;
         }
         progress = '正在读取歌曲资料…';
         _notify();
         try {
-          final updated = (await deviceLibrary!.readDetails(track))
-              .withInstrumental(track.isInstrumental);
+          final updated = await _readCurrentTrackDetails(track);
           final changed = _tagSnapshotChanged(track, updated);
           await _commit(
             tracks: _snapshot.tracks
@@ -838,6 +852,7 @@ class LibraryController extends ChangeNotifier {
       final track = trackById(trackId);
       if (track == null ||
           !track.detailsLoaded ||
+          track.requiresTagRefresh ||
           track.readError != null ||
           !canExportTrack(track)) {
         _announce('请先读取可安全编辑的歌曲资料；目前支持 MP3、FLAC 和 M4A/MP4。');
@@ -977,11 +992,15 @@ class LibraryController extends ChangeNotifier {
         await _commit();
         CompletionTask task;
         try {
-          if (item.isDeviceTrack &&
-              (!item.detailsLoaded || item.readError != null) &&
-              completion.sources.isNotEmpty) {
-            item = (await deviceLibrary!.readDetails(item))
-                .withInstrumental(item.isInstrumental);
+          if ((!item.detailsLoaded ||
+                  item.readError != null ||
+                  item.requiresTagRefresh) &&
+              (completion.sources.isNotEmpty || repairFields != null) &&
+              canRereadTrack(item)) {
+            item = await _readCurrentTrackDetails(item);
+          }
+          if (item.requiresTagRefresh) {
+            throw StateError('请先重新读取歌曲标签后再查询修复资料。');
           }
           if (isTrackExcluded(item)) {
             _setBatchItem(item.id, BatchItemStatus.skipped, '读取后符合排除条件，未查询。');
@@ -1131,6 +1150,7 @@ class LibraryController extends ChangeNotifier {
         current.status != TaskStatus.savedOriginal &&
         track != null &&
         track.detailsLoaded &&
+        !track.requiresTagRefresh &&
         track.readError == null;
   }
 
@@ -1444,12 +1464,12 @@ class LibraryController extends ChangeNotifier {
     if (candidateTrack == null) {
       return result(BatchItemStatus.skipped, '歌曲不可用或已被音乐库排除条件过滤，未保存。');
     }
-    if (_hasLibraryExclusions &&
-        candidateTrack.isDeviceTrack &&
-        deviceLibrary != null) {
+    if (candidateTrack.requiresTagRefresh ||
+        (_hasLibraryExclusions &&
+            candidateTrack.isDeviceTrack &&
+            deviceLibrary != null)) {
       try {
-        final updated = (await deviceLibrary!.readDetails(candidateTrack))
-            .withInstrumental(candidateTrack.isInstrumental);
+        final updated = await _readCurrentTrackDetails(candidateTrack);
         final changed = _tagSnapshotChanged(candidateTrack, updated);
         await _commit(
           tracks: _snapshot.tracks

@@ -120,6 +120,100 @@ void main() {
     expect(await File(track.localPath).readAsBytes(), bytes);
   });
 
+  test('legacy private import reread upgrades cached tags and preserves instrumental choice', () async {
+    final importer = LocalAudioImporter(() async => temporary);
+    final imported = await importer.import(
+      AudioSelection(
+        name: 'old.wav',
+        openRead: () => Stream.value(_wavFixture()),
+      ),
+    );
+    final oldJson = imported.toJson()
+      ..remove('tagReadVersion')
+      ..['title'] = 'Stale cached title'
+      ..['isInstrumental'] = true;
+    final legacy = AudioTrack.fromJson(oldJson);
+    expect(legacy.requiresTagRefresh, isTrue);
+    final before = await File(legacy.localPath).readAsBytes();
+    final refreshed = await (importer as AudioDetailsImporter).readDetails(
+      legacy,
+    );
+    expect(refreshed.readError, isNull);
+    expect(refreshed.title, 'Fixture song');
+    expect(refreshed.tagReadVersion, AudioTrack.currentTagReadVersion);
+    expect(refreshed.requiresTagRefresh, isFalse);
+    expect(refreshed.isInstrumental, isTrue);
+    expect(refreshed.id, legacy.id);
+    expect(refreshed.localPath, legacy.localPath);
+    expect(await File(legacy.localPath).readAsBytes(), before);
+    final restored = AudioTrack.fromJson(refreshed.toJson());
+    expect(restored.requiresTagRefresh, isFalse);
+    expect(restored.isInstrumental, isTrue);
+  });
+
+  test('private import reread rejects outside paths and does not mark failed migrations current', () async {
+    final root = Directory(p.join(temporary.path, 'app'));
+    final importer = LocalAudioImporter(() async => root);
+    final imported = await importer.import(
+      AudioSelection(
+        name: 'old.wav',
+        openRead: () => Stream.value(_wavFixture()),
+      ),
+    );
+    final outside = File(p.join(temporary.path, 'outside.wav'));
+    await outside.writeAsBytes(_wavFixture());
+    final oldJson = imported.toJson()
+      ..remove('tagReadVersion')
+      ..['isInstrumental'] = true;
+    final invalid = AudioTrack.fromJson({
+      ...oldJson,
+      'localPath': outside.path,
+    });
+    final refused = await importer.readDetails(invalid);
+    expect(refused.readError, contains('路径无效'));
+    expect(refused.requiresTagRefresh, isTrue);
+    expect(refused.isInstrumental, isTrue);
+    expect(await outside.readAsBytes(), _wavFixture());
+    await File(imported.localPath).delete();
+    final missing = await importer.readDetails(AudioTrack.fromJson(oldJson));
+    expect(missing.readError, isNotNull);
+    expect(missing.tagReadVersion, 0);
+    expect(missing.isInstrumental, isTrue);
+  });
+
+  test(
+    'private import reread refuses symlink files and redirected audio directories',
+    () async {
+      final root = Directory(p.join(temporary.path, 'app'));
+      final importer = LocalAudioImporter(() async => root);
+      final imported = await importer.import(
+        AudioSelection(
+          name: 'old.wav',
+          openRead: () => Stream.value(_wavFixture()),
+        ),
+      );
+      final outside = File(p.join(temporary.path, 'outside.wav'));
+      await File(imported.localPath).rename(outside.path);
+      final fileLink = Link(imported.localPath);
+      await fileLink.create(outside.path);
+      final linked = await importer.readDetails(imported);
+      expect(linked.readError, isNotNull);
+      await fileLink.delete();
+      final originalDirectory = Directory(p.join(root.path, 'audio'));
+      await originalDirectory.delete();
+      final redirected = Directory(p.join(temporary.path, 'redirected'));
+      await redirected.create();
+      await outside.copy(p.join(redirected.path, '${imported.id}.audio'));
+      await Link(originalDirectory.path).create(redirected.path);
+      final escaped = await importer.readDetails(imported);
+      expect(escaped.readError, contains('路径已变化'));
+      expect(await outside.readAsBytes(), _wavFixture());
+    },
+    skip: Platform.isWindows
+        ? 'Windows symlink creation may require elevated privileges'
+        : false,
+  );
+
   test(
     'catalog supports repeated atomic saves and restores settings and tracks',
     () async {

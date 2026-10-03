@@ -410,6 +410,7 @@ Future<void> prepareTaggedCopy({
     if (replaceFields.isNotEmpty &&
         (expectedTrack == null ||
             !expectedTrack.detailsLoaded ||
+            expectedTrack.requiresTagRefresh ||
             expectedTrack.readError != null)) {
       throw const ExportException('替换资料前请重新读取歌曲，确认当前内容。');
     }

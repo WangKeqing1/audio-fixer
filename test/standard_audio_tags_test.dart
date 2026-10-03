@@ -137,6 +137,41 @@ void _replaceFlacComments(File file, List<String> entries) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('legacy parsed caches require refresh while new constructed tracks remain current', () {
+    final current = _track();
+    expect(current.tagReadVersion, AudioTrack.currentTagReadVersion);
+    expect(current.requiresTagRefresh, isFalse);
+    final legacyJson = current.withInstrumental(true).toJson()
+      ..remove('tagReadVersion');
+    final legacy = AudioTrack.fromJson(legacyJson);
+    expect(legacy.detailsLoaded, isTrue);
+    expect(legacy.tagReadVersion, 0);
+    expect(legacy.requiresTagRefresh, isTrue);
+    for (final copy in [
+      legacy.withInstrumental(false),
+      legacy.withReadError('Cannot read yet'),
+      legacy.withDetails(
+        title: legacy.title,
+        artist: legacy.artist,
+        album: legacy.album,
+        year: legacy.year,
+        durationMs: legacy.durationMs,
+        lyrics: legacy.lyrics,
+        artworkPath: legacy.artworkPath,
+      ),
+      AudioTrack.fromJson(legacy.toJson()),
+    ]) {
+      expect(copy.tagReadVersion, 0);
+      expect(copy.requiresTagRefresh, isTrue);
+    }
+    expect(legacy.withReadError('Cannot read yet').isInstrumental, isTrue);
+    expect(
+      AudioTrack.fromJson({...legacyJson, 'detailsLoaded': false})
+          .requiresTagRefresh,
+      isFalse,
+    );
+    expect(AudioTrack.fromJson(current.toJson()).requiresTagRefresh, isFalse);
+  });
   test(
     'optional fields round-trip and remain optional completion criteria',
     () {
@@ -558,9 +593,12 @@ void main() {
             sizeBytes: file.lengthSync(),
             importedAt: DateTime(2026),
             lyrics: 'Stale lyrics',
+            tagReadVersion: 0,
           );
           final read = await readTrackTags(seed, file.path, directory.path);
           expect(read.readError, isNull);
+          expect(read.tagReadVersion, AudioTrack.currentTagReadVersion);
+          expect(read.requiresTagRefresh, isFalse);
           expect(read.title, metadata['title']);
           expect(read.artist, 'Track artist');
           expect(read.albumArtist, 'Album artist');
