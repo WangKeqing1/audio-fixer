@@ -4,6 +4,7 @@ import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/models/recording_candidate.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
@@ -27,6 +28,10 @@ RecordingCandidate _candidate(String id) => RecordingCandidate(
 class _Source implements RecordingDiscoverySource {
   int discoveries = 0;
   int normalLookups = 0;
+  final discoveryTracks = <AudioTrack>[];
+  final confirmedTracks = <AudioTrack>[];
+  bool normalHasResult = false;
+  bool normalFails = false;
   final confirmedIds = <String>[];
   final requested = <Set<AudioField>>[];
   Completer<void>? hold;
@@ -40,6 +45,7 @@ class _Source implements RecordingDiscoverySource {
   @override
   Future<DiscoveryResult> discover(AudioTrack track) async {
     discoveries++;
+    discoveryTracks.add(track);
     if (discoveryFails) {
       throw const ApiException('Offline test network failure');
     }
@@ -55,7 +61,16 @@ class _Source implements RecordingDiscoverySource {
     Set<AudioField> fields,
   ) async {
     normalLookups++;
-    return [];
+    if (normalFails) throw const ApiException('Provider unavailable');
+    return normalHasResult
+        ? [
+            FieldSuggestion(
+              field: AudioField.title,
+              value: 'Candidate Song',
+              source: name,
+            ),
+          ]
+        : [];
   }
 
   @override
@@ -65,6 +80,7 @@ class _Source implements RecordingDiscoverySource {
     Set<AudioField> fields,
   ) async {
     confirmedIds.add(candidate.sourceId);
+    confirmedTracks.add(track);
     requested.add(fields);
     await hold?.future;
     if (fail) {
@@ -88,6 +104,28 @@ class _Source implements RecordingDiscoverySource {
           sourceUrl: candidate.sourceUrl,
         ),
     ];
+  }
+}
+
+class _CoolingLyricsSource implements MetadataSource {
+  int calls = 0;
+  final retryAt = DateTime.now().toUtc().add(const Duration(minutes: 1));
+  @override
+  String get name => 'Cooling lyric source';
+  @override
+  Set<AudioField> get supportedFields => {AudioField.lyrics};
+  @override
+  Future<List<FieldSuggestion>> lookup(
+    AudioTrack track,
+    Set<AudioField> fields,
+  ) async {
+    calls++;
+    throw ApiException(
+      'Server rate limited',
+      statusCode: 429,
+      retryAfter: retryAt,
+      kind: SourceFailureKind.rateLimited,
+    );
   }
 }
 
@@ -117,6 +155,124 @@ LibraryController _controller(
 );
 
 void main() {
+  test('fallback discovery preserves another provider cooldown report and never retries it', () async {
+    final source = _Source();
+    final cooling = _CoolingLyricsSource();
+    final controller = LibraryController(
+      store: MemoryStore(
+        LibrarySnapshot(tracks: [_track(artist: 'Candidate Artist')]),
+      ),
+      picker: FakePicker(),
+      importer: FakeImporter(),
+      completion: CompletionService(sources: [cooling, source]),
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await controller.queryAutomaticRepair(track: controller.tracks.single);
+    final task = controller.tasks.single;
+    expect(cooling.calls, 1);
+    expect(source.normalLookups, 1);
+    expect(source.discoveries, 1);
+    expect(task.status, TaskStatus.needsReview);
+    expect(task.sourceReports, hasLength(2));
+    final rateLimit = task.sourceReports.firstWhere(
+      (r) => r.sourceName == cooling.name,
+    );
+    expect(rateLimit.failureKind, SourceFailureKind.rateLimited);
+    expect(rateLimit.retryAt, cooling.retryAt);
+    expect(task.sourceReports.last.outcome, SourceQueryOutcome.success);
+    expect(task.approvedSuggestions, isEmpty);
+    final restored = CompletionTask.fromJson(task.toJson());
+    expect(restored.sourceReports.first.retryAt, cooling.retryAt);
+  });
+
+  test('known artist strict no-match offers bounded versions and keeps original evidence', () async {
+    final source = _Source();
+    final controller = _controller(
+      source,
+      tracks: [_track(artist: 'Candidate Artist')],
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await controller.queryAutomaticRepair(track: controller.tracks.single);
+    expect(source.normalLookups, 1);
+    expect(source.discoveries, 1);
+    expect(source.discoveryTracks.single.artist, 'Candidate Artist');
+    final task = controller.tasks.single;
+    expect(task.needsRecordingChoice, isTrue);
+    expect(task.sourceReports.single.outcome, SourceQueryOutcome.success);
+    expect(task.approvedSuggestions, isEmpty);
+    expect(controller.tracks.single.artist, 'Candidate Artist');
+    await controller.confirmRecordingChoice(
+      task,
+      task.recordingCandidates.first,
+    );
+    expect(source.confirmedTracks.single.artist, 'Candidate Artist');
+    expect(controller.tasks.single.approvedSuggestions, isEmpty);
+  });
+
+  for (final fail in [false, true]) {
+    test(
+      'normal ${fail ? 'failure' : 'usable candidate'} does not automatically discover again',
+      () async {
+        final source = _Source()
+          ..normalHasResult = !fail
+          ..normalFails = fail;
+        final controller = _controller(
+          source,
+          tracks: [_track(artist: 'Candidate Artist')],
+        );
+        addTearDown(controller.dispose);
+        await controller.initialize();
+        await controller.queryAutomaticRepair(track: controller.tracks.single);
+        expect(source.normalLookups, 1);
+        expect(source.discoveries, 0);
+        expect(
+          controller.tasks.single.sourceReports.single.outcome,
+          fail ? SourceQueryOutcome.failed : SourceQueryOutcome.success,
+        );
+      },
+    );
+  }
+
+  test('explicit title-only fallback removes uncertain query artist without changing tags and pins retry', () async {
+    final source = _Source();
+    final tagged = AudioTrack.fromJson({
+      ..._track(artist: 'Known Singer').toJson(),
+      'title': 'Candidate Song Known Singer',
+    });
+    final controller = _controller(source, tracks: [tagged]);
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await controller.discoverAlternativeRecordings(tagged.id);
+    expect(source.normalLookups, 0);
+    expect(source.discoveryTracks.single.title, 'Candidate Song');
+    expect(source.discoveryTracks.single.artist, '');
+    expect(controller.tracks.single.title, 'Candidate Song Known Singer');
+    expect(controller.tracks.single.artist, 'Known Singer');
+    var task = controller.tasks.single;
+    expect(task.searchMetadata['artist'], '');
+    expect(task.approvedSuggestions, isEmpty);
+    await controller.confirmRecordingChoice(
+      task,
+      task.recordingCandidates.first,
+    );
+    task = controller.tasks.single;
+    await controller.retryTaskQuery(task);
+    expect(source.confirmedIds, ['fixture:1', 'fixture:1']);
+    expect(source.confirmedTracks.every((track) => track.artist == ''), isTrue);
+    expect(controller.tasks.single.sourceReports, isNotEmpty);
+    await controller.approveCandidates(controller.tasks.single, [
+      controller.tasks.single.suggestions.first,
+    ]);
+    expect(controller.tasks.single.sourceReports, isNotEmpty);
+    await controller.revokeCandidateApproval(controller.tasks.single);
+    expect(controller.tasks.single.sourceReports, isNotEmpty);
+    final restored = CompletionTask.fromJson(controller.tasks.single.toJson());
+    expect(restored.sourceReports.single.outcome, SourceQueryOutcome.success);
+    expect(restored.searchMetadata['artist'], '');
+  });
+
   for (final status in [TaskStatus.outdated, TaskStatus.savedOriginal]) {
     test(
       'explicit retry discards $status recording choice and discovers afresh',

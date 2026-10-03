@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import '../models/app_settings.dart';
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
 import '../models/recording_candidate.dart';
+import '../models/source_query_report.dart';
 import 'metadata_source.dart';
 import 'lyrics_translation_service.dart';
 import 'sources/json_api_client.dart';
@@ -17,7 +20,10 @@ class CompletionService {
   Set<AudioField> get availableFields =>
       Set.unmodifiable(sources.expand((source) => source.supportedFields));
 
-  Future<DiscoveryResult> discoverRecordings(AudioTrack track) async {
+  Future<DiscoveryResult> discoverRecordings(
+    AudioTrack track, {
+    Set<String>? sourceNames,
+  }) async {
     if (track.readError != null || !track.detailsLoaded) {
       return DiscoveryResult(
         diagnostics: ['请先成功读取歌曲资料后再查找录音候选。'],
@@ -26,12 +32,25 @@ class CompletionService {
     }
     final candidates = <RecordingCandidate>[];
     final diagnostics = <String>[];
+    final reports = <SourceQueryReport>[];
     var hasFailures = false;
-    final discoverySources = sources.whereType<RecordingDiscoverySource>();
-    for (final source in sources.where(
+    final selectedSources = sourceNames == null
+        ? sources
+        : sources.where((source) => sourceNames.contains(source.name));
+    final discoverySources = selectedSources
+        .whereType<RecordingDiscoverySource>();
+    for (final source in selectedSources.where(
       (source) => source is! RecordingDiscoverySource,
     )) {
-      diagnostics.add('${source.name}：需要先确认歌手及录音版本，未进行仅凭歌名的查询。');
+      const message = '需要先确认歌手及录音版本，未进行仅凭歌名的查询。';
+      diagnostics.add('${source.name}：$message');
+      reports.add(
+        SourceQueryReport(
+          sourceName: source.name,
+          outcome: SourceQueryOutcome.unsupported,
+          message: message,
+        ),
+      );
     }
     if (discoverySources.isEmpty) {
       diagnostics.add('尚未接入支持录音候选发现的数据源。');
@@ -41,9 +60,12 @@ class CompletionService {
         final result = await source
             .discover(track)
             .timeout(const Duration(seconds: 45));
+        final previousCount = candidates.length;
+        var invalidCandidates = false;
         for (final candidate in result.candidates) {
           if (!candidate.isValid || candidate.sourceName != source.name) {
             hasFailures = true;
+            invalidCandidates = true;
             diagnostics.add('${source.name}：已忽略来源或格式无效的录音候选。');
             continue;
           }
@@ -55,21 +77,44 @@ class CompletionService {
           result.diagnostics.map((message) => '${source.name}：$message'),
         );
         hasFailures |= result.hasFailures;
+        final count = candidates.length - previousCount;
+        reports.add(
+          SourceQueryReport(
+            sourceName: source.name,
+            outcome: result.hasFailures || invalidCandidates
+                ? (count > 0
+                      ? SourceQueryOutcome.partial
+                      : SourceQueryOutcome.failed)
+                : (count > 0
+                      ? SourceQueryOutcome.success
+                      : SourceQueryOutcome.noMatch),
+            message: invalidCandidates
+                ? '来源返回了身份或格式无效的录音，已忽略；保留 $count 个可靠候选。'
+                : result.diagnostics.isNotEmpty
+                ? result.diagnostics.join('；')
+                : result.hasFailures
+                ? '来源查询未完成，保留 $count 个可靠候选。'
+                : count > 0
+                ? '找到 $count 个待确认录音。'
+                : '查询完成，未找到可确认的录音。',
+            candidateCount: count,
+            failureKind: invalidCandidates
+                ? SourceFailureKind.invalidResponse
+                : null,
+          ),
+        );
       } catch (error) {
         hasFailures |= error is! SourceNoMatch;
-        diagnostics.add(
-          '${source.name}：${error is SourceNoMatch
-              ? error.message
-              : error is ApiException
-              ? error.message
-              : '查询失败或超时'}',
-        );
+        final report = _failureReport(source.name, const {}, error);
+        reports.add(report);
+        diagnostics.add('${source.name}：${report.message}');
       }
     }
     return DiscoveryResult(
       candidates: candidates,
       diagnostics: diagnostics,
       hasFailures: hasFailures,
+      sourceReports: reports,
     );
   }
 
@@ -80,6 +125,7 @@ class CompletionService {
     AudioTrack? searchTrack,
     RecordingCandidate? confirmedRecording,
   }) async {
+    final reports = <SourceQueryReport>[];
     CompletionTask result(
       TaskStatus status,
       String message, [
@@ -91,6 +137,7 @@ class CompletionService {
       status: status,
       message: message,
       suggestions: suggestions,
+      sourceReports: List.unmodifiable(reports),
     );
 
     if (track.readError != null) {
@@ -140,6 +187,18 @@ class CompletionService {
     final unavailableNotice = confirmedRecording == null
         ? '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。'
         : '所选版本的来源不提供${unavailable.map((field) => field.label).join('、')}，保留原资料。';
+    for (final source in activeSources) {
+      if (requested.intersection(source.supportedFields).isEmpty) {
+        reports.add(
+          SourceQueryReport(
+            sourceName: source.name,
+            requestedFields: Set.unmodifiable(requested),
+            outcome: SourceQueryOutcome.unsupported,
+            message: '该来源不支持本次选择的补全项目。',
+          ),
+        );
+      }
+    }
     if (requested.intersection(available).isEmpty) {
       return result(
         confirmedRecording == null
@@ -149,10 +208,10 @@ class CompletionService {
       );
     }
 
-    // A preview is deliberately separate from a future approved file write.
+    // Each provider owns its result. A failure cannot discard candidates that
+    // another provider has independently verified, and a chosen recording is
+    // still locked to its exact source identity.
     final suggestions = <FieldSuggestion>[];
-    final failedSources = <String>[];
-    final sourceNotices = <String>[];
     bool hasRecordingProvenance(FieldSuggestion candidate) =>
         confirmedRecording == null ||
         (candidate.source == confirmedRecording.sourceName &&
@@ -160,16 +219,7 @@ class CompletionService {
     for (final source in activeSources) {
       final fields = requested.intersection(source.supportedFields);
       if (fields.isEmpty) continue;
-      try {
-        final operation = confirmedRecording == null
-            ? source.lookup(searchTrack ?? track, Set.unmodifiable(fields))
-            : (source as RecordingDiscoverySource).lookupConfirmed(
-                searchTrack ?? track,
-                confirmedRecording,
-                Set.unmodifiable(fields),
-              );
-        final candidates = await operation.timeout(const Duration(seconds: 45));
-        suggestions.addAll(
+      List<FieldSuggestion> verified(Iterable<FieldSuggestion> candidates) =>
           candidates
               .map(
                 (candidate) => candidate
@@ -182,38 +232,45 @@ class CompletionService {
                     hasText(candidate.value) &&
                     hasText(candidate.source) &&
                     hasRecordingProvenance(candidate),
-              ),
+              )
+              .toList();
+      try {
+        final operation = confirmedRecording == null
+            ? source.lookup(searchTrack ?? track, Set.unmodifiable(fields))
+            : (source as RecordingDiscoverySource).lookupConfirmed(
+                searchTrack ?? track,
+                confirmedRecording,
+                Set.unmodifiable(fields),
+              );
+        final candidates = verified(
+          await operation.timeout(const Duration(seconds: 45)),
+        );
+        suggestions.addAll(candidates);
+        reports.add(
+          SourceQueryReport(
+            sourceName: source.name,
+            requestedFields: Set.unmodifiable(fields),
+            outcome: candidates.isEmpty
+                ? SourceQueryOutcome.noMatch
+                : SourceQueryOutcome.success,
+            message: candidates.isEmpty
+                ? '查询完成，未找到可安全采用的同版本资料。'
+                : '获得 ${candidates.length} 项候选资料，等待确认。',
+            candidateCount: candidates.length,
+          ),
         );
       } catch (error) {
-        if (error is SourceNoMatch) {
-          sourceNotices.add('${source.name}：${error.message}');
-          continue;
-        }
-        if (error is PartialSourceException) {
-          suggestions.addAll(
-            error.suggestions
-                .map(
-                  (candidate) => candidate
-                      .withReplacement(false)
-                      .withChineseTranslation(
-                        settings.includeChineseTranslation,
-                      ),
-                )
-                .where(
-                  (candidate) =>
-                      fields.contains(candidate.field) &&
-                      hasText(candidate.value) &&
-                      hasText(candidate.source) &&
-                      hasRecordingProvenance(candidate),
-                ),
-          );
-        }
-        failedSources.add(
-          error is PartialSourceException
-              ? '${source.name}：${error.message}'
-              : error is ApiException
-              ? '${source.name}：${error.message}'
-              : '${source.name}：查询失败或超时',
+        final partial = error is PartialSourceException
+            ? verified(error.suggestions)
+            : const <FieldSuggestion>[];
+        suggestions.addAll(partial);
+        reports.add(
+          _failureReport(
+            source.name,
+            fields,
+            error,
+            candidateCount: partial.length,
+          ),
         );
       }
     }
@@ -249,29 +306,87 @@ class CompletionService {
         }
       }
     }
+    final failed = reports
+        .where(
+          (report) =>
+              report.outcome == SourceQueryOutcome.failed ||
+              report.outcome == SourceQueryOutcome.partial,
+        )
+        .toList();
     final warnings = <String>[
       if (unavailable.isNotEmpty) unavailableNotice,
-      ...failedSources,
-      ...sourceNotices,
+      ...failed.map((report) => '${report.sourceName}：${report.message}'),
+      ...reports
+          .where((report) => report.outcome == SourceQueryOutcome.noMatch)
+          .map((report) => '${report.sourceName}：${report.message}'),
     ];
-    final withoutCandidate = requested
-        .intersection(available)
-        .difference(suggestions.map((candidate) => candidate.field).toSet());
-    if (withoutCandidate.isNotEmpty) {
-      warnings.add(
-        '${withoutCandidate.map((field) => field.label).join('、')}未获得可靠候选；可能是来源未提供、版本无法确认或查询未完成。保留原资料。',
-      );
-    }
     final warning = warnings.isEmpty ? '' : ' ${warnings.join('；')}';
     if (suggestions.isEmpty) {
-      return failedSources.isEmpty
-          ? result(TaskStatus.noMatch, '没有找到可用信息，可以稍后重试。$warning')
-          : result(TaskStatus.failed, warning.trim());
+      return failed.isEmpty
+          ? result(TaskStatus.noMatch, '查询完成，暂无可采用的候选。$warning')
+          : result(TaskStatus.failed, '来源查询未完成，暂无可采用的候选。$warning');
     }
     return result(
       TaskStatus.needsReview,
       '已找到候选信息，尚未写入音频。$warning',
       suggestions,
+    );
+  }
+
+  SourceQueryReport _failureReport(
+    String sourceName,
+    Set<AudioField> fields,
+    Object error, {
+    int candidateCount = 0,
+  }) {
+    if (error is SourceNoMatch) {
+      return SourceQueryReport(
+        sourceName: sourceName,
+        requestedFields: Set.unmodifiable(fields),
+        outcome: SourceQueryOutcome.noMatch,
+        message: error.message,
+      );
+    }
+    final cause = error is PartialSourceException ? error.cause : error;
+    final api = cause is ApiException ? cause : null;
+    final kind =
+        api?.failureKind ??
+        switch (cause) {
+          TimeoutException() => SourceFailureKind.timeout,
+          FormatException() => SourceFailureKind.invalidResponse,
+          _ => SourceFailureKind.unknown,
+        };
+    final detail = error is PartialSourceException
+        ? error.message
+        : api?.message ??
+              switch (kind) {
+                SourceFailureKind.timeout => '查询超时，未完成资料核对。',
+                SourceFailureKind.invalidResponse => '数据源响应格式异常，未获得可用资料。',
+                _ => '查询失败，未完成资料核对。',
+              };
+    final dependency = const {
+      'musicbrainz.org': 'MusicBrainz',
+      'lrclib.net': 'LRCLIB',
+      'coverartarchive.org': 'Cover Art Archive',
+      'archive.org': 'Internet Archive',
+      'music.163.com': '网易云音乐（实验性）',
+    }[api?.provider];
+    final message = dependency != null && dependency != sourceName
+        ? '依赖来源 $dependency：$detail'
+        : detail;
+    return SourceQueryReport(
+      sourceName: sourceName,
+      requestedFields: Set.unmodifiable(fields),
+      outcome: candidateCount > 0
+          ? SourceQueryOutcome.partial
+          : SourceQueryOutcome.failed,
+      message: message,
+      candidateCount: candidateCount,
+      failureKind: kind,
+      statusCode: api?.statusCode,
+      retryAt: api?.retryAt,
+      serverRetryAt: api?.serverRetryAfter,
+      isLocalCooldown: api?.isLocalCooldown ?? false,
     );
   }
 }

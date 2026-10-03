@@ -23,3 +23,7 @@ The live Dart probe used the existing curl-backed transport to pass the cloud's 
 ## Regression coverage
 
 Tests cover bounded title-only requests, no implicit choice or field fetch, exact and alias/version matching, missing alias evidence, malformed/conflicting IDs, source failures, cache/cooldown, selected-ID exclusivity, task persistence, stale/forged choices, batch discovery, instrumental scope, translation retry, changed-query preservation, cancellation, repeated taps, late routes and narrow/large-text layouts. Fixtures contain synthetic data and no raw user inventory or private comments.
+
+## Known or uncertain artist recovery
+
+Version 0.4.3 also offers bounded recording discovery after a strict known-artist lookup returns no field candidates. That automatic fallback retains artist evidence and only retries discovery-capable sources that returned a healthy no-match. A failed provider is not immediately retried. The explicit “仅凭歌名查找版本” action can ignore an uncertain artist for discovery, visibly discloses that weaker evidence, and still requires recording and per-field confirmation. See [query recovery](QUERY_RECOVERY.md) for structured provider reports and retry behavior.

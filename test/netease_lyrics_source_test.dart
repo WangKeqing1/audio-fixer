@@ -1,5 +1,6 @@
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
@@ -71,6 +72,68 @@ Map<String, Object?> lyrics({
 };
 
 void main() {
+  test(
+    'malformed NetEase JSON schema is invalidResponse rather than noMatch',
+    () async {
+      for (final responses in [
+        [
+          {'code': 200, 'result': 'malformed'},
+        ],
+        [
+          search([song()]),
+          {
+            'code': 200,
+            'lrc': {'lyric': 123},
+          },
+        ],
+      ]) {
+        final result =
+            await CompletionService(
+              sources: [NeteaseLyricsSource(_Client(responses))],
+            ).preview(
+              track(),
+              const AppSettings(),
+              requestedFields: {AudioField.lyrics},
+            );
+        expect(result.sourceReports.single.outcome, SourceQueryOutcome.failed);
+        expect(
+          result.sourceReports.single.failureKind,
+          SourceFailureKind.invalidResponse,
+        );
+      }
+    },
+  );
+
+  test(
+    'later lyric rate limit remains actionable after malformed song detail',
+    () async {
+      final until = DateTime.utc(2026, 1, 1, 0, 1);
+      final client = _Client([
+        search([song()]),
+        {'code': 200, 'songs': 'malformed'},
+        ApiException(
+          '请求限制。',
+          statusCode: 429,
+          retryAfter: until,
+          serverRetryAfter: until,
+          provider: 'music.163.com',
+        ),
+      ]);
+      final result =
+          await CompletionService(sources: [NeteaseLyricsSource(client)])
+              .preview(
+                track(),
+                const AppSettings(),
+                requestedFields: {AudioField.album, AudioField.lyrics},
+              );
+      final report = result.sourceReports.single;
+      expect(report.failureKind, SourceFailureKind.rateLimited);
+      expect(report.retryAt, until);
+      expect(report.serverRetryAt, until);
+      expect(client.calls, hasLength(3));
+    },
+  );
+
   test(
     'matches Chinese identity duration and retains provider attribution',
     () async {

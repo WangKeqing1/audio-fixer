@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../models/source_query_report.dart';
 import 'json_api_client.dart';
 
 class ApiResponse {
@@ -173,62 +174,81 @@ class HttpJsonApiClient implements JsonApiClient {
       try {
         response = await _transport(uri, _headers).timeout(_requestTimeout);
       } on TimeoutException {
-        throw const ApiException('连接超时，请检查网络后重试。');
+        throw const ApiException(
+          '连接超时，请检查网络后重试。',
+          kind: SourceFailureKind.timeout,
+        );
       } on SocketException {
-        throw const ApiException('无法连接数据源，请检查网络。');
+        throw const ApiException(
+          '无法连接数据源，请检查网络。',
+          kind: SourceFailureKind.network,
+        );
       } on HandshakeException {
-        throw const ApiException('无法建立安全连接。');
+        throw const ApiException('无法建立安全连接。', kind: SourceFailureKind.network);
       } on HttpException {
-        throw const ApiException('网络响应中断，请稍后重试。');
+        throw const ApiException(
+          '网络响应中断，请稍后重试。',
+          kind: SourceFailureKind.network,
+        );
       }
-      var failureStatus = response.statusCode;
-      var providerFailure = false;
-      // NetEase can report rate limiting in an HTTP 200 JSON envelope.
-      if (provider == 'music.163.com' && response.statusCode == 200) {
-        try {
-          final body = jsonDecode(response.body);
-          if (body is! Map || body['code'] != 200) {
-            final code = body is Map
-                ? int.tryParse(body['code'].toString())
-                : null;
-            if (code == null || code == 200) {
-              throw const ApiException('网易云响应格式异常，已停止请求。');
-            }
-            failureStatus = code;
-            providerFailure = true;
-          }
-        } on FormatException {
-          throw const ApiException('网易云响应格式异常，已停止请求。');
-        }
-      }
-      if (failureStatus == 429 || failureStatus == 503 || providerFailure) {
-        final until = await _recordFailure(
+      final status = response.statusCode;
+      final redirect = const {301, 302, 303, 307, 308}.contains(status);
+      if (status != 200 && status != 404 && !redirect) {
+        final kind = SourceFailureKind.forStatus(status);
+        final cooldown = await _recordFailure(
           provider,
-          statusCode: failureStatus,
+          kind: kind,
+          statusCode: status,
           retryAfter: _header(response, 'retry-after'),
         );
-        throw ApiException(
-          const {301, 401, 403}.contains(failureStatus)
-              ? '数据源当前不允许匿名访问，已停止请求。'
-              : '数据源暂时繁忙，请稍后重试。',
-          statusCode: failureStatus,
-          retryAfter: until,
-        );
+        throw cooldown.exception(provider);
       }
-      if (response.statusCode == 200 || response.statusCode == 404) {
+      if (status == 200) {
+        // Validate before resetting the failure counter: an HTML error page
+        // with status 200 is a failed source, never a cacheable no-match.
+        final Object? body;
+        try {
+          body = jsonDecode(response.body);
+        } on FormatException {
+          throw const ApiException(
+            '数据源响应格式异常，未获得可用 JSON。',
+            kind: SourceFailureKind.invalidResponse,
+          );
+        }
+        // NetEase can report rate limiting in an HTTP 200 JSON envelope.
+        if (provider == 'music.163.com' &&
+            (body is! Map || body['code'] != 200)) {
+          final code = body is Map
+              ? int.tryParse(body['code'].toString())
+              : null;
+          if (code == null || code == 200) {
+            throw const ApiException(
+              '网易云响应格式异常，已停止请求。',
+              kind: SourceFailureKind.invalidResponse,
+            );
+          }
+          final cooldown = await _recordFailure(
+            provider,
+            kind: SourceFailureKind.forStatus(code),
+            statusCode: code,
+            retryAfter: _header(response, 'retry-after'),
+          );
+          throw cooldown.exception(provider);
+        }
+      }
+      if (status == 200 || status == 404) {
         if (_cooldowns.remove(provider) != null) await _persist();
       }
       return response;
     } on ApiException catch (error) {
-      // Rate-limit errors were already recorded above. Network failures also
-      // cool down the provider; callers decide when to try again, never us.
+      // A blocked request never extends its deadline or increments failures.
       if (error.retryAfter != null) rethrow;
-      final until = await _recordFailure(provider);
-      throw ApiException(
-        error.message,
+      final cooldown = await _recordFailure(
+        provider,
+        kind: error.failureKind,
         statusCode: error.statusCode,
-        retryAfter: until,
       );
+      throw cooldown.exception(provider);
     } finally {
       // LRCLIB requests must finish sequentially with a 200–500ms gap:
       // https://lrclib.net/docs#request-throttling
@@ -246,17 +266,12 @@ class HttpJsonApiClient implements JsonApiClient {
   void _checkCooldown(String provider) {
     final cooldown = _cooldowns[provider];
     if (cooldown == null || !_now().isBefore(cooldown.until)) return;
-    final seconds = (cooldown.until.difference(_now()).inMilliseconds / 1000)
-        .ceil();
-    throw ApiException(
-      '数据源暂时繁忙，请 $seconds 秒后重试。',
-      statusCode: cooldown.statusCode,
-      retryAfter: cooldown.until,
-    );
+    throw cooldown.exception(provider, isLocalCooldown: true);
   }
 
-  Future<DateTime> _recordFailure(
+  Future<_Cooldown> _recordFailure(
     String provider, {
+    required SourceFailureKind kind,
     int? statusCode,
     String? retryAfter,
   }) async {
@@ -269,11 +284,20 @@ class HttpJsonApiClient implements JsonApiClient {
         : 1;
     final seconds = (30 * (1 << (failures - 1))).clamp(30, 1800);
     var until = now.add(Duration(seconds: seconds));
-    final serverUntil = _parseRetryAfter(retryAfter, now);
+    final parsed = _parseRetryAfter(retryAfter, now);
+    final serverUntil = parsed != null && parsed.isAfter(now) ? parsed : null;
     if (serverUntil != null && serverUntil.isAfter(until)) until = serverUntil;
-    _cooldowns[provider] = _Cooldown(until, now, failures, statusCode);
+    final cooldown = _Cooldown(
+      until,
+      now,
+      failures,
+      statusCode,
+      kind,
+      serverUntil,
+    );
+    _cooldowns[provider] = cooldown;
     await _persist();
-    return until;
+    return cooldown;
   }
 
   static DateTime? _parseRetryAfter(String? value, DateTime now) {
@@ -329,7 +353,10 @@ class HttpJsonApiClient implements JsonApiClient {
       try {
         return jsonDecode(response.body);
       } on FormatException {
-        throw const ApiException('数据源响应格式异常。');
+        throw const ApiException(
+          '数据源响应格式异常。',
+          kind: SourceFailureKind.invalidResponse,
+        );
       }
     }
     throw const ApiException('数据源跳转次数过多。');
@@ -483,6 +510,15 @@ class HttpJsonApiClient implements JsonApiClient {
             updated,
             (raw['failures'] as int).clamp(1, 16),
             raw['statusCode'] is int ? raw['statusCode'] as int : null,
+            SourceFailureKind.values
+                    .where((kind) => kind.name == raw['kind'])
+                    .firstOrNull ??
+                SourceFailureKind.forStatus(
+                  raw['statusCode'] is int ? raw['statusCode'] as int : null,
+                ),
+            DateTime.tryParse(
+              raw['serverUntil'] is String ? raw['serverUntil'] as String : '',
+            ),
           );
         }
       }
@@ -596,15 +632,49 @@ class _CachedJson {
 }
 
 class _Cooldown {
-  const _Cooldown(this.until, this.updatedAt, this.failures, this.statusCode);
+  const _Cooldown(
+    this.until,
+    this.updatedAt,
+    this.failures,
+    this.statusCode,
+    this.kind,
+    this.serverUntil,
+  );
   final DateTime until;
   final DateTime updatedAt;
   final int failures;
   final int? statusCode;
+  final SourceFailureKind kind;
+  final DateTime? serverUntil;
+
+  ApiException exception(String provider, {bool isLocalCooldown = false}) {
+    final message = switch (kind) {
+      SourceFailureKind.rateLimited => '数据源限制请求（429），请稍后重试。',
+      SourceFailureKind.serverError => '数据源服务暂不可用（状态 $statusCode）。',
+      SourceFailureKind.timeout => '连接超时，请检查网络后重试。',
+      SourceFailureKind.network => '无法连接数据源或连接中断，请检查网络。',
+      SourceFailureKind.invalidResponse => '数据源响应格式异常，未获得可用 JSON。',
+      SourceFailureKind.accessDenied => '数据源当前不允许匿名访问，已停止请求。',
+      SourceFailureKind.httpError => '数据源请求失败（状态 $statusCode）。',
+      SourceFailureKind.unknown => '此前查询未完成，数据源暂处于本机重试等待期。',
+    };
+    return ApiException(
+      message,
+      statusCode: statusCode,
+      kind: kind,
+      provider: provider,
+      retryAfter: until,
+      serverRetryAfter: serverUntil,
+      isLocalCooldown: isLocalCooldown,
+    );
+  }
+
   Map<String, Object?> toJson() => {
     'until': until.toUtc().toIso8601String(),
     'updatedAt': updatedAt.toUtc().toIso8601String(),
     'failures': failures,
     'statusCode': statusCode,
+    'kind': kind.name,
+    'serverUntil': serverUntil?.toUtc().toIso8601String(),
   };
 }

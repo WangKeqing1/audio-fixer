@@ -5,6 +5,7 @@ import '../../core/models/audio_track.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/source_query_status.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import '../library/library_controller.dart';
 import '../library/metadata_editor_page.dart';
@@ -231,12 +232,28 @@ class TasksPage extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            Text(
-                              task.message,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
+                            if (task.sourceReports.isNotEmpty)
+                              SourceQueryStatusPanel(
+                                reports: task.sourceReports,
+                                summary:
+                                    task.status == TaskStatus.skipped ||
+                                        task.status == TaskStatus.outdated ||
+                                        task.status ==
+                                            TaskStatus.savedOriginal ||
+                                        task.status == TaskStatus.exported
+                                    ? task.message
+                                    : null,
+                                hasCandidates:
+                                    task.suggestions.isNotEmpty ||
+                                    task.recordingCandidates.isNotEmpty,
+                              )
+                            else
+                              Text(
+                                task.message,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
                               ),
-                            ),
                             if (controller.trackById(task.trackId)
                                 case final track?)
                               if (!(task.recordingCandidates.isNotEmpty &&
@@ -368,29 +385,62 @@ class TasksPage extends StatelessWidget {
                                   ),
                                 if (controller.trackById(task.trackId)
                                     case final track?)
-                                  TextButton.icon(
-                                    key: ValueKey('retry-task-${task.trackId}'),
-                                    onPressed:
-                                        controller.canOperate &&
-                                            (_isManual(task)
-                                                ? track.detailsLoaded &&
-                                                      track.readError == null
-                                                : task.isRepair
-                                                ? task.queriedFields.isNotEmpty
-                                                : controller
-                                                      .settings
-                                                      .enabledFields
-                                                      .isNotEmpty)
-                                        ? () => _retry(context, task, track)
-                                        : null,
-                                    icon: Icon(
-                                      _isManual(task)
-                                          ? Icons.edit_note
-                                          : Icons.refresh,
-                                    ),
-                                    label: Text(
-                                      _isManual(task) ? '继续编辑草稿' : '重新查询',
-                                    ),
+                                  SourceRetryBuilder(
+                                    reports: _isManual(task)
+                                        ? const []
+                                        : task.sourceReports,
+                                    requestedSources:
+                                        task.confirmedRecording != null
+                                        ? {task.confirmedRecording!.sourceName}
+                                        : controller.completion.sources
+                                              .where(
+                                                (source) => source
+                                                    .supportedFields
+                                                    .intersection(
+                                                      task.isRepair
+                                                          ? task.queriedFields
+                                                          : controller
+                                                                .settings
+                                                                .enabledFields,
+                                                    )
+                                                    .isNotEmpty,
+                                              )
+                                              .map((source) => source.name)
+                                              .toSet(),
+                                    builder: (context, retry) =>
+                                        TextButton.icon(
+                                          key: ValueKey(
+                                            'retry-task-${task.trackId}',
+                                          ),
+                                          onPressed:
+                                              controller.canOperate &&
+                                                  !retry.allSourcesCooling &&
+                                                  (_isManual(task)
+                                                      ? track.detailsLoaded &&
+                                                            track.readError ==
+                                                                null
+                                                      : task.isRepair
+                                                      ? task
+                                                            .queriedFields
+                                                            .isNotEmpty
+                                                      : controller
+                                                            .settings
+                                                            .enabledFields
+                                                            .isNotEmpty)
+                                              ? () =>
+                                                    _retry(context, task, track)
+                                              : null,
+                                          icon: Icon(
+                                            _isManual(task)
+                                                ? Icons.edit_note
+                                                : Icons.refresh,
+                                          ),
+                                          label: Text(
+                                            _isManual(task)
+                                                ? '继续编辑草稿'
+                                                : retry.label('重新查询'),
+                                          ),
+                                        ),
                                   ),
                               ],
                             ),

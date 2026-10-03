@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
+import '../../core/services/metadata_source.dart';
+import '../../core/services/sources/track_search.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/source_query_status.dart';
 import '../../shared/widgets/track_artwork.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import 'library_controller.dart';
@@ -29,6 +32,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
   final _scrollController = ScrollController();
   bool _querying = false;
   String? _queryNotice;
+  bool _noticeIsSeparate = false;
 
   bool _canRepair(AudioTrack track) =>
       controller.canOperate &&
@@ -37,6 +41,34 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
       !track.requiresTagRefresh &&
       track.readError == null &&
       !controller.isTrackExcluded(track);
+
+  Set<String> _querySources(
+    AudioTrack track, {
+    bool titleOnly = false,
+    bool missingOnly = false,
+  }) {
+    final task = controller.taskForTrack(track.id);
+    if (!titleOnly &&
+        !missingOnly &&
+        task?.confirmedRecording != null &&
+        controller.isTaskCurrent(task!)) {
+      return {task.confirmedRecording!.sourceName};
+    }
+    final fields = missingOnly
+        ? controller.settings.enabledFields.intersection(track.missingFields)
+        : controller.completion.availableFields.difference(
+            track.isInstrumental ? {AudioField.lyrics} : {},
+          );
+    return controller.completion.sources
+        .where(
+          (source) =>
+              (titleOnly || !hasText(TrackSearch.fromTrack(track).artist))
+              ? source is RecordingDiscoverySource
+              : source.supportedFields.intersection(fields).isNotEmpty,
+        )
+        .map((source) => source.name)
+        .toSet();
+  }
 
   @override
   void initState() {
@@ -52,9 +84,28 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
     super.dispose();
   }
 
-  Future<void> _query({bool missingOnly = false}) async {
+  Future<void> _query({
+    bool missingOnly = false,
+    bool titleOnly = false,
+  }) async {
     final track = controller.trackById(widget.track.id);
-    if (track == null || !_canRepair(track)) return;
+    if (track == null ||
+        !_canRepair(track) ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    final current = controller.taskForTrack(track.id);
+    if (SourceRetryState(
+      current?.sourceReports ?? const [],
+      DateTime.now(),
+      requestedSources: _querySources(
+        track,
+        titleOnly: titleOnly,
+        missingOnly: missingOnly,
+      ),
+    ).allSourcesCooling) {
+      return;
+    }
     final route = ModalRoute.of(context);
     final previous = controller.taskForTrack(track.id)?.createdAt;
     final noticeRevision = controller.noticeRevision;
@@ -63,8 +114,13 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
       _queryNotice = null;
     });
     try {
-      if (missingOnly) {
+      if (titleOnly) {
+        await controller.discoverAlternativeRecordings(track.id);
+      } else if (missingOnly) {
         await controller.complete(track: track);
+      } else if (current?.confirmedRecording != null &&
+          controller.isTaskCurrent(current!)) {
+        await controller.retryTaskQuery(current);
       } else {
         await controller.queryAutomaticRepair(track: track);
       }
@@ -89,19 +145,23 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
               : controller.noticeRevision != noticeRevision
               ? controller.notice ?? '检索未完成，请稍后重试。'
               : '检索未生成新候选，请稍后重试。',
+          separate: !hasNewResult,
         );
       }
     } catch (_) {
       if (mounted && route?.isCurrent == true) {
-        _showQueryNotice('检索未完成，请检查网络后重试，也可调整检索条件或手动编辑。');
+        _showQueryNotice('检索未完成，请检查网络后重试，也可调整检索条件或手动编辑。', separate: true);
       }
     } finally {
       if (mounted) setState(() => _querying = false);
     }
   }
 
-  void _showQueryNotice(String message) {
-    setState(() => _queryNotice = message);
+  void _showQueryNotice(String message, {bool separate = false}) {
+    setState(() {
+      _queryNotice = message;
+      _noticeIsSeparate = separate;
+    });
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
         0,
@@ -154,6 +214,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
           task.suggestions.isEmpty &&
           task.status != TaskStatus.outdated;
       final resultMessage = _queryNotice ?? (emptyResult ? task.message : null);
+      final reports = task?.sourceReports ?? const [];
       final showFallback = resultMessage != null;
       return Scaffold(
         appBar: AppBar(title: const Text('歌曲资料')),
@@ -198,7 +259,37 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
-                  if (resultMessage != null) ...[
+                  if (reports.isNotEmpty &&
+                      _noticeIsSeparate &&
+                      _queryNotice != null) ...[
+                    const SizedBox(height: 16),
+                    NoticePanel(
+                      key: const ValueKey('query-action-result'),
+                      icon: Icons.info_outline,
+                      title: '本次操作未完成',
+                      message: _queryNotice!,
+                    ),
+                  ],
+                  if (reports.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    SourceQueryStatusPanel(
+                      key: const ValueKey('automatic-repair-result'),
+                      reports: reports,
+                      summary:
+                          task!.status == TaskStatus.skipped ||
+                              task.status == TaskStatus.outdated ||
+                              task.status == TaskStatus.savedOriginal ||
+                              task.status == TaskStatus.exported
+                          ? task.message
+                          : null,
+                      hasCandidates:
+                          task.suggestions.isNotEmpty ||
+                          task.recordingCandidates.isNotEmpty,
+                      retrySources: _querySources(track),
+                      retryKey: const ValueKey('retry-automatic-repair'),
+                      onRetry: canRepair ? _query : null,
+                    ),
+                  ] else if (resultMessage != null) ...[
                     const SizedBox(height: 16),
                     Semantics(
                       liveRegion: true,
@@ -207,7 +298,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         icon: Icons.info_outline,
                         title: '检索结果',
                         message: resultMessage,
-                        isError: task?.status == TaskStatus.failed,
+
                         action: TextButton.icon(
                           key: const ValueKey('retry-automatic-repair'),
                           onPressed: canRepair ? _query : null,
@@ -217,6 +308,38 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                       ),
                     ),
                   ],
+                  if (pendingRecordingChoice)
+                    OutlinedButton.icon(
+                      key: const ValueKey('review-recording-choices'),
+                      onPressed: controller.canOperate
+                          ? () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => RecordingChoicePage(
+                                  task: task,
+                                  controller: controller,
+                                ),
+                              ),
+                            )
+                          : null,
+                      icon: const Icon(Icons.library_music_outlined),
+                      label: Text(
+                        '确认 ${task.recordingCandidates.length} 个歌曲版本',
+                      ),
+                    ),
+                  if (task != null)
+                    if (task.suggestions.isNotEmpty)
+                      OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => CandidateReviewPage(
+                              task: task,
+                              controller: controller,
+                            ),
+                          ),
+                        ),
+                        icon: const Icon(Icons.fact_check_outlined),
+                        label: Text('查看 ${task.suggestions.length} 项候选资料'),
+                      ),
                   const SizedBox(height: 12),
                   ExpansionTile(
                     key: ValueKey('repair-fallback-$showFallback'),
@@ -225,6 +348,30 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     title: const Text('其他修复方式'),
                     subtitle: const Text('按需调整检索条件或手动编辑'),
                     children: [
+                      if (controller.canDiscoverRecordings) ...[
+                        SourceRetryBuilder(
+                          reports: reports,
+                          requestedSources: _querySources(
+                            track,
+                            titleOnly: true,
+                          ),
+                          builder: (context, retry) => OutlinedButton.icon(
+                            key: const ValueKey(
+                              'discover-alternative-recordings',
+                            ),
+                            onPressed: canRepair && !retry.allSourcesCooling
+                                ? () => _query(titleOnly: true)
+                                : null,
+                            icon: const Icon(Icons.library_music_outlined),
+                            label: Text(
+                              retry.allSourcesCooling
+                                  ? retry.label('仅凭歌名查找版本')
+                                  : '仅凭歌名查找版本',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                       OutlinedButton.icon(
                         key: const ValueKey('query-metadata-repair'),
                         onPressed: canRepair
@@ -241,13 +388,27 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         label: const Text('手动编辑元数据与封面'),
                       ),
                       const SizedBox(height: 8),
-                      TextButton.icon(
-                        key: const ValueKey('complete-missing-only'),
-                        onPressed: canRepair && controller.canQueryTrack(track)
-                            ? () => _query(missingOnly: true)
-                            : null,
-                        icon: const Icon(Icons.playlist_add),
-                        label: const Text('仅补全缺失项'),
+                      SourceRetryBuilder(
+                        reports: reports,
+                        requestedSources: _querySources(
+                          track,
+                          missingOnly: true,
+                        ),
+                        builder: (context, retry) => TextButton.icon(
+                          key: const ValueKey('complete-missing-only'),
+                          onPressed:
+                              canRepair &&
+                                  controller.canQueryTrack(track) &&
+                                  !retry.allSourcesCooling
+                              ? () => _query(missingOnly: true)
+                              : null,
+                          icon: const Icon(Icons.playlist_add),
+                          label: Text(
+                            retry.allSourcesCooling
+                                ? retry.label('仅补全缺失项')
+                                : '仅补全缺失项',
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 8),
                     ],
@@ -344,38 +505,6 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     InstrumentalControl(track: track, controller: controller),
                   ],
                   const SizedBox(height: 24),
-                  if (pendingRecordingChoice)
-                    OutlinedButton.icon(
-                      key: const ValueKey('review-recording-choices'),
-                      onPressed: controller.canOperate
-                          ? () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => RecordingChoicePage(
-                                  task: task,
-                                  controller: controller,
-                                ),
-                              ),
-                            )
-                          : null,
-                      icon: const Icon(Icons.library_music_outlined),
-                      label: Text(
-                        '确认 ${task.recordingCandidates.length} 个歌曲版本',
-                      ),
-                    ),
-                  if (task != null)
-                    if (task.suggestions.isNotEmpty)
-                      OutlinedButton.icon(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => CandidateReviewPage(
-                              task: task,
-                              controller: controller,
-                            ),
-                          ),
-                        ),
-                        icon: const Icon(Icons.fact_check_outlined),
-                        label: Text('查看 ${task.suggestions.length} 项候选资料'),
-                      ),
                   const SizedBox(height: 32),
                   Text(
                     '自动检索只生成候选资料。逐项确认后可保存到原文件，也可导出副本。',
@@ -395,11 +524,17 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                FilledButton.icon(
-                  key: const ValueKey('automatic-repair'),
-                  onPressed: canRepair ? _query : null,
-                  icon: const Icon(Icons.auto_fix_high_outlined),
-                  label: Text(_querying ? '正在自动检索…' : '自动检索并修复'),
+                SourceRetryBuilder(
+                  reports: reports,
+                  requestedSources: _querySources(track),
+                  builder: (context, retry) => FilledButton.icon(
+                    key: const ValueKey('automatic-repair'),
+                    onPressed: canRepair && !retry.allSourcesCooling
+                        ? _query
+                        : null,
+                    icon: const Icon(Icons.auto_fix_high_outlined),
+                    label: Text(_querying ? '正在自动检索…' : retry.label('自动检索并修复')),
+                  ),
                 ),
                 if (controller.isCompleting) ...[
                   const SizedBox(height: 8),

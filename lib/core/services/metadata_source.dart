@@ -1,6 +1,7 @@
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
 import '../models/recording_candidate.dart';
+import 'sources/json_api_client.dart';
 
 /// A healthy source answered, but its candidates cannot be safely identified.
 /// Keep the explanation visible without reporting a network/provider failure.
@@ -12,9 +13,10 @@ class SourceNoMatch implements Exception {
 /// A source may verify independent fields before another endpoint fails.
 /// The caller still validates field scope and displays the partial failure.
 class PartialSourceException implements Exception {
-  const PartialSourceException(this.suggestions, this.message);
+  const PartialSourceException(this.suggestions, this.message, {this.cause});
   final List<FieldSuggestion> suggestions;
   final String message;
+  final Object? cause;
 }
 
 /// Implement one adapter per real provider. Adapters return candidates with
@@ -43,4 +45,19 @@ abstract interface class RecordingDiscoverySource implements MetadataSource {
     RecordingCandidate recording,
     Set<AudioField> requestedFields,
   );
+}
+
+/// Keep the actionable deadline if independent endpoints fail differently.
+/// A later schema error must not erase a rate limit, and an earlier schema
+/// error must not hide a later cooldown. No extra request is made here.
+Object preferredSourceFailure(Object? previous, Object current) {
+  if (previous == null) return current;
+  if (current is ApiException && current.retryAt != null) {
+    if (previous is! ApiException ||
+        previous.retryAt == null ||
+        !current.retryAt!.isBefore(previous.retryAt!)) {
+      return current;
+    }
+  }
+  return previous;
 }

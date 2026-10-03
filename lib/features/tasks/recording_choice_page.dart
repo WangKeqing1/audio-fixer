@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/models/recording_candidate.dart';
+import '../../core/services/metadata_source.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/source_query_status.dart';
 import '../library/library_controller.dart';
 import '../library/metadata_editor_page.dart';
 import 'candidate_review_page.dart';
@@ -29,7 +31,7 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
   final _scrollController = ScrollController();
   bool _querying = false;
   String? _notice;
-  bool _failed = false;
+  bool _noticeIsSeparate = false;
 
   LibraryController get controller => widget.controller;
 
@@ -62,10 +64,10 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
     super.dispose();
   }
 
-  void _showNotice(String message, {bool failed = false}) {
+  void _showNotice(String message, {bool separate = false}) {
     setState(() {
       _notice = message;
-      _failed = failed;
+      _noticeIsSeparate = separate;
     });
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
@@ -117,12 +119,61 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
               : controller.noticeRevision != revision
               ? controller.notice ?? '所选版本未完成检索，请重新检索版本后再试。'
               : '此版本列表已变化，请重新检索版本后再确认。',
-          failed: result?.status == TaskStatus.failed,
+          separate: result == null || current?.createdAt != result.createdAt,
         );
       }
     } catch (_) {
       if (mounted && route?.isCurrent == true) {
-        _showNotice('所选版本检索失败，请检查网络后重新检索版本，也可调整检索条件或手动编辑。', failed: true);
+        _showNotice('所选版本检索失败，请检查网络后重试，也可调整检索条件或手动编辑。', separate: true);
+      }
+    } finally {
+      if (mounted) setState(() => _querying = false);
+    }
+  }
+
+  Future<void> _retrySelected(CompletionTask task) async {
+    final track = controller.trackById(task.trackId);
+    if (track == null ||
+        !_canQuery(track) ||
+        ModalRoute.of(context)?.isCurrent != true ||
+        SourceRetryState(
+          task.sourceReports,
+          DateTime.now(),
+        ).allSourcesCooling) {
+      return;
+    }
+    final route = ModalRoute.of(context);
+    final selected = task.confirmedRecording;
+    setState(() {
+      _querying = true;
+      _notice = null;
+    });
+    try {
+      await controller.retryTaskQuery(task);
+      if (!mounted || route?.isCurrent != true) return;
+      final current = controller.taskForTrack(task.trackId);
+      if (current != null &&
+          current.createdAt != task.createdAt &&
+          controller.isTaskCurrent(current) &&
+          current.confirmedRecording?.sameAs(selected!) == true &&
+          current.suggestions.isNotEmpty) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                CandidateReviewPage(task: current, controller: controller),
+          ),
+        );
+      } else {
+        _showNotice(
+          current != null && current.createdAt != task.createdAt
+              ? current.message
+              : controller.notice ?? '所选版本检索未完成，请稍后重试。',
+          separate: current == null || current.createdAt == task.createdAt,
+        );
+      }
+    } catch (_) {
+      if (mounted && route?.isCurrent == true) {
+        _showNotice('所选版本检索未完成，请检查网络后重试。', separate: true);
       }
     } finally {
       if (mounted) setState(() => _querying = false);
@@ -171,12 +222,12 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
               : controller.noticeRevision != revision
               ? controller.notice ?? '检索未完成，请稍后重试。'
               : '检索未生成新版本，请稍后重试。',
-          failed: current?.status == TaskStatus.failed,
+          separate: current == null || current.createdAt == previous,
         );
       }
     } catch (_) {
       if (mounted && route?.isCurrent == true) {
-        _showNotice('版本检索失败，请检查网络后重试。', failed: true);
+        _showNotice('版本检索失败，请检查网络后重试。', separate: true);
       }
     } finally {
       if (mounted) setState(() => _querying = false);
@@ -203,6 +254,11 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
       final theme = Theme.of(context);
       final track = controller.trackById(widget.task.trackId);
       final current = controller.taskForTrack(widget.task.trackId);
+      final reports = current?.sourceReports ?? widget.task.sourceReports;
+      final canRetrySelected =
+          current?.confirmedRecording != null &&
+          controller.isTaskCurrent(current!) &&
+          current.suggestions.isEmpty;
       final currentChoice =
           controller.isTaskCurrent(widget.task) &&
           current?.confirmedRecording == null &&
@@ -228,6 +284,14 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                         : '本地文件：${track.fileName}\n本地时长：${formatDuration(track.durationMs)}${track.durationMs == null ? '' : '（${(track.durationMs! / 1000).toStringAsFixed(3)} 秒）'}',
                     key: const ValueKey('recording-local-file'),
                   ),
+                  if (track != null && hasText(track.artist)) ...[
+                    const SizedBox(height: 8),
+                    Text('本地歌手：${track.artist}'),
+                  ],
+                  if (widget.task.searchMetadata['artist'] == '') ...[
+                    const SizedBox(height: 8),
+                    const Text('本次仅凭歌名与时长查找，未使用本地歌手信息核对。请仔细确认歌手与版本。'),
+                  ],
                   const SizedBox(height: 16),
                   NoticePanel(
                     icon: Icons.help_outline,
@@ -237,7 +301,27 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                         '仅凭歌名和相近时长无法确认录音。同名歌曲、不同专辑或现场版本可能不同；请核对歌手、专辑与时长后选择。'
                         '\n选择版本仅用于继续检索，资料仍需逐项确认后保存。',
                   ),
-                  if (_notice != null) ...[
+                  if (reports.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    SourceQueryStatusPanel(
+                      key: const ValueKey('recording-choice-source-status'),
+                      reports: reports,
+                      hasCandidates: currentChoice,
+                      retryKey: canRetrySelected
+                          ? const ValueKey('retry-selected-recording')
+                          : null,
+                      retryLabel: '重试所选版本',
+                      retrySources: current?.confirmedRecording != null
+                          ? {current!.confirmedRecording!.sourceName}
+                          : null,
+                      onRetry:
+                          canRetrySelected && track != null && _canQuery(track)
+                          ? () => _retrySelected(current)
+                          : null,
+                    ),
+                  ],
+                  if (_notice != null &&
+                      (reports.isEmpty || _noticeIsSeparate)) ...[
                     const SizedBox(height: 16),
                     Semantics(
                       liveRegion: true,
@@ -246,10 +330,11 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                         icon: Icons.info_outline,
                         title: '检索结果',
                         message: _notice!,
-                        isError: _failed,
                       ),
                     ),
-                  ] else if (!currentChoice && !_querying) ...[
+                  ] else if (!currentChoice &&
+                      !canRetrySelected &&
+                      !_querying) ...[
                     const SizedBox(height: 16),
                     const NoticePanel(
                       key: ValueKey('recording-choice-stale'),
@@ -326,13 +411,20 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                     ),
                   if (track != null) ...[
                     const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      key: const ValueKey('rediscover-recordings'),
-                      onPressed: _canQuery(track)
-                          ? () => _rediscover(track)
-                          : null,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重新检索版本'),
+                    SourceRetryBuilder(
+                      reports: reports,
+                      requestedSources: controller.completion.sources
+                          .whereType<RecordingDiscoverySource>()
+                          .map((source) => source.name)
+                          .toSet(),
+                      builder: (context, retry) => OutlinedButton.icon(
+                        key: const ValueKey('rediscover-recordings'),
+                        onPressed: _canQuery(track) && !retry.allSourcesCooling
+                            ? () => _rediscover(track)
+                            : null,
+                        icon: const Icon(Icons.refresh),
+                        label: Text(retry.label('重新检索版本')),
+                      ),
                     ),
                     ExpansionTile(
                       title: const Text('其他修复方式'),

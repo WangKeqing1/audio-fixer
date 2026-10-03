@@ -181,6 +181,120 @@ void main() {
     },
   );
 
+  test('complete known artist suffix can be separated at a space boundary', () {
+    for (final embedded in [false, true]) {
+      final track = _file(
+        embedded ? 'unrelated.mp3' : 'Song Name Emily Bindiger.mp3',
+        title: embedded ? 'Song Name Emily Bindiger' : null,
+        artist: 'Emily Bindiger',
+        album: 'Album',
+        durationMs: 299079,
+      );
+      final original = track.toJson();
+      final query = TrackSearch.fromTrack(track);
+      expect(query.title, 'Song Name');
+      expect(query.artist, 'Emily Bindiger');
+      expect(query.album, 'Album');
+      expect(query.durationSeconds, 299.079);
+      expect(query.matchesTitle('Song Name'), isTrue);
+      expect(query.matchesTitle('Song Name (Live)'), isFalse);
+      expect(query.matchesArtist(['Other Singer']), isFalse);
+      expect(query.matchesDuration(299.106), isTrue);
+      expect(query.matchesDuration(305), isFalse);
+      expect(query.normalizationNotes.single, contains('完整歌手名'));
+      expect(track.toJson(), original);
+    }
+    final spaced = TrackSearch.fromTrack(
+      _file(
+        'unrelated.mp3',
+        title: 'Song (Live)  EMILY\tBindiger [FLAC]',
+        artist: 'Emily Bindiger',
+      ),
+    );
+    expect(spaced.title, 'Song (Live)');
+    expect(spaced.matchesTitle('Song'), isFalse);
+    final fullCredit = TrackSearch.fromTrack(
+      _file('Song A feat. B.mp3', artist: 'A feat. B'),
+    );
+    expect(fullCredit.title, 'Song');
+    expect(fullCredit.artist, 'A feat. B');
+  });
+
+  test('space suffixes never infer artists or partially match credits', () {
+    for (final embedded in [false, true]) {
+      for (final artist in <String?>[null, '', 'Other Singer', '---']) {
+        final query = TrackSearch.fromTrack(
+          _file(
+            embedded ? 'unrelated.mp3' : 'Song Name Emily Bindiger.mp3',
+            title: embedded ? 'Song Name Emily Bindiger' : null,
+            artist: artist,
+          ),
+        );
+        expect(query.title, 'Song Name Emily Bindiger');
+        expect(query.artist, hasText(artist) ? artist : null);
+      }
+    }
+    for (final title in [
+      'Emily Bindiger',
+      'Emily Bindiger Song',
+      'Song EmilyBindiger',
+      'Song Emily-Bindiger',
+      'Song Emily Bindiger Jr.',
+      'Song Emily Bindiger (Live)',
+      'Song (Emily Bindiger)',
+      'Song (Live Emily Bindiger)',
+      'Song (Live Emily Bindiger',
+      'Song Emily Bindiger & Guest',
+    ]) {
+      final query = TrackSearch.fromTrack(
+        _file('unrelated.mp3', title: title, artist: 'Emily Bindiger'),
+      );
+      expect(query.title, title, reason: title);
+      expect(query.artist, 'Emily Bindiger');
+    }
+  });
+
+  test('known artist suffixes that resemble version text stay intact', () {
+    for (final artist in [
+      'Live',
+      'Remix',
+      'Instrumental',
+      'Acoustic',
+      'Remaster',
+      'Remastered',
+      'Deluxe Edition',
+      'Radio Edit',
+      'Original Version',
+      'DJ Mix',
+      '伴奏',
+      '纯音乐',
+      '现场',
+      '重制',
+      '重混',
+      '版本',
+    ]) {
+      for (final embedded in [false, true]) {
+        final title = 'Song $artist';
+        final query = TrackSearch.fromTrack(
+          _file(
+            embedded ? 'unrelated.mp3' : '$title.mp3',
+            title: embedded ? title : null,
+            artist: artist,
+          ),
+        );
+        expect(query.title, title, reason: '$artist / $embedded');
+        expect(query.artist, artist);
+        expect(query.matchesTitle('Song'), isFalse);
+      }
+    }
+    // Only the new whitespace heuristic receives this conservative guard.
+    final delimited = TrackSearch.fromTrack(
+      _file('Live - Song.mp3', artist: 'Live'),
+    );
+    expect(delimited.title, 'Song');
+    expect(delimited.artist, 'Live');
+  });
+
   test('versions and unknown bracket contents are never discarded', () {
     for (final title in [
       'Song (Live)',

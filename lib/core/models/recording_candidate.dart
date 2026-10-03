@@ -1,3 +1,5 @@
+import 'source_query_report.dart';
+
 /// A provider recording to be chosen by the user before field suggestions are
 /// fetched. A candidate is neither a field approval nor authority to write tags.
 class RecordingCandidate {
@@ -114,10 +116,13 @@ class DiscoveryResult {
     List<RecordingCandidate> candidates = const [],
     List<String> diagnostics = const [],
     this.hasFailures = false,
+    List<SourceQueryReport> sourceReports = const [],
   }) : candidates = List.unmodifiable(candidates),
-       diagnostics = List.unmodifiable(diagnostics);
+       diagnostics = List.unmodifiable(diagnostics),
+       sourceReports = List.unmodifiable(sourceReports);
 
   final List<RecordingCandidate> candidates;
   final List<String> diagnostics;
   final bool hasFailures;
+  final List<SourceQueryReport> sourceReports;
 }

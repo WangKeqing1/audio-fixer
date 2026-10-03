@@ -224,6 +224,26 @@ class _SearchName {
           return;
         }
       }
+      // Some tags copied from filenames append the complete artist credit
+      // using spaces only. Require the existing credit, including its word
+      // boundaries and punctuation; never guess the last words as an artist.
+      // Bracketed credits and version annotations remain part of the title.
+      // Credits such as "Live" are ambiguous with recording-version text.
+      final artistText = _normalizedSpacing(artist!);
+      if (normalizedIdentity(artistText).isNotEmpty &&
+          !_versionWords.hasMatch(artistText)) {
+        for (final boundary in _whitespace.allMatches(title)) {
+          if (_insideBrackets(title, boundary.start)) continue;
+          final before = title.substring(0, boundary.start).trim();
+          final after = title.substring(boundary.end).trim();
+          if (normalizedIdentity(before).isNotEmpty &&
+              _normalizedSpacing(after) == artistText) {
+            title = before;
+            _note('检索时已分离名称末尾与现有歌手一致的完整歌手名');
+            return;
+          }
+        }
+      }
     } else if (allowInference && separators.length == 1) {
       final separator = separators.single;
       var before = title.substring(0, separator.start).trim();
@@ -287,6 +307,7 @@ final _versionWords = RegExp(
   caseSensitive: false,
 );
 final _suffixBoundary = RegExp(r'\s*[-_｜|－–—]\s*|\s+');
+final _whitespace = RegExp(r'\s+');
 final _nameSeparator = RegExp(
   r'\s+[-–—]\s+|[－｜]|(?<=[\u3040-\u30ff\u3400-\u9fff])[-_](?=[\u3040-\u30ff\u3400-\u9fff])',
 );
@@ -352,6 +373,9 @@ String _beforeSuffix(String text, int start) => text
 bool _sameIdentity(String first, String second) =>
     normalizedIdentity(first).isNotEmpty &&
     normalizedIdentity(first) == normalizedIdentity(second);
+
+String _normalizedSpacing(String text) =>
+    text.trim().toLowerCase().replaceAll(_whitespace, ' ');
 
 bool _insideBrackets(String text, int position) {
   var depth = 0;

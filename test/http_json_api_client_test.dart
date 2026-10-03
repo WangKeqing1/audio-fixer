@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:audio_fixer/core/services/sources/http_json_api_client.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -589,6 +590,110 @@ void main() {
     );
   });
 
+  test('cooldown preserves actual429 and serverdeadline without freezing or extending', () async {
+    final directory = await Directory.systemTemp.createTemp('source-status-');
+    addTearDown(() => directory.delete(recursive: true));
+    final clock = _Clock();
+    final started = clock.now();
+    var calls = 0;
+    Future<ApiResponse> transport(Uri uri, Map<String, String> headers) async {
+      calls++;
+      return const ApiResponse(
+        429,
+        'private response body',
+        headers: {'Retry-After': '60', 'Authorization': 'never-display-this'},
+      );
+    }
+
+    final first = await _failure(
+      _client(clock, transport, cacheDirectory: directory).getJson(_lyrics()),
+    );
+    expect(first.failureKind, SourceFailureKind.rateLimited);
+    expect(first.provider, 'lrclib.net');
+    expect(first.isLocalCooldown, isFalse);
+    expect(first.serverRetryAfter, started.add(const Duration(seconds: 60)));
+    clock.advance(const Duration(seconds: 8));
+    final restored = _client(clock, transport, cacheDirectory: directory);
+    final blocked = await _failure(restored.getJson(_lyrics('another')));
+    expect(calls, 1);
+    expect(blocked.failureKind, SourceFailureKind.rateLimited);
+    expect(blocked.statusCode, 429);
+    expect(blocked.isLocalCooldown, isTrue);
+    expect(blocked.retryAt, first.retryAt);
+    expect(blocked.serverRetryAfter, first.serverRetryAfter);
+    expect(blocked.retryAt!.difference(clock.now()).inSeconds, 52);
+    expect(blocked.message, isNot(contains('52')));
+    expect(blocked.message, isNot(contains('private')));
+    clock.advance(const Duration(seconds: 51));
+    expect(
+      (await _failure(restored.getJson(_lyrics()))).retryAt,
+      first.retryAt,
+    );
+    expect(calls, 1);
+    clock.advance(const Duration(seconds: 1));
+    await _failure(restored.getJson(_lyrics()));
+    expect(calls, 2);
+  });
+
+  for (final kind in [
+    SourceFailureKind.timeout,
+    SourceFailureKind.network,
+    SourceFailureKind.invalidResponse,
+    SourceFailureKind.serverError,
+  ]) {
+    test('$kind survives local backoff and never claims HTTP429', () async {
+      final clock = _Clock();
+      var calls = 0;
+      final client = _client(clock, (_, _) async {
+        calls++;
+        if (kind == SourceFailureKind.timeout) {
+          throw TimeoutException('private');
+        }
+        if (kind == SourceFailureKind.network) {
+          throw const SocketException('private');
+        }
+        return kind == SourceFailureKind.invalidResponse
+            ? const ApiResponse(200, '<html>private error</html>')
+            : const ApiResponse(503, 'private');
+      });
+      final first = await _failure(client.getJson(_lyrics()));
+      clock.advance(const Duration(seconds: 8));
+      final blocked = await _failure(client.getJson(_lyrics('other')));
+      expect(first.failureKind, kind);
+      expect(blocked.failureKind, kind);
+      expect(
+        blocked.statusCode,
+        kind == SourceFailureKind.serverError ? 503 : null,
+      );
+      expect(blocked.serverRetryAfter, isNull);
+      expect(blocked.retryAt, first.retryAt);
+      expect(blocked.message, isNot(contains('繁忙')));
+      expect(blocked.message, isNot(contains('429')));
+      expect(blocked.message, isNot(contains('private')));
+      expect(calls, 1);
+    });
+  }
+
+  test(
+    'cached healthy lyrics survive provider cooldown without a new request',
+    () async {
+      final clock = _Clock();
+      var calls = 0;
+      final client = _client(clock, (uri, _) async {
+        calls++;
+        return uri.queryParameters['track_name'] == 'healthy'
+            ? const ApiResponse(200, '{"plainLyrics":"verified cached lyrics"}')
+            : const ApiResponse(429, '', headers: {'Retry-After': '60'});
+      });
+      await client.getJson(_lyrics('healthy'));
+      await _failure(client.getJson(_lyrics('limited')));
+      expect(await client.getJson(_lyrics('healthy')), {
+        'plainLyrics': 'verified cached lyrics',
+      });
+      expect(calls, 2);
+    },
+  );
+
   test('future HTTP-date Retry-After is honored', () async {
     final clock = _Clock();
     var calls = 0;
@@ -738,7 +843,7 @@ void main() {
   );
 
   test(
-    '404 is no-match while invalid JSON and HTTP failures are not cached',
+    '404 is no-match while invalid JSON and HTTP failures enter cooldown',
     () async {
       final missing = _client(
         _Clock(),
@@ -750,13 +855,21 @@ void main() {
         const ApiResponse(500, ''),
       ]) {
         var calls = 0;
-        final client = _client(_Clock(), (_, _) async {
+        final clock = _Clock();
+        final client = _client(clock, (_, _) async {
           calls++;
           return response;
         });
-        await _failure(client.getJson(_lyrics()));
-        await _failure(client.getJson(_lyrics()));
+        final first = await _failure(client.getJson(_lyrics()));
+        final blocked = await _failure(client.getJson(_lyrics()));
+        expect(calls, 1);
+        expect(blocked.failureKind, first.failureKind);
+        expect(blocked.isLocalCooldown, isTrue);
+        expect(blocked.retryAfter, first.retryAfter);
+        clock.advance(const Duration(seconds: 30));
+        final second = await _failure(client.getJson(_lyrics()));
         expect(calls, 2);
+        expect(second.retryAfter, clock.now().add(const Duration(seconds: 60)));
       }
     },
   );

@@ -7,6 +7,7 @@ import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/services/export/audio_copy_exporter.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/source_query_status.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import '../../shared/widgets/translation_privacy.dart';
 import '../../shared/widgets/track_artwork.dart';
@@ -442,12 +443,25 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Text(
-                      result.message,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+                    if (result.sourceReports.isNotEmpty)
+                      SourceQueryStatusPanel(
+                        reports: result.sourceReports,
+                        summary:
+                            result.status == TaskStatus.skipped ||
+                                result.status == TaskStatus.outdated ||
+                                result.status == TaskStatus.savedOriginal ||
+                                result.status == TaskStatus.exported
+                            ? result.message
+                            : null,
+                        hasCandidates: result.suggestions.isNotEmpty,
+                      )
+                    else
+                      Text(
+                        result.message,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
                       ),
-                    ),
                     if (track != null &&
                         (track.isInstrumental ||
                             (canReview &&

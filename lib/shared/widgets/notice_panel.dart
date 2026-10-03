@@ -54,7 +54,17 @@ class NoticePanel extends StatelessWidget {
                       height: 1.5,
                     ),
                   ),
-                  if (action != null) ...[const SizedBox(height: 8), action!],
+                  if (action != null) ...[
+                    const SizedBox(height: 8),
+                    TextButtonTheme(
+                      data: TextButtonThemeData(
+                        style: TextButton.styleFrom(
+                          foregroundColor: foreground,
+                        ),
+                      ),
+                      child: action!,
+                    ),
+                  ],
                 ],
               ),
             ),

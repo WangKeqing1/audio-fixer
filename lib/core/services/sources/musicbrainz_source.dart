@@ -445,6 +445,7 @@ class MusicBrainzMetadataSource
     // Each independent endpoint may fail without discarding verified fields
     // from another endpoint. The completion layer displays partial failures.
     final failures = <String>[];
+    Object? firstFailure;
     String? recordingGenre;
     if (fields.contains(AudioField.genre) ||
         fields.contains(AudioField.composer)) {
@@ -456,10 +457,12 @@ class MusicBrainzMetadataSource
           final composer = _composer(detail);
           add(AudioField.composer, composer?.name, url: composer?.url);
         }
-      } on TimeoutException {
+      } on TimeoutException catch (error) {
+        firstFailure = preferredSourceFailure(firstFailure, error);
         failures.add('查询达到时限，已保留已核实资料');
-      } on Exception {
-        failures.add('录音流派或作曲资料查询失败');
+      } on Exception catch (error) {
+        firstFailure = preferredSourceFailure(firstFailure, error);
+        failures.add(error is ApiException ? error.message : '录音流派或作曲资料查询失败');
       }
     }
 
@@ -497,18 +500,21 @@ class MusicBrainzMetadataSource
             );
           }
         }
-      } on TimeoutException {
+      } on TimeoutException catch (error) {
+        firstFailure = preferredSourceFailure(firstFailure, error);
         failures.add('查询达到时限，发行版本资料未确认');
       } on _IncompleteReleaseBrowse {
         failures.add('发行版本过多，未遍历的版本仍可能不同，发行资料暂不提供');
-      } on Exception {
-        failures.add('发行版本或音轨资料查询失败');
+      } on Exception catch (error) {
+        firstFailure = preferredSourceFailure(firstFailure, error);
+        failures.add(error is ApiException ? error.message : '发行版本或音轨资料查询失败');
       }
     }
     if (failures.isNotEmpty) {
       throw PartialSourceException(
         suggestions,
-        'MusicBrainz：${failures.join('；')}',
+        failures.join('；'),
+        cause: firstFailure,
       );
     }
     return suggestions;

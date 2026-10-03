@@ -1,6 +1,7 @@
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -106,7 +107,8 @@ void main() {
     expect(source.called, isTrue);
     expect(result.status, TaskStatus.noMatch);
     expect(result.message, contains('数据源尚未接入'));
-    expect(result.message, contains('歌词未获得可靠候选'));
+    expect(result.sourceReports.single.outcome, SourceQueryOutcome.noMatch);
+    expect(result.sourceReports.single.requestedFields, {AudioField.lyrics});
   });
 
   test('source capability and missing record data remain distinct', () async {
@@ -119,7 +121,13 @@ void main() {
       requestedFields: {AudioField.lyrics, AudioField.year, AudioField.artwork},
     );
     expect(result.suggestions.single.field, AudioField.lyrics);
-    expect(result.message, contains('年份、封面未获得可靠候选'));
+    expect(result.sourceReports.single.outcome, SourceQueryOutcome.success);
+    expect(result.sourceReports.single.candidateCount, 1);
+    expect(result.sourceReports.single.requestedFields, {
+      AudioField.lyrics,
+      AudioField.year,
+      AudioField.artwork,
+    });
     expect(result.message, isNot(contains('数据源尚未接入')));
   });
 

@@ -10,6 +10,7 @@ import '../../core/models/audio_field_validation.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/models/recording_candidate.dart';
+import '../../core/models/source_query_report.dart';
 import '../../core/services/audio_importer.dart';
 import '../../core/services/artwork_picker.dart';
 import '../../core/services/audio_preview_service.dart';
@@ -668,6 +669,7 @@ class LibraryController extends ChangeNotifier {
           isRepair: task.isRepair,
           searchMetadata: task.searchMetadata,
           recordingCandidates: task.recordingCandidates,
+          sourceReports: task.sourceReports,
           confirmedRecording: task.confirmedRecording,
           exportedCopyUri: task.exportedCopyUri,
           writeError: task.writeError,
@@ -950,6 +952,32 @@ class LibraryController extends ChangeNotifier {
     );
   }
 
+  bool get canDiscoverRecordings =>
+      completion.sources.any((source) => source is RecordingDiscoverySource);
+
+  /// A user-requested fallback: ignore an uncertain artist only for candidate
+  /// discovery. Preserve actual tags and require an explicit recording choice.
+  Future<void> discoverAlternativeRecordings(String trackId) async {
+    final track = trackById(trackId);
+    if (track == null ||
+        !canOperate ||
+        !canDiscoverRecordings ||
+        !track.detailsLoaded ||
+        track.requiresTagRefresh ||
+        track.readError != null ||
+        isTrackExcluded(track)) {
+      return;
+    }
+    final search = TrackSearch.fromTrack(track);
+    await queryRepair(
+      trackId,
+      fields: completion.availableFields,
+      searchTitle: search.title,
+      searchArtist: '',
+      searchAlbum: search.album,
+    );
+  }
+
   Future<CompletionTask?> confirmRecordingChoice(
     CompletionTask task,
     RecordingCandidate candidate,
@@ -1160,11 +1188,12 @@ class LibraryController extends ChangeNotifier {
                   : TaskStatus.noMatch,
               message: [
                 discovered.candidates.isNotEmpty
-                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。缺少歌手标签，请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
+                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。${hasText(item.artist) && searchMetadata.containsKey('artist') ? '本次未用原歌手标签筛选，' : '缺少歌手标签，'}请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
                     : '仅按歌名与时长检索，尚未找到可供确认的歌曲版本。可以调整检索条件后重试。',
                 ...discovered.diagnostics,
               ].join('\n'),
               recordingCandidates: discovered.candidates,
+              sourceReports: discovered.sourceReports,
             );
           } else {
             task = await completion.preview(
@@ -1174,6 +1203,61 @@ class LibraryController extends ChangeNotifier {
               searchTrack: searchTrack,
               confirmedRecording: confirmedRecording,
             );
+            // A strict lookup can reject two plausible editions. Offer a
+            // bounded recording choice without dropping known artist evidence.
+            // Never replace usable fields, retry a failed provider here, or
+            // change an already selected recording identity.
+            final discoveryNames = completion.sources
+                .whereType<RecordingDiscoverySource>()
+                .map((source) => source.name)
+                .toSet();
+            final unmatchedDiscoveryNames = task.sourceReports
+                .where(
+                  (report) =>
+                      discoveryNames.contains(report.sourceName) &&
+                      report.outcome == SourceQueryOutcome.noMatch,
+                )
+                .map((report) => report.sourceName)
+                .toSet();
+            if (confirmedRecording == null &&
+                requested.isNotEmpty &&
+                task.suggestions.isEmpty &&
+                hasText(TrackSearch.fromTrack(queryTrack).artist) &&
+                unmatchedDiscoveryNames.isNotEmpty) {
+              final discovered = await completion.discoverRecordings(
+                queryTrack,
+                sourceNames: unmatchedDiscoveryNames,
+              );
+              final reports = [
+                ...task.sourceReports.where(
+                  (report) =>
+                      !unmatchedDiscoveryNames.contains(report.sourceName),
+                ),
+                ...discovered.sourceReports.where(
+                  (report) =>
+                      unmatchedDiscoveryNames.contains(report.sourceName),
+                ),
+              ];
+              task = CompletionTask(
+                trackId: item.id,
+                trackTitle: item.displayTitle,
+                createdAt: DateTime.now(),
+                status: discovered.candidates.isNotEmpty
+                    ? TaskStatus.needsReview
+                    : reports.any(
+                        (report) =>
+                            report.outcome == SourceQueryOutcome.failed ||
+                            report.outcome == SourceQueryOutcome.partial,
+                      )
+                    ? TaskStatus.failed
+                    : TaskStatus.noMatch,
+                message: discovered.candidates.isNotEmpty
+                    ? '找到 ${discovered.candidates.length} 个可能的录音版本，已有歌手仍参与核对。请确认歌手、专辑与时长，再获取该版本资料；尚未选择或修改任何字段。'
+                    : '未找到可直接采用的资料或可确认的录音版本，请查看各来源结果，也可调整检索条件。已有资料保留。',
+                recordingCandidates: discovered.candidates,
+                sourceReports: reports,
+              );
+            }
           }
           if (repairFields != null) {
             final candidates = task.suggestions
@@ -1200,6 +1284,7 @@ class LibraryController extends ChangeNotifier {
                   : task.message,
               suggestions: candidates,
               recordingCandidates: task.recordingCandidates,
+              sourceReports: task.sourceReports,
               confirmedRecording: confirmedRecording,
             );
           }
@@ -1232,6 +1317,7 @@ class LibraryController extends ChangeNotifier {
           message: task.message,
           suggestions: task.suggestions,
           recordingCandidates: task.recordingCandidates,
+          sourceReports: task.sourceReports,
           confirmedRecording: confirmedRecording,
           queriedFields: repairFields == null
               ? _enabledFieldsFor(item)
@@ -1288,6 +1374,7 @@ class LibraryController extends ChangeNotifier {
           isRepair: task.isRepair,
           searchMetadata: task.searchMetadata,
           recordingCandidates: task.recordingCandidates,
+          sourceReports: task.sourceReports,
           confirmedRecording: task.confirmedRecording,
         );
       }).toList();
@@ -1388,6 +1475,7 @@ class LibraryController extends ChangeNotifier {
     isRepair: task.isRepair,
     searchMetadata: task.searchMetadata,
     recordingCandidates: task.recordingCandidates,
+    sourceReports: task.sourceReports,
     confirmedRecording: task.confirmedRecording,
     approvedSuggestions: approved ?? task.approvedSuggestions,
     writeError: error,
@@ -1438,6 +1526,7 @@ class LibraryController extends ChangeNotifier {
         isRepair: current.isRepair,
         searchMetadata: current.searchMetadata,
         recordingCandidates: current.recordingCandidates,
+        sourceReports: current.sourceReports,
         confirmedRecording: current.confirmedRecording,
       );
       await _commit(
@@ -1733,6 +1822,7 @@ class LibraryController extends ChangeNotifier {
         isRepair: current.isRepair,
         searchMetadata: current.searchMetadata,
         recordingCandidates: current.recordingCandidates,
+        sourceReports: current.sourceReports,
         confirmedRecording: current.confirmedRecording,
         approvedSuggestions: exportCopy
             ? current.approvedSuggestions

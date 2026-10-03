@@ -2,6 +2,7 @@ import '../../models/audio_track.dart';
 import '../../models/completion_task.dart';
 import '../../models/lyrics_content.dart';
 import '../../models/recording_candidate.dart';
+import '../../models/source_query_report.dart';
 import '../metadata_source.dart';
 import 'json_api_client.dart';
 import 'track_search.dart';
@@ -59,17 +60,25 @@ class NeteaseLyricsSource
       });
 
   Map<String, dynamic> _response(Object? response) {
-    if (response is! Map) throw const ApiException('网易云返回格式异常。');
+    if (response is! Map) {
+      throw const ApiException(
+        '网易云返回格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
     final data = Map<String, dynamic>.from(response);
     if (data['code'] != 200) {
       final code = data['code'];
       throw ApiException(
-        code == 429 || code == 503
-            ? '网易云暂时限流，请稍后重试。'
+        code == 429
+            ? '网易云限制请求（429），请稍后重试。'
+            : code == 503
+            ? '网易云服务暂不可用（503）。'
             : code == 301 || code == 401 || code == 403
             ? '网易云当前不允许匿名访问，已停止请求。'
-            : '网易云暂时不可用（${code ?? '未知状态'}）。',
+            : '网易云暂时不可用（${code is int ? code : '未知状态'}）。',
         statusCode: code is int ? code : null,
+        kind: code is int ? null : SourceFailureKind.invalidResponse,
       );
     }
     return data;
@@ -79,7 +88,10 @@ class NeteaseLyricsSource
   Future<void> checkConnection() async {
     final result = _response(await client.getJson(_searchUri('红豆', '王菲')));
     if (result['result'] is! Map) {
-      throw const ApiException('网易云搜索暂时不可用。');
+      throw const ApiException(
+        '网易云搜索暂时不可用。',
+        kind: SourceFailureKind.invalidResponse,
+      );
     }
   }
 
@@ -93,10 +105,18 @@ class NeteaseLyricsSource
       await client.getJson(_searchUri(search.title, '')),
     );
     final result = response['result'];
-    if (result is! Map) throw const ApiException('网易云搜索结果格式异常。');
+    if (result is! Map) {
+      throw const ApiException(
+        '网易云搜索结果格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
     final rawSongs = result['songs'];
     if (rawSongs != null && rawSongs is! List) {
-      throw const ApiException('网易云搜索结果格式异常。');
+      throw const ApiException(
+        '网易云搜索结果格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
     }
     final songs = rawSongs as List? ?? const [];
     final total = result['songCount'];
@@ -145,7 +165,7 @@ class NeteaseLyricsSource
         matchDescription:
             '$titleEvidence；'
             '${search.durationSeconds == null ? '本地时长未知，未核对时长' : '时长相差${(song.duration - search.durationSeconds!).abs().toStringAsFixed(3)}秒（不超过3秒）'}；'
-            '${hasText(search.artist) ? '已有歌手匹配' : '本地缺少歌手，尚未确认录音身份'}；'
+            '${hasText(search.artist) ? '已有歌手匹配' : '检索未限定歌手，尚未确认录音身份'}；'
             '请核对歌手、专辑和版本后选择',
       );
       if (!candidate.isValid) {
@@ -181,7 +201,7 @@ class NeteaseLyricsSource
         if (total is int && total > songs.length)
           '当前仅核对首个结果页，未查询其余 ${total - songs.length} 条。',
         if (count > 0)
-          '${hasText(search.artist) ? '请进一步确认录音版本' : '本地缺少歌手，需要先选择并确认录音'}；'
+          '${hasText(search.artist) ? '请进一步确认录音版本' : '检索未限定歌手，需要先选择并确认录音'}；'
               '不会自动选择，也尚未查询歌词或封面。',
       ],
     );
@@ -260,10 +280,20 @@ class NeteaseLyricsSource
       await client.getJson(_searchUri(search.title, search.artist!)),
     );
     final result = response['result'];
-    if (result is! Map) throw const ApiException('网易云搜索结果格式异常。');
+    if (result is! Map) {
+      throw const ApiException(
+        '网易云搜索结果格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
     final rawSongs = result['songs'];
     if (rawSongs == null) return const [];
-    if (rawSongs is! List) throw const ApiException('网易云搜索结果格式异常。');
+    if (rawSongs is! List) {
+      throw const ApiException(
+        '网易云搜索结果格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
     final matches = <_Song>[];
     for (final raw in rawSongs) {
       final song = _Song.parse(raw);
@@ -343,7 +373,10 @@ class NeteaseLyricsSource
             );
         final songs = detail['songs'];
         if (songs is! List || songs.length != 1) {
-          throw const ApiException('网易云歌曲详情缺失或格式异常。');
+          throw const ApiException(
+            '网易云歌曲详情缺失或格式异常。',
+            kind: SourceFailureKind.invalidResponse,
+          );
         }
         final verified = _Song.parse(songs.single);
         if (verified == null ||
@@ -453,7 +486,8 @@ class NeteaseLyricsSource
           }
         }
       } on ApiException catch (error) {
-        firstFailure ??= error;
+        firstFailure =
+            preferredSourceFailure(firstFailure, error) as ApiException;
         failures.add('歌曲资料：${error.message}');
         // Never issue another request once transport/cooldown/access refuses
         // this provider. An independently malformed detail payload is local
@@ -467,7 +501,8 @@ class NeteaseLyricsSource
         if (lyric != null) suggestions.add(lyric);
       } on ApiException catch (error) {
         if (suggestions.isEmpty && failures.isEmpty) rethrow;
-        firstFailure ??= error;
+        firstFailure =
+            preferredSourceFailure(firstFailure, error) as ApiException;
         failures.add('歌词：${error.message}');
       }
     }
@@ -477,11 +512,16 @@ class NeteaseLyricsSource
           failures.join('；'),
           statusCode: firstFailure?.statusCode,
           retryAfter: firstFailure?.retryAfter,
+          kind: firstFailure?.failureKind,
+          provider: firstFailure?.provider,
+          serverRetryAfter: firstFailure?.serverRetryAfter,
+          isLocalCooldown: firstFailure?.isLocalCooldown ?? false,
         );
       }
       throw PartialSourceException(
         List.unmodifiable(suggestions),
         failures.join('；'),
+        cause: firstFailure,
       );
     }
     return suggestions;
@@ -502,9 +542,18 @@ class NeteaseLyricsSource
     }
     final originalBlock = lyrics['lrc'];
     if (originalBlock != null && originalBlock is! Map) {
-      throw const ApiException('网易云歌词格式异常。');
+      throw const ApiException(
+        '网易云歌词格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
     }
     final original = originalBlock is Map ? originalBlock['lyric'] : null;
+    if (original != null && original is! String) {
+      throw const ApiException(
+        '网易云歌词文本格式异常。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
     if (original is! String || !LyricsContent.usable(original)) return null;
     final translationBlock = lyrics['tlyric'];
     final translated = translationBlock is Map

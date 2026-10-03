@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/app_settings.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
+import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
 import 'package:audio_fixer/core/services/sources/musicbrainz_source.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -68,6 +71,50 @@ Map<String, Object?> _release({
 };
 
 void main() {
+  test(
+    'later release rate limit survives an earlier malformed recording detail',
+    () async {
+      final until = DateTime.utc(2026, 1, 1, 0, 1);
+      final client = _FakeJsonApiClient((uri) async {
+        if (uri.path == '/ws/2/recording/') {
+          return {
+            'recordings': [_recording()],
+          };
+        }
+        if (uri.path.startsWith('/ws/2/recording/')) return {'id': 'wrong-id'};
+        if (uri.path == '/ws/2/release') {
+          throw ApiException(
+            '请求限制。',
+            statusCode: 429,
+            retryAfter: until,
+            serverRetryAfter: until,
+            provider: 'musicbrainz.org',
+          );
+        }
+        throw StateError('Unexpected endpoint');
+      });
+      final result =
+          await CompletionService(
+            sources: [MusicBrainzMetadataSource(MusicBrainzCatalog(client))],
+          ).preview(
+            _track(),
+            const AppSettings(),
+            requestedFields: {
+              AudioField.title,
+              AudioField.genre,
+              AudioField.year,
+            },
+          );
+      final report = result.sourceReports.single;
+      expect(report.outcome, SourceQueryOutcome.partial);
+      expect(report.failureKind, SourceFailureKind.rateLimited);
+      expect(report.retryAt, until);
+      expect(report.serverRetryAt, until);
+      expect(result.suggestions.single.field, AudioField.title);
+      expect(client.calls, hasLength(3));
+    },
+  );
+
   test('no-result cache expires so a later retry reaches the source', () async {
     var now = DateTime(2026);
     final client = _FakeJsonApiClient((_) async => null);

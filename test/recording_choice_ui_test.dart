@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/models/recording_candidate.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
@@ -115,6 +116,18 @@ class _Source implements RecordingDiscoverySource {
   }
 }
 
+class _NonDiscoverySource implements MetadataSource {
+  @override
+  String get name => '其他歌词来源';
+  @override
+  Set<AudioField> get supportedFields => {AudioField.lyrics};
+  @override
+  Future<List<FieldSuggestion>> lookup(
+    AudioTrack track,
+    Set<AudioField> fields,
+  ) async => [];
+}
+
 LibraryController _controller(
   _Source source, {
   List<CompletionTask> tasks = const [],
@@ -223,7 +236,7 @@ void main() {
         ),
         isTrue,
       );
-      await _show(tester, find.byType(Checkbox).first);
+      await _show(tester, find.byType(Checkbox));
       expect(
         tester
             .widgetList<Checkbox>(find.byType(Checkbox))
@@ -486,7 +499,10 @@ void main() {
           controller.tasks.single.status,
           failed ? TaskStatus.failed : TaskStatus.noMatch,
         );
-        expect(find.text(controller.tasks.single.message), findsOneWidget);
+        expect(
+          find.text('离线录音源 · ${failed ? '查询未完成' : '未找到匹配'}'),
+          findsOneWidget,
+        );
         expect(controller.tasks.single.approvedSuggestions, isEmpty);
         await _show(
           tester,
@@ -516,6 +532,141 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'failed chosen recording retries its same ID and guards repeated taps',
+    (tester) async {
+      final source = _Source()..fail = true;
+      final controller = _controller(source);
+      await _openChoice(tester, controller);
+      await _show(tester, _choose(1));
+      await tester.tap(_choose(1));
+      await tester.pumpAndSettle();
+      final retry = find.byKey(const ValueKey('retry-selected-recording'));
+      await _show(tester, retry, delta: -200);
+      source
+        ..fail = false
+        ..pending = Completer<void>();
+      final action = tester.widget<TextButton>(retry).onPressed!;
+      action();
+      action();
+      await tester.pump();
+      expect(source.confirmed.map((recording) => recording.sourceId), [
+        'test:two',
+        'test:two',
+      ]);
+      expect(source.discoveries, 1);
+      expect(tester.widget<TextButton>(retry).onPressed, isNull);
+      Navigator.of(tester.element(find.byType(RecordingChoicePage))).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('新的页面')),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      source.pending!.complete();
+      await tester.pumpAndSettle();
+      expect(find.text('新的页面'), findsOneWidget);
+      expect(find.byType(CandidateReviewPage), findsNothing);
+      expect(controller.tasks.single.confirmedRecording?.sourceId, 'test:two');
+      expect(controller.tasks.single.suggestions, isNotEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('detail automatic retry preserves the confirmed recording ID', (
+    tester,
+  ) async {
+    final source = _Source()..fail = true;
+    final controller = _controller(source);
+    await _openChoice(tester, controller);
+    await _show(tester, _choose(1));
+    await tester.tap(_choose(1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    source.fail = false;
+    await tester.tap(find.byKey(const ValueKey('automatic-repair')));
+    await tester.pumpAndSettle();
+    expect(source.confirmed.map((recording) => recording.sourceId), [
+      'test:two',
+      'test:two',
+    ]);
+    expect(source.discoveries, 1);
+    expect(find.byType(CandidateReviewPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'choice persistence error remains visible with prior discovery reports',
+    (tester) async {
+      final source = _Source();
+      final controller = _controller(source);
+      await _openChoice(tester, controller);
+      final previous = controller.tasks.single;
+      (controller.store as MemoryStore).failSave = true;
+      await _show(tester, _choose(0));
+      await tester.tap(_choose(0));
+      await tester.pumpAndSettle();
+      expect(controller.tasks.single.createdAt, previous.createdAt);
+      await _show(
+        tester,
+        find.byKey(const ValueKey('recording-choice-result')),
+        delta: -200,
+      );
+      expect(find.textContaining('操作未完成'), findsWidgets);
+      expect(find.byType(CandidateReviewPage), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'title-only automatic query waits for its discovery provider only',
+    (tester) async {
+      final source = _Source();
+      final previous = CompletionTask(
+        trackId: _track().id,
+        trackTitle: '極楽浄土',
+        createdAt: DateTime(2026),
+        status: TaskStatus.failed,
+        message: '版本查询未完成',
+        isRepair: true,
+        queriedFields: source.supportedFields,
+        sourceReports: [
+          SourceQueryReport(
+            sourceName: source.name,
+            outcome: SourceQueryOutcome.failed,
+            message: '连接超时',
+            failureKind: SourceFailureKind.timeout,
+            retryAt: DateTime.now().add(const Duration(seconds: 52)),
+          ),
+        ],
+      );
+      final controller = LibraryController(
+        store: MemoryStore(
+          LibrarySnapshot(tracks: [_track()], tasks: [previous]),
+        ),
+        picker: FakePicker(),
+        importer: FakeImporter(),
+        completion: CompletionService(sources: [source, _NonDiscoverySource()]),
+      );
+      await tester.pumpWidget(AudioFixerApp(controller: controller));
+      await tester.pumpAndSettle();
+      await _show(tester, find.text('極楽浄土.mp3'));
+      await tester.tap(find.text('極楽浄土.mp3'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const ValueKey('automatic-repair')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(source.discoveries, 0);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   for (final size in [
     const Size(320, 480),

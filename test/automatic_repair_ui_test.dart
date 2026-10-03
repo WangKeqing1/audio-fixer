@@ -4,6 +4,7 @@ import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
+import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
@@ -11,6 +12,7 @@ import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:audio_fixer/features/library/metadata_editor_page.dart';
 import 'package:audio_fixer/features/library/track_detail_page.dart';
 import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
+import 'package:audio_fixer/shared/widgets/source_query_status.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -57,6 +59,23 @@ class _Source implements MetadataSource {
     if (fail) throw StateError('offline source failure');
     return suggestions;
   }
+}
+
+class _LimitedSource extends _Source {
+  @override
+  Set<AudioField> get supportedFields => {AudioField.title, AudioField.lyrics};
+}
+
+class _ComposerSource implements MetadataSource {
+  @override
+  String get name => '作曲来源';
+  @override
+  Set<AudioField> get supportedFields => {AudioField.composer};
+  @override
+  Future<List<FieldSuggestion>> lookup(
+    AudioTrack track,
+    Set<AudioField> fields,
+  ) async => [];
 }
 
 AudioTrack _track({bool instrumental = false}) => AudioTrack(
@@ -223,7 +242,11 @@ void main() {
           tester,
           find.byKey(const ValueKey('automatic-repair-result')),
         );
-        expect(find.text(controller.tasks.single.message), findsOneWidget);
+        expect(find.byType(SourceQueryStatusPanel), findsOneWidget);
+        expect(
+          find.text('离线自动检索源 · ${failed ? '查询未完成' : '未找到匹配'}'),
+          findsOneWidget,
+        );
         expect(find.text('其他修复方式'), findsOneWidget);
         await _show(tester, find.byKey(const ValueKey('edit-metadata')));
         expect(find.text('手动编辑元数据与封面'), findsOneWidget);
@@ -244,6 +267,100 @@ void main() {
       },
     );
   }
+
+  testWidgets('unchanged source values preserve the no-change task summary', (
+    tester,
+  ) async {
+    final source = _Source()
+      ..suggestions = const [
+        FieldSuggestion(
+          field: AudioField.title,
+          value: '旧歌名',
+          source: '离线自动检索源',
+        ),
+      ];
+    final controller = _controller(source);
+    await _open(tester, controller);
+    await tester.tap(find.byKey(const ValueKey('automatic-repair')));
+    await tester.pumpAndSettle();
+    expect(controller.tasks.single.status, TaskStatus.skipped);
+    expect(controller.tasks.single.suggestions, isEmpty);
+    await _show(tester, find.byKey(const ValueKey('automatic-repair-result')));
+    expect(find.textContaining('与当前标签一致，无需替换'), findsOneWidget);
+    expect(find.text('可以继续确认候选资料'), findsNothing);
+    expect(find.text('可用候选已保留'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'narrow previous cooldown does not block a broader automatic query',
+    (tester) async {
+      final source = _LimitedSource();
+      final track = _track();
+      final previous = CompletionTask(
+        trackId: track.id,
+        trackTitle: track.displayTitle,
+        createdAt: DateTime(2026),
+        status: TaskStatus.failed,
+        message: '作曲来源暂不可用',
+        isRepair: true,
+        queriedFields: {AudioField.composer},
+        sourceReports: [
+          SourceQueryReport(
+            sourceName: '作曲来源',
+            outcome: SourceQueryOutcome.failed,
+            message: '连接超时',
+            failureKind: SourceFailureKind.timeout,
+            retryAt: DateTime.now().add(const Duration(seconds: 52)),
+          ),
+          SourceQueryReport(
+            sourceName: source.name,
+            outcome: SourceQueryOutcome.unsupported,
+            message: '不提供作曲资料',
+          ),
+        ],
+      );
+      final controller = LibraryController(
+        store: MemoryStore(LibrarySnapshot(tracks: [track], tasks: [previous])),
+        picker: FakePicker(),
+        importer: FakeImporter(),
+        completion: CompletionService(sources: [source, _ComposerSource()]),
+      );
+      await _open(tester, controller);
+      final primary = find.byKey(const ValueKey('automatic-repair'));
+      expect(tester.widget<FilledButton>(primary).onPressed, isNotNull);
+      await tester.tap(primary);
+      await tester.pumpAndSettle();
+      expect(source.calls, 1);
+      expect(source.fields, {AudioField.title, AudioField.lyrics});
+      expect(find.byType(CandidateReviewPage), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'new persistence failure stays visible above old source results',
+    (tester) async {
+      final source = _Source()..suggestions = [];
+      final controller = _controller(source);
+      await _open(tester, controller);
+      await tester.tap(find.byKey(const ValueKey('automatic-repair')));
+      await tester.pumpAndSettle();
+      final previous = controller.tasks.single;
+      (controller.store as MemoryStore).failSave = true;
+      source.suggestions = _suggestions;
+      await tester.tap(find.byKey(const ValueKey('automatic-repair')));
+      await tester.pumpAndSettle();
+      expect(controller.tasks.single.createdAt, previous.createdAt);
+      // Saving the operation state fails before a second network request.
+      expect(source.calls, 1);
+      await _show(tester, find.byKey(const ValueKey('query-action-result')));
+      expect(find.textContaining('操作未完成'), findsWidgets);
+      expect(find.byType(CandidateReviewPage), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'pending automatic query blocks repeated taps and late navigation',

@@ -1,6 +1,7 @@
 import 'audio_track.dart';
 import 'lyrics_content.dart';
 import 'recording_candidate.dart';
+import 'source_query_report.dart';
 
 enum TaskStatus {
   waitingForSource('等待数据源'),
@@ -177,6 +178,7 @@ class CompletionTask {
     this.searchMetadata = const {},
     this.recordingCandidates = const [],
     this.confirmedRecording,
+    this.sourceReports = const [],
   });
 
   final String trackId;
@@ -193,6 +195,7 @@ class CompletionTask {
   final Map<String, String> searchMetadata;
   final List<RecordingCandidate> recordingCandidates;
   final RecordingCandidate? confirmedRecording;
+  final List<SourceQueryReport> sourceReports;
   bool get needsRecordingChoice =>
       recordingCandidates.isNotEmpty && confirmedRecording == null;
 
@@ -215,6 +218,7 @@ class CompletionTask {
         .map((item) => item.toJson())
         .toList(),
     'confirmedRecording': confirmedRecording?.toJson(),
+    'sourceReports': sourceReports.map((report) => report.toJson()).toList(),
   };
 
   factory CompletionTask.fromJson(Map<String, dynamic> json) => CompletionTask(
@@ -232,6 +236,12 @@ class CompletionTask {
       (json['recordingCandidates'] as List? ?? const []).map(
         (item) =>
             RecordingCandidate.fromJson(Map<String, dynamic>.from(item as Map)),
+      ),
+    ),
+    sourceReports: List.unmodifiable(
+      (json['sourceReports'] as List? ?? const []).map(
+        (item) =>
+            SourceQueryReport.fromJson(Map<String, dynamic>.from(item as Map)),
       ),
     ),
     confirmedRecording: json['confirmedRecording'] == null
