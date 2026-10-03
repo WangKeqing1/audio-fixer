@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app/audio_fixer_app.dart';
 import 'core/services/audio_importer.dart';
+import 'core/services/artwork_picker.dart';
 import 'core/services/completion_service.dart';
 import 'core/services/device_music_library.dart';
 import 'core/services/lyrics_translation_service.dart';
@@ -23,18 +24,23 @@ Future<void> main() async {
     // Cache persistence is optional. Still launch the app so the catalog can
     // display its own recoverable storage error instead of a blank startup.
   }
+  final artworkStore = LocalArtworkStore(getApplicationSupportDirectory);
   runApp(
     AudioFixerApp(
       controller: LibraryController(
         store: JsonLibraryStore(getApplicationSupportDirectory),
         picker: SystemAudioPicker(),
+        artworkPicker: SystemArtworkPicker(artworkStore),
         importer: LocalAudioImporter(getApplicationSupportDirectory),
         completion: CompletionService(
           sources: createOnlineSources(cacheDirectory: sourceCache),
           translator: PlatformLyricsTranslator(cacheDirectory: sourceCache),
         ),
         deviceLibrary: AndroidMusicLibrary(getApplicationSupportDirectory),
-        exporter: SafeAudioCopyExporter(getTemporaryDirectory),
+        exporter: SafeAudioCopyExporter(
+          getTemporaryDirectory,
+          localArtworkLoader: artworkStore.read,
+        ),
       ),
     ),
   );

@@ -48,7 +48,11 @@ class LocalAudioImporter implements AudioImporter {
   @override
   Future<void> prune(Set<String> retainedIds) async {
     final root = await directoryProvider();
-    final ownedFile = RegExp(r'^([a-f0-9]{64})\.(audio|cover)$');
+    // Keep every cover revision for retained tracks: an open review can still
+    // reference a previous cover. Remove all owned revisions with an orphan.
+    final ownedFile = RegExp(
+      r'^([a-f0-9]{64})\.(?:audio|(?:[a-f0-9]{64}\.)?cover)$',
+    );
     for (final name in ['audio', 'artwork']) {
       final directory = Directory(p.join(root.path, name));
       if (!await directory.exists()) continue;

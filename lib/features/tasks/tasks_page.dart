@@ -7,6 +7,7 @@ import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import '../library/library_controller.dart';
+import '../library/metadata_editor_page.dart';
 import 'candidate_review_page.dart';
 import '../library/library_selection_toolbar.dart';
 import 'batch_progress_panel.dart';
@@ -19,6 +20,36 @@ class TasksPage extends StatelessWidget {
   });
   final LibraryController controller;
   final VoidCallback onOpenSettings;
+
+  bool _isManual(CompletionTask task) =>
+      task.suggestions.any((candidate) => candidate.source == '手动编辑');
+
+  void _retry(BuildContext context, CompletionTask task, AudioTrack track) {
+    if (_isManual(task)) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MetadataEditorPage(
+            track: track,
+            controller: controller,
+            initialValues: {
+              for (final candidate in task.suggestions)
+                candidate.field: candidate.value,
+            },
+          ),
+        ),
+      );
+    } else if (task.isRepair) {
+      controller.queryRepair(
+        track.id,
+        fields: task.queriedFields,
+        searchTitle: task.searchMetadata['title'],
+        searchArtist: task.searchMetadata['artist'],
+        searchAlbum: task.searchMetadata['album'],
+      );
+    } else {
+      controller.complete(track: track);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +80,7 @@ class TasksPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '查询 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。已有资料不会被覆盖。',
+                  '查询或编辑 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。仅保存勾选的修改，替换已有值会明确标注。',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -305,17 +336,28 @@ class TasksPage extends StatelessWidget {
                                 if (controller.trackById(task.trackId)
                                     case final track?)
                                   TextButton.icon(
+                                    key: ValueKey('retry-task-${task.trackId}'),
                                     onPressed:
                                         controller.canOperate &&
-                                            controller
-                                                .settings
-                                                .enabledFields
-                                                .isNotEmpty
-                                        ? () =>
-                                              controller.complete(track: track)
+                                            (_isManual(task)
+                                                ? track.detailsLoaded &&
+                                                      track.readError == null
+                                                : task.isRepair
+                                                ? task.queriedFields.isNotEmpty
+                                                : controller
+                                                      .settings
+                                                      .enabledFields
+                                                      .isNotEmpty)
+                                        ? () => _retry(context, task, track)
                                         : null,
-                                    icon: const Icon(Icons.refresh),
-                                    label: const Text('重新查询'),
+                                    icon: Icon(
+                                      _isManual(task)
+                                          ? Icons.edit_note
+                                          : Icons.refresh,
+                                    ),
+                                    label: Text(
+                                      _isManual(task) ? '继续编辑草稿' : '重新查询',
+                                    ),
                                   ),
                               ],
                             ),

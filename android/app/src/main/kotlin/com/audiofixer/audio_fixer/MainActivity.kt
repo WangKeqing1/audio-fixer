@@ -8,9 +8,15 @@ class MainActivity : FlutterActivity() {
     private var deviceLibraryBridge: DeviceLibraryBridge? = null
     private var lyricsTranslationBridge: LyricsTranslationBridge? = null
     private var audioPreviewBridge: AudioPreviewBridge? = null
+    private var audioInventoryBridge: AudioInventoryBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        disposeAudioInventoryBridge()
+        audioInventoryBridge = AudioInventoryBridge(
+            activity = this,
+            messenger = flutterEngine.dartExecutor.binaryMessenger,
+        )
         disposeAudioPreviewBridge()
         audioPreviewBridge = AudioPreviewBridge(
             activity = this,
@@ -29,6 +35,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        disposeAudioInventoryBridge()
         disposeAudioPreviewBridge()
         disposeLyricsTranslationBridge()
         disposeDeviceLibraryBridge()
@@ -47,9 +54,11 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         deviceLibraryBridge?.onActivityResult(requestCode, resultCode, data)
+        audioInventoryBridge?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onDestroy() {
+        disposeAudioInventoryBridge()
         disposeAudioPreviewBridge()
         disposeLyricsTranslationBridge()
         disposeDeviceLibraryBridge()
@@ -58,12 +67,19 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        audioInventoryBridge?.onResume()
         audioPreviewBridge?.onResume()
     }
 
     override fun onPause() {
+        audioInventoryBridge?.onPause()
         audioPreviewBridge?.onPause()
         super.onPause()
+    }
+
+    private fun disposeAudioInventoryBridge() {
+        audioInventoryBridge?.dispose()
+        audioInventoryBridge = null
     }
 
     private fun disposeAudioPreviewBridge() {

@@ -1,10 +1,22 @@
-# Audio-preview and original-save Android acceptance (0.3.3)
+# Audio repair, inventory and original-save Android acceptance (0.4.0)
 
-The 0.3.3 preview assertions below are prepared native test coverage. They have
+The preview assertions below are prepared native test coverage. Version 0.4.0 additionally adds common-tag replacement, local covers and the all-audio TXT inventory tool. They have
 not yet been executed on an emulator or physical device in this implementation
 session. Host unit tests, Flutter checks and an APK build cannot establish native
 playback success. Retain the exact commit/device/run result when this harness is
 executed; earlier native results do not cover these new assertions.
+
+## New repair and inventory validation
+
+The common-tag replacements have offline, real-file MP3/FLAC/M4A roundtrip tests, including selected-field replacement intent, stale values/cover hashes, number-pair counterparts, unknown tags, extra pictures and source/audio integrity. These checks run through Flutter's test engine and FFmpeg-generated fixtures, not an installed Android app.
+
+The inventory has Dart service/widget coverage for permission, cancellation, late-operation events, save retry, partial coverage/output warnings and operation-lock cleanup. `tool/native_tests/run_audio_inventory_text_test.sh` exercises the production compiled Kotlin TXT formatter on the JVM. Kotlin compilation and these tests do not establish MediaStore or Android document-picker runtime behavior. The new inventory has not been run on a device in this implementation session.
+
+To run the formatter after compiling the release Kotlin classes, with a JDK and Android SDK configured:
+
+```sh
+bash tool/native_tests/run_audio_inventory_text_test.sh
+```
 
 ## Synthetic-only runtime
 

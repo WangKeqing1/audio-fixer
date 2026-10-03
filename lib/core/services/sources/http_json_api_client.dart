@@ -341,7 +341,11 @@ class HttpJsonApiClient implements JsonApiClient {
       uri.userInfo.isEmpty &&
       (_providers.contains(uri.host) || uri.host.endsWith('.archive.org')) &&
       (uri.host != 'music.163.com' ||
-          const {'/api/search/get', '/api/song/lyric'}.contains(uri.path));
+          const {
+            '/api/search/get',
+            '/api/song/lyric',
+            '/api/song/detail',
+          }.contains(uri.path));
 
   static String _provider(Uri uri) =>
       uri.host.endsWith('.archive.org') ? 'archive.org' : uri.host;
@@ -366,6 +370,10 @@ class HttpJsonApiClient implements JsonApiClient {
         if (uri.path == '/api/search/get') {
           final result = value['result'];
           final songs = result is Map ? result['songs'] : null;
+          return songs == null || (songs is List && songs.isEmpty);
+        }
+        if (uri.path == '/api/song/detail') {
+          final songs = value['songs'];
           return songs == null || (songs is List && songs.isEmpty);
         }
         if (uri.path == '/api/song/lyric') {

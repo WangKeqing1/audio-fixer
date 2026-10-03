@@ -50,6 +50,30 @@ Future<ApiException> _failure(Future<Object?> request) async {
 }
 
 void main() {
+  test('NetEase detail endpoint is allowed, deduplicated and empty results expire on negative TTL', () async {
+    final clock = _Clock();
+    var calls = 0;
+    final client = _client(clock, (_, _) async {
+      calls++;
+      return const ApiResponse(200, '{"code":200,"songs":[]}');
+    });
+    final uri = Uri.https('music.163.com', '/api/song/detail', {
+      'ids': '[123]',
+    });
+    await Future.wait([client.getJson(uri), client.getJson(uri)]);
+    expect(calls, 1);
+    clock.advance(const Duration(minutes: 9));
+    await client.getJson(uri);
+    expect(calls, 1);
+    clock.advance(const Duration(minutes: 2));
+    await client.getJson(uri);
+    expect(calls, 2);
+    await _failure(
+      client.getJson(Uri.https('music.163.com', '/api/user/detail')),
+    );
+    expect(calls, 2);
+  });
+
   test(
     'malformed NetEase success envelope is not stored as a success',
     () async {

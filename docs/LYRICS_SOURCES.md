@@ -1,6 +1,6 @@
 # Lyrics sources and network behavior
 
-Verified 2026-10-02. Audio Fixer retrieves public metadata and lyrics only. It does not upload local audio, download music, impersonate browsers, use login cookies, rotate identities, solve source challenges, or bypass access restrictions.
+Source reads verified 2026-10-02; NetEase song-detail metadata verified 2026-10-03. Audio Fixer retrieves public metadata, cover art and lyrics only. It does not upload local audio, download music, impersonate browsers, use login cookies, rotate identities, solve source challenges, or bypass access restrictions.
 
 ## LRCLIB
 
@@ -15,12 +15,19 @@ The current Lyricsfile draft <https://github.com/tranxuanthang/lyricsfile/blob/m
 Direct public read endpoints observed working without authentication:
 
 - `https://music.163.com/api/search/get?s=<title artist>&type=1&limit=20&offset=0`
+- `https://music.163.com/api/song/detail?ids=[<matched id>]`
 - `https://music.163.com/api/song/lyric?id=<matched id>&lv=-1&tv=-1`
 - Song provenance: `https://music.163.com/song?id=<matched id>`
 
 This is **not** the official authenticated OpenAPI, and is not a promised stable service. The UI labels it “网易云音乐（实验性）”. The official developer route described at <https://github.com/NetEase/skills> requires developer registration, appId/privateKey and authorization; those credentials are not bundled or requested by this app.
 
 During low-volume verification, searching 红豆 / 王菲 returned recording IDs 299936, 299757 and 298986 with distinct album/duration metadata. A lyric read returned both `lrc.lyric` and `tlyric.lyric`; a Chinese original's translation field contained only empty timestamps, demonstrating why field presence alone cannot mean a translation exists. Searching Yesterday / The Beatles returned distinct remastered and 2023-mix recordings, demonstrating why version markers must not be discarded. A final live test through the production Dart adapter matched 红豆 to 299936 (872 original characters, no usable translation); a direct read for Yesterday (Remastered), ID 4337372, returned 938 original and 409 Chinese-translation characters. No complete copyrighted lyrics were retained in repository fixtures. Production matching requires title and primary/joined artist identity plus duration within three seconds when known. Without a duration, an exact album is required. Equal-evidence different song IDs are rejected, and at most one lyric read follows each search.
+
+The same adapter also supplies title, full artist credit, album and cover candidates. Metadata/cover requests fetch exactly one detail record for the selected ID and recheck ID, title, all artist credits, duration and the search result's album identity before offering fields. An observed detail read for ID 299936 returned 红豆 / 王菲 / 唱游, duration 256026 ms, and an album `picUrl` on `p1.music.126.net`. No composer, lyricist, year or other extended credit is inferred from album publication dates or unrelated fields. The class retains its original `NeteaseLyricsSource` name for compatibility.
+
+Only requested endpoints are read: metadata/cover-only queries never request lyrics, and lyric-only queries never request detail or image bytes. Cover candidates must be HTTPS URLs on the exact hosts `p1.music.126.net`, `p2.music.126.net`, `p3.music.126.net`, or `p4.music.126.net`, with port 443, no credentials/query/fragment, and a static `/<asset key>/<numeric image ID>.jpg|jpeg|png` path. HTTP URLs are rejected, not upgraded. Every image-download redirect must pass the same trusted-address validation; image format and the 10 MiB byte limit are checked before use. A returned URL alone does not establish that its image download will succeed.
+
+If one requested endpoint yields no lyrics, independently verified metadata remains available. If a detail payload fails local identity/format checks or lyrics fail after metadata verification, available fields remain reviewable with an explicit source warning; unmatched detail values are never used as fallback. Access denial, provider failure codes and active cooldowns stop further provider requests. The shared client applies its normal deduplication, cache and throttling to the detail endpoint as well.
 
 Primary access/terms references reviewed:
 
@@ -36,7 +43,7 @@ If anonymous access is denied or the format changes, the source surfaces an erro
 
 Original and translation are stored separately in candidate records and previewed separately with provider attribution. Timestamp-only, empty, placeholder, identical, or non-Chinese translation payloads are not called translated. Missing translation is visibly reported; the original remains available. Chinese-dominant originals are identified conservatively (kana/Hangul exclude that classification).
 
-When both languages have compatible LRC offsets, saving interleaves the provider's exact timestamps, labels Chinese lines `【中文】`, and never aligns by row number or manufactures time values. Untimed lyrics use separately labeled original/translation sections. Conflicting LRC offset tags disable translated saving with an explicit preview-only warning, preserving the original unchanged rather than silently shifting either timeline. Existing audio lyrics are never overwritten by this feature.
+When both languages have compatible LRC offsets, saving interleaves the provider's exact timestamps, labels Chinese lines `【中文】`, and never aligns by row number or manufactures time values. Untimed lyrics use separately labeled original/translation sections. Conflicting LRC offset tags disable translated saving with an explicit preview-only warning, preserving the original unchanged rather than silently shifting either timeline. Ordinary missing-field completion does not overwrite existing lyrics; explicit tag repair requires reviewing and approving a replacement separately.
 
 ## On-device machine translation fallback
 

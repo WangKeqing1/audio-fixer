@@ -27,7 +27,16 @@ void main() {
       expect(find.text('歌曲资料'), findsOneWidget);
       expect(library.detailsCount, 1);
       expect(controller.tracks.single.lyrics, '文件内嵌歌词');
-      await tester.drag(find.byType(ListView).last, const Offset(0, -500));
+      await tester.scrollUntilVisible(
+        find.text('文件内嵌歌词'),
+        350,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView).last,
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
       await tester.pumpAndSettle();
       expect(find.text('文件内嵌歌词'), findsOneWidget);
       await tester.tap(find.text('补全缺失信息'));

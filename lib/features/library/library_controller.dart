@@ -6,9 +6,11 @@ import 'package:flutter/services.dart';
 import '../../core/models/app_settings.dart';
 import '../../core/models/audio_folder.dart';
 import '../../core/models/audio_track.dart';
+import '../../core/models/audio_field_validation.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/services/audio_importer.dart';
+import '../../core/services/artwork_picker.dart';
 import '../../core/services/audio_preview_service.dart';
 import '../../core/services/audio_tag_reader.dart';
 import '../../core/services/completion_service.dart';
@@ -26,6 +28,7 @@ class LibraryController extends ChangeNotifier {
     required this.completion,
     this.deviceLibrary,
     this.exporter,
+    this.artworkPicker,
     AudioPreviewController? preview,
   }) : preview = preview ?? AudioPreviewController();
 
@@ -35,6 +38,7 @@ class LibraryController extends ChangeNotifier {
   final CompletionService completion;
   final DeviceMusicLibrary? deviceLibrary;
   final AudioCopyExporter? exporter;
+  final ArtworkPicker? artworkPicker;
   final AudioPreviewController preview;
   LibrarySnapshot _snapshot = const LibrarySnapshot();
   bool _disposed = false;
@@ -313,7 +317,20 @@ class LibraryController extends ChangeNotifier {
         .toSet();
     if (failed.isEmpty) return;
     if (batchOperation!.kind == BatchOperationKind.identify) {
-      await complete(trackIds: failed);
+      final repairTask = failed.length == 1
+          ? taskForTrack(failed.single)
+          : null;
+      if (repairTask?.isRepair == true) {
+        await queryRepair(
+          failed.single,
+          fields: repairTask!.queriedFields,
+          searchTitle: repairTask.searchMetadata['title'],
+          searchArtist: repairTask.searchMetadata['artist'],
+          searchAlbum: repairTask.searchMetadata['album'],
+        );
+      } else {
+        await complete(trackIds: failed);
+      }
     } else {
       await _saveBatch(
         failed,
@@ -509,16 +526,16 @@ class LibraryController extends ChangeNotifier {
             old.indexedDurationMs != track.indexedDurationMs) {
           return track;
         }
-        return track.withDetails(
-          title: old.title,
-          artist: old.artist,
-          album: old.album,
-          year: old.year,
-          durationMs: old.durationMs,
-          lyrics: old.lyrics,
-          artworkPath: old.artworkPath,
-          readError: old.readError,
-        );
+        return AudioTrack.fromJson({
+          ...old.toJson(),
+          'fileName': track.fileName,
+          'sizeBytes': track.sizeBytes,
+          'contentUri': track.contentUri,
+          'dateModifiedMs': track.dateModifiedMs,
+          'volumeName': track.volumeName,
+          'relativePath': track.relativePath,
+          'indexedDurationMs': track.indexedDurationMs,
+        });
       }).toList();
       await _commit(
         tracks: [
@@ -555,14 +572,7 @@ class LibraryController extends ChangeNotifier {
         try {
           final updated = (await deviceLibrary!.readDetails(track))
               .withInstrumental(track.isInstrumental);
-          final changed =
-              track.title != updated.title ||
-              track.artist != updated.artist ||
-              track.album != updated.album ||
-              track.durationMs != updated.durationMs ||
-              track.lyrics != updated.lyrics ||
-              track.artworkPath != updated.artworkPath ||
-              updated.readError != null;
+          final changed = _tagSnapshotChanged(track, updated);
           await _commit(
             tracks: _snapshot.tracks
                 .map((item) => item.id == id ? updated : item)
@@ -644,6 +654,8 @@ class LibraryController extends ChangeNotifier {
           suggestions: suggestions,
           approvedSuggestions: approved,
           queriedFields: task.queriedFields.difference({AudioField.lyrics}),
+          isRepair: task.isRepair,
+          searchMetadata: task.searchMetadata,
           exportedCopyUri: task.exportedCopyUri,
           writeError: task.writeError,
         );
@@ -709,6 +721,8 @@ class LibraryController extends ChangeNotifier {
       debugPrint('Library operation failed: $error\n$stack');
       _announce(
         error is AudioPreviewException
+            ? error.message
+            : error is ArtworkException
             ? error.message
             : '操作未完成。请检查文件访问权限和可用空间后重试。',
       );
@@ -785,9 +799,137 @@ class LibraryController extends ChangeNotifier {
     return true;
   }
 
+  bool _tagSnapshotChanged(AudioTrack before, AudioTrack after) =>
+      AudioField.values.any(
+        (field) => before.valueOf(field) != after.valueOf(field),
+      ) ||
+      before.artworkSha256 != after.artworkSha256 ||
+      before.durationMs != after.durationMs ||
+      after.readError != null;
+
+  Future<String?> pickArtwork() async {
+    String? value;
+    await _operate(() async {
+      if (artworkPicker == null) {
+        _announce('当前环境不支持选择封面，请在安卓应用中选择 JPEG 或 PNG 图片。');
+        return;
+      }
+      value = await artworkPicker!.pickArtwork();
+    });
+    return value;
+  }
+
+  /// The inventory reads many originals. Keep save, refresh and preview work
+  /// from racing that snapshot; the report itself never edits audio files.
+  Future<T?> runInventoryOperation<T>(Future<T> Function() action) async {
+    T? result;
+    await _operate(() async {
+      result = await action();
+    }, mutatesAudio: true);
+    return result;
+  }
+
+  Future<CompletionTask?> createManualRepair(
+    String trackId,
+    Map<AudioField, String> values,
+  ) async {
+    CompletionTask? draft;
+    await _operate(() async {
+      final track = trackById(trackId);
+      if (track == null ||
+          !track.detailsLoaded ||
+          track.readError != null ||
+          !canExportTrack(track)) {
+        _announce('请先读取可安全编辑的歌曲资料；目前支持 MP3、FLAC 和 M4A/MP4。');
+        return;
+      }
+      final normalized = <AudioField, String>{
+        for (final entry in values.entries)
+          entry.key:
+              entry.key.isNumeric && int.tryParse(entry.value.trim()) != null
+              ? int.parse(entry.value.trim()).toString()
+              : entry.value,
+      };
+      final changes = <AudioField, String>{
+        for (final entry in normalized.entries)
+          if (hasText(entry.value) && entry.value != track.valueOf(entry.key))
+            entry.key: entry.value,
+      };
+      if (track.isInstrumental && changes.containsKey(AudioField.lyrics)) {
+        _announce('请先取消纯音乐标记，再编辑歌词。');
+        return;
+      }
+      final error = validateAudioFieldChanges(track, changes);
+      if (error != null || changes.isEmpty) {
+        _announce(error ?? '尚未选择有变化的资料，原标签未修改。');
+        return;
+      }
+      final previous = taskForTrack(trackId)?.createdAt;
+      final now = DateTime.now();
+      draft = CompletionTask(
+        trackId: trackId,
+        trackTitle: track.displayTitle,
+        createdAt: previous != null && !now.isAfter(previous)
+            ? previous.add(const Duration(microseconds: 1))
+            : now,
+        status: TaskStatus.needsReview,
+        message: '手动编辑尚未写入，请逐项核对原值和新值，再保存到原文件或导出副本。',
+        suggestions: changes.entries
+            .map(
+              (entry) => FieldSuggestion(
+                field: entry.key,
+                value: entry.value,
+                source: '手动编辑',
+                matchDescription: '由你手动选择或输入，尚未写入音频。',
+                replaceExisting: hasText(track.valueOf(entry.key)),
+              ),
+            )
+            .toList(),
+        queriedFields: changes.keys.toSet(),
+        isRepair: true,
+      );
+      await _commit(
+        tasks: [draft!, ...tasks.where((task) => task.trackId != trackId)],
+      );
+      _announce('已生成 ${changes.length} 项修改草稿，尚未修改音频。');
+    });
+    return draft != null && taskForTrack(trackId)?.createdAt == draft!.createdAt
+        ? draft
+        : null;
+  }
+
+  Future<void> queryRepair(
+    String trackId, {
+    required Set<AudioField> fields,
+    String? searchTitle,
+    String? searchArtist,
+    String? searchAlbum,
+  }) async {
+    final track = trackById(trackId);
+    if (track == null || fields.isEmpty) return;
+    final search = <String, String>{
+      if (searchTitle != null) 'title': searchTitle.trim(),
+      if (searchArtist != null) 'artist': searchArtist.trim(),
+      if (searchAlbum != null) 'album': searchAlbum.trim(),
+    };
+    if (search.values.any(
+      (value) => value.length > 4096 || value.contains('\x00'),
+    )) {
+      _announce('检索资料过长或含无效字符，请修改后重试。');
+      return;
+    }
+    await complete(
+      track: track,
+      repairFields: Set.unmodifiable(fields),
+      searchMetadata: search,
+    );
+  }
+
   Future<void> complete({
     AudioTrack? track,
     Set<String>? trackIds,
+    Set<AudioField>? repairFields,
+    Map<String, String> searchMetadata = const {},
   }) => _operate(() async {
     if (!await _refreshForExclusions(
       trackIds: track != null ? [track.id] : trackIds,
@@ -803,9 +945,9 @@ class LibraryController extends ChangeNotifier {
                 (item) => canQueryTrack(item) && !_hasReviewableResult(item),
               )
               .toList();
-    if (targets.isEmpty || settings.enabledFields.isEmpty) {
+    if (targets.isEmpty || (repairFields ?? settings.enabledFields).isEmpty) {
       _announce(
-        settings.enabledFields.isEmpty
+        (repairFields ?? settings.enabledFields).isEmpty
             ? '请先在设置中选择要补全的内容。'
             : '没有新的待查询歌曲，已有候选可在补全任务中确认。',
       );
@@ -852,7 +994,49 @@ class LibraryController extends ChangeNotifier {
             continue;
           }
           if (item.readError != null) throw StateError(item.readError!);
-          task = await completion.preview(item, settings);
+          final searchTrack = searchMetadata.isEmpty
+              ? null
+              : AudioTrack.fromJson({
+                  ...item.toJson(),
+                  if (searchMetadata.containsKey('title'))
+                    'title': searchMetadata['title'],
+                  if (searchMetadata.containsKey('artist'))
+                    'artist': searchMetadata['artist'],
+                  if (searchMetadata.containsKey('album'))
+                    'album': searchMetadata['album'],
+                });
+          task = await completion.preview(
+            item,
+            settings,
+            requestedFields: repairFields,
+            searchTrack: searchTrack,
+          );
+          if (repairFields != null) {
+            final candidates = task.suggestions
+                .where(
+                  (candidate) =>
+                      candidate.field == AudioField.artwork ||
+                      candidate.value != item.valueOf(candidate.field),
+                )
+                .map(
+                  (candidate) => candidate.withReplacement(
+                    hasText(item.valueOf(candidate.field)),
+                  ),
+                )
+                .toList();
+            final allUnchanged =
+                task.suggestions.isNotEmpty && candidates.isEmpty;
+            task = CompletionTask(
+              trackId: task.trackId,
+              trackTitle: task.trackTitle,
+              createdAt: task.createdAt,
+              status: allUnchanged ? TaskStatus.skipped : task.status,
+              message: allUnchanged
+                  ? '已检索到的所选资料与当前标签一致，无需替换。${task.message.replaceFirst('已找到候选信息，尚未写入音频。', '').trim()}'
+                  : task.message,
+              suggestions: candidates,
+            );
+          }
         } catch (error, stack) {
           debugPrint('Completion failed: $error\n$stack');
           final permissionLost =
@@ -881,7 +1065,13 @@ class LibraryController extends ChangeNotifier {
           status: task.status,
           message: task.message,
           suggestions: task.suggestions,
-          queriedFields: _enabledFieldsFor(item),
+          queriedFields: repairFields == null
+              ? _enabledFieldsFor(item)
+              : repairFields.difference(
+                  item.isInstrumental ? {AudioField.lyrics} : {},
+                ),
+          isRepair: repairFields != null,
+          searchMetadata: Map.unmodifiable(searchMetadata),
         );
         _setBatchItem(
           item.id,
@@ -927,6 +1117,8 @@ class LibraryController extends ChangeNotifier {
           suggestions: task.suggestions,
           exportedCopyUri: task.exportedCopyUri,
           queriedFields: task.queriedFields,
+          isRepair: task.isRepair,
+          searchMetadata: task.searchMetadata,
         );
       }).toList();
 
@@ -991,6 +1183,7 @@ class LibraryController extends ChangeNotifier {
       selected.every(
         (item) =>
             hasText(item.value) &&
+            (!item.replaceExisting || task.isRepair) &&
             !(item.field == AudioField.lyrics &&
                 trackById(task.trackId)?.isInstrumental == true) &&
             task.suggestions.any((candidate) => candidate.permits(item)),
@@ -1021,6 +1214,8 @@ class LibraryController extends ChangeNotifier {
     suggestions: task.suggestions,
     exportedCopyUri: task.exportedCopyUri,
     queriedFields: task.queriedFields,
+    isRepair: task.isRepair,
+    searchMetadata: task.searchMetadata,
     approvedSuggestions: approved ?? task.approvedSuggestions,
     writeError: error,
   );
@@ -1067,6 +1262,8 @@ class LibraryController extends ChangeNotifier {
         suggestions: current.suggestions,
         exportedCopyUri: current.exportedCopyUri,
         queriedFields: current.queriedFields,
+        isRepair: current.isRepair,
+        searchMetadata: current.searchMetadata,
       );
       await _commit(
         tasks: tasks
@@ -1253,14 +1450,7 @@ class LibraryController extends ChangeNotifier {
       try {
         final updated = (await deviceLibrary!.readDetails(candidateTrack))
             .withInstrumental(candidateTrack.isInstrumental);
-        final changed =
-            candidateTrack.title != updated.title ||
-            candidateTrack.artist != updated.artist ||
-            candidateTrack.album != updated.album ||
-            candidateTrack.durationMs != updated.durationMs ||
-            candidateTrack.lyrics != updated.lyrics ||
-            candidateTrack.artworkPath != updated.artworkPath ||
-            updated.readError != null;
+        final changed = _tagSnapshotChanged(candidateTrack, updated);
         await _commit(
           tracks: _snapshot.tracks
               .map((item) => item.id == updated.id ? updated : item)
@@ -1365,6 +1555,8 @@ class LibraryController extends ChangeNotifier {
         suggestions: current.suggestions,
         exportedCopyUri: exportCopy ? uri : current.exportedCopyUri,
         queriedFields: current.queriedFields,
+        isRepair: current.isRepair,
+        searchMetadata: current.searchMetadata,
         approvedSuggestions: exportCopy
             ? current.approvedSuggestions
             : const [],

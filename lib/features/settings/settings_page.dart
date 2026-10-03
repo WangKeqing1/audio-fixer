@@ -4,13 +4,19 @@ import '../../core/models/app_settings.dart';
 import '../../core/models/audio_track.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../library/library_controller.dart';
+import 'audio_inventory_tool.dart';
 import 'library_filters.dart';
 import 'on_device_translation_settings.dart';
 import '../../shared/widgets/translation_privacy.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.controller});
+  const SettingsPage({
+    super.key,
+    required this.controller,
+    this.inventoryServiceFactory,
+  });
   final LibraryController controller;
+  final AudioInventoryServiceFactory? inventoryServiceFactory;
 
   @override
   Widget build(BuildContext context) {
@@ -24,6 +30,12 @@ class SettingsPage extends StatelessWidget {
       children: [
         const _SectionTitle('音乐库排除规则'),
         LibraryFilterSettings(controller: controller),
+        const SizedBox(height: 28),
+        const _SectionTitle('本机工具'),
+        AudioInventoryToolCard(
+          controller: controller,
+          serviceFactory: inventoryServiceFactory,
+        ),
         const SizedBox(height: 28),
         const _SectionTitle('补全内容', description: '仅查找缺失的资料，保留已有信息。'),
         Card(
@@ -159,7 +171,7 @@ class SettingsPage extends StatelessWidget {
         const NoticePanel(
           icon: Icons.privacy_tip_outlined,
           title: '不上传音频，确认后再保存',
-          message: '检索时仅发送歌名、歌手、专辑和时长。逐项确认后默认将缺失资料保存到原文件，不覆盖已有资料；也可选择导出副本。原位保存可能需要系统授权。',
+          message: '检索时仅发送歌名、歌手、专辑和时长。默认只补缺失资料；在歌曲详情可逐项编辑或查询修复已有字段，核对替换项后保存。未选资料保留，也可导出副本。原位保存可能需要系统授权。',
         ),
         const SizedBox(height: 28),
         const NoticePanel(
@@ -179,7 +191,7 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.3.3 · 列表试听、封面与纯音乐标记',
+                  '0.4.0 · 元数据修复与音频清单',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),

@@ -5,6 +5,7 @@ import '../../shared/formatters.dart';
 import '../../shared/widgets/track_artwork.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import 'library_controller.dart';
+import 'metadata_editor_page.dart';
 import '../tasks/candidate_review_page.dart';
 
 class TrackDetailPage extends StatefulWidget {
@@ -77,6 +78,50 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  FilledButton.icon(
+                    key: const ValueKey('edit-metadata'),
+                    onPressed:
+                        controller.canOperate &&
+                            track.detailsLoaded &&
+                            track.readError == null
+                        ? () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => MetadataEditorPage(
+                                track: track,
+                                controller: controller,
+                              ),
+                            ),
+                          )
+                        : null,
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('编辑元数据与封面'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    key: const ValueKey('query-metadata-repair'),
+                    onPressed:
+                        controller.canOperate &&
+                            track.detailsLoaded &&
+                            track.readError == null
+                        ? () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => MetadataEditorPage(
+                                track: track,
+                                controller: controller,
+                                queryOnly: true,
+                              ),
+                            ),
+                          )
+                        : null,
+                    icon: const Icon(Icons.manage_search),
+                    label: const Text('查询修复资料'),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '已有但不正确的资料也可以修复。支持常用标签（Tag）、歌词与封面，逐项确认后保存。',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
                   if (!track.detailsLoaded) ...[
                     if (controller.isBusy) const LinearProgressIndicator(),
                     const SizedBox(height: 12),
@@ -97,7 +142,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                       runSpacing: 4,
                       alignment: WrapAlignment.center,
                       children: [
-                        for (final field in AudioField.values)
+                        for (final field in AudioField.coreFields)
                           Chip(
                             avatar: Icon(
                               track.missingFields.contains(field)
@@ -127,11 +172,19 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                   const SizedBox(height: 28),
                   Text('元数据', style: theme.textTheme.titleLarge),
                   const SizedBox(height: 12),
-                  _FieldRow(label: '歌名', value: track.title),
-                  _FieldRow(label: '歌手', value: track.artist),
-                  _FieldRow(label: '专辑', value: track.album),
-                  _FieldRow(label: '年份', value: track.year?.toString()),
+                  for (final field in AudioField.metadataFields)
+                    _FieldRow(label: field.label, value: track.valueOf(field)),
                   _FieldRow(label: '文件名', value: track.fileName),
+                  if (track.tagReadWarnings.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    for (final warning in track.tagReadWarnings)
+                      Text(warning, style: theme.textTheme.bodySmall),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    '其他自定义标签保留在原文件中，暂不提供编辑。',
+                    style: theme.textTheme.bodySmall,
+                  ),
                   const Divider(height: 40),
                   Text('歌词', style: theme.textTheme.titleLarge),
                   const SizedBox(height: 16),
@@ -169,8 +222,8 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                   const SizedBox(height: 32),
                   Text(
                     controller.completion.sources.isEmpty
-                        ? '在线补全的数据源尚未接入。当前可检查缺失信息并创建任务。'
-                        : '在线查询缺失资料，逐项确认后保存到原文件，也可导出副本。仅补入缺失项，不覆盖已有资料。',
+                        ? '在线数据源尚未接入。可手动编辑资料并逐项确认。'
+                        : '快速补全仅查询缺失项；查询修复资料可重新匹配已有项。确认后默认保存到原文件，也可导出副本。',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),

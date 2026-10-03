@@ -28,6 +28,7 @@ class FieldSuggestion {
     this.includeChineseTranslation = true,
     this.machineTranslated = false,
     this.translationNotice,
+    this.replaceExisting = false,
   });
 
   final AudioField field;
@@ -40,6 +41,7 @@ class FieldSuggestion {
   final bool includeChineseTranslation;
   final bool machineTranslated;
   final String? translationNotice;
+  final bool replaceExisting;
 
   LyricsContent? get lyricsContent => field == AudioField.lyrics
       ? LyricsContent(
@@ -63,6 +65,7 @@ class FieldSuggestion {
       includeChineseTranslation: include,
       machineTranslated: machineTranslated,
       translationNotice: translationNotice,
+      replaceExisting: replaceExisting,
     );
   }
 
@@ -84,7 +87,25 @@ class FieldSuggestion {
       machineTranslated: machineTranslated,
       translationNotice: notice,
       includeChineseTranslation: includeChineseTranslation,
+      replaceExisting: replaceExisting,
     ).withChineseTranslation(includeChineseTranslation);
+  }
+
+  FieldSuggestion withReplacement(bool replace) {
+    if (replace == replaceExisting) return this;
+    return FieldSuggestion(
+      field: field,
+      value: value,
+      source: source,
+      sourceUrl: sourceUrl,
+      matchDescription: matchDescription,
+      originalLyrics: originalLyrics,
+      chineseTranslation: chineseTranslation,
+      includeChineseTranslation: includeChineseTranslation,
+      machineTranslated: machineTranslated,
+      translationNotice: translationNotice,
+      replaceExisting: replace,
+    );
   }
 
   /// Only the two exact renderings of an existing candidate may be approved.
@@ -93,6 +114,7 @@ class FieldSuggestion {
       field == item.field &&
       source == item.source &&
       sourceUrl == item.sourceUrl &&
+      replaceExisting == item.replaceExisting &&
       (field != AudioField.lyrics
           ? value == item.value
           : lyricsContent!.original == item.lyricsContent!.original &&
@@ -118,6 +140,7 @@ class FieldSuggestion {
     'includeChineseTranslation': includeChineseTranslation,
     'machineTranslated': machineTranslated,
     'translationNotice': translationNotice,
+    'replaceExisting': replaceExisting,
   };
 
   factory FieldSuggestion.fromJson(Map<String, dynamic> json) =>
@@ -133,6 +156,7 @@ class FieldSuggestion {
             json['includeChineseTranslation'] as bool? ?? true,
         machineTranslated: json['machineTranslated'] as bool? ?? false,
         translationNotice: json['translationNotice'] as String?,
+        replaceExisting: json['replaceExisting'] as bool? ?? false,
       );
 }
 
@@ -148,6 +172,8 @@ class CompletionTask {
     this.queriedFields = const {},
     this.approvedSuggestions = const [],
     this.writeError,
+    this.isRepair = false,
+    this.searchMetadata = const {},
   });
 
   final String trackId;
@@ -160,6 +186,8 @@ class CompletionTask {
   final Set<AudioField> queriedFields;
   final List<FieldSuggestion> approvedSuggestions;
   final String? writeError;
+  final bool isRepair;
+  final Map<String, String> searchMetadata;
 
   Map<String, Object?> toJson() => {
     'trackId': trackId,
@@ -174,6 +202,8 @@ class CompletionTask {
         .map((item) => item.toJson())
         .toList(),
     'writeError': writeError,
+    'isRepair': isRepair,
+    'searchMetadata': searchMetadata,
   };
 
   factory CompletionTask.fromJson(Map<String, dynamic> json) => CompletionTask(
@@ -183,6 +213,10 @@ class CompletionTask {
     status: TaskStatus.values.byName(json['status'] as String),
     exportedCopyUri: json['exportedCopyUri'] as String?,
     writeError: json['writeError'] as String?,
+    isRepair: json['isRepair'] as bool? ?? false,
+    searchMetadata: Map<String, String>.from(
+      json['searchMetadata'] as Map? ?? const {},
+    ),
     approvedSuggestions: (json['approvedSuggestions'] as List? ?? const [])
         .map((item) => FieldSuggestion.fromJson(item as Map<String, dynamic>))
         .toList(),

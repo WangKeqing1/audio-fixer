@@ -12,7 +12,12 @@ class CompletionService {
   final List<MetadataSource> sources;
   final LyricsTranslator? translator;
 
-  Future<CompletionTask> preview(AudioTrack track, AppSettings settings) async {
+  Future<CompletionTask> preview(
+    AudioTrack track,
+    AppSettings settings, {
+    Set<AudioField>? requestedFields,
+    AudioTrack? searchTrack,
+  }) async {
     CompletionTask result(
       TaskStatus status,
       String message, [
@@ -38,7 +43,13 @@ class CompletionService {
         sources.isEmpty ? '在线数据源尚未接入，已有标签可在歌曲资料中查看。' : '请先读取歌曲资料后再查询候选。',
       );
     }
-    final requested = track.missingFields.intersection(settings.enabledFields);
+    final requested =
+        (requestedFields ??
+                track.missingFields.intersection(settings.enabledFields))
+            .where(
+              (field) => !(field == AudioField.lyrics && track.isInstrumental),
+            )
+            .toSet();
     if (requested.isEmpty) {
       return result(
         TaskStatus.skipped,
@@ -66,14 +77,14 @@ class CompletionService {
       if (fields.isEmpty) continue;
       try {
         final candidates = await source
-            .lookup(track, Set.unmodifiable(fields))
+            .lookup(searchTrack ?? track, Set.unmodifiable(fields))
             .timeout(const Duration(seconds: 45));
         suggestions.addAll(
           candidates
               .map(
-                (candidate) => candidate.withChineseTranslation(
-                  settings.includeChineseTranslation,
-                ),
+                (candidate) => candidate
+                    .withReplacement(false)
+                    .withChineseTranslation(settings.includeChineseTranslation),
               )
               .where(
                 (candidate) =>
@@ -83,8 +94,28 @@ class CompletionService {
               ),
         );
       } catch (error) {
+        if (error is PartialSourceException) {
+          suggestions.addAll(
+            error.suggestions
+                .map(
+                  (candidate) => candidate
+                      .withReplacement(false)
+                      .withChineseTranslation(
+                        settings.includeChineseTranslation,
+                      ),
+                )
+                .where(
+                  (candidate) =>
+                      fields.contains(candidate.field) &&
+                      hasText(candidate.value) &&
+                      hasText(candidate.source),
+                ),
+          );
+        }
         failedSources.add(
-          error is ApiException
+          error is PartialSourceException
+              ? '${source.name}：${error.message}'
+              : error is ApiException
               ? '${source.name}：${error.message}'
               : '${source.name}：查询失败或超时',
         );

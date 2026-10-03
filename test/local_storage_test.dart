@@ -183,6 +183,21 @@ void main() {
     final audioDirectory = Directory(p.join(temporary.path, 'audio'));
     final unrelated = File(p.join(audioDirectory.path, 'keep.txt'));
     await unrelated.writeAsString('preserve');
+    final artworkDirectory = Directory(p.join(temporary.path, 'artwork'));
+    await artworkDirectory.create();
+    final retainedCovers = [
+      File(p.join(artworkDirectory.path, '${kept.id}.cover')),
+      File(p.join(artworkDirectory.path, '${kept.id}.${'a' * 64}.cover')),
+      File(p.join(artworkDirectory.path, '${kept.id}.${'b' * 64}.cover')),
+      File(p.join(artworkDirectory.path, '${orphan.id}.unknown.cover')),
+    ];
+    final orphanedCovers = [
+      File(p.join(artworkDirectory.path, '${orphan.id}.cover')),
+      File(p.join(artworkDirectory.path, '${orphan.id}.${'c' * 64}.cover')),
+    ];
+    for (final file in [...retainedCovers, ...orphanedCovers]) {
+      await file.writeAsBytes([1, 2, 3]);
+    }
     final interrupted = await audioDirectory.createTemp('import-');
     await File(p.join(interrupted.path, 'source.mp3')).writeAsBytes([4, 5, 6]);
     final controller = LibraryController(
@@ -197,5 +212,11 @@ void main() {
     expect(await File(orphan.localPath).exists(), isFalse);
     expect(await unrelated.readAsString(), 'preserve');
     expect(await interrupted.exists(), isFalse);
+    for (final file in retainedCovers) {
+      expect(await file.exists(), isTrue);
+    }
+    for (final file in orphanedCovers) {
+      expect(await file.exists(), isFalse);
+    }
   });
 }

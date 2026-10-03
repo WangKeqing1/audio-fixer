@@ -1,10 +1,15 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
+import '../../core/services/export/audio_copy_exporter.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import '../../shared/widgets/translation_privacy.dart';
+import '../../shared/widgets/track_artwork.dart';
 import '../library/library_controller.dart';
 
 class CandidateReviewPage extends StatefulWidget {
@@ -92,8 +97,19 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   }
 
   Future<void> _queryAgain(AudioTrack track) async {
+    if (widget.task.suggestions.any((item) => item.source == '手动编辑')) return;
     final route = ModalRoute.of(context);
-    await widget.controller.complete(track: track);
+    if (widget.task.isRepair) {
+      await widget.controller.queryRepair(
+        track.id,
+        fields: widget.task.queriedFields,
+        searchTitle: widget.task.searchMetadata['title'],
+        searchArtist: widget.task.searchMetadata['artist'],
+        searchAlbum: widget.task.searchMetadata['album'],
+      );
+    } else {
+      await widget.controller.complete(track: track);
+    }
     if (!mounted || route?.isCurrent != true) return;
     final latest = widget.controller.taskForTrack(track.id);
     if (latest == null || !widget.controller.isTaskCurrent(latest)) return;
@@ -224,6 +240,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       final controller = widget.controller;
       final track = controller.trackById(widget.task.trackId);
       final current = controller.taskForTrack(widget.task.trackId);
+      final isManualRepair = widget.task.suggestions.any(
+        (candidate) => candidate.source == '手动编辑',
+      );
       final isStale = !controller.isTaskCurrent(widget.task);
       final result =
           current != null && current.createdAt == widget.task.createdAt
@@ -233,7 +252,8 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       final selected = _selected.values
           .where(
             (candidate) =>
-                !hasText(track?.valueOf(candidate.field)) &&
+                (candidate.replaceExisting ||
+                    !hasText(track?.valueOf(candidate.field))) &&
                 !(track?.isInstrumental == true &&
                     candidate.field == AudioField.lyrics),
           )
@@ -248,7 +268,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       if (track == null) {
         unavailableReason = '此歌曲当前不可访问，可能已移除或需要重新授权。请返回音乐库刷新。';
       } else if (current?.status == TaskStatus.outdated) {
-        unavailableReason = '原歌曲已发生变化，旧候选仅供参考。请重新查询后再保存。';
+        unavailableReason = isManualRepair
+            ? '原歌曲已发生变化，旧修改仅供参考。请返回歌曲资料页重新编辑后再保存。'
+            : '原歌曲已发生变化，旧候选仅供参考。请重新查询后再保存。';
       } else if (!track.detailsLoaded || track.readError != null) {
         unavailableReason = '原歌曲的资料需要重新检查。请返回音乐库读取歌曲资料，再重新查询。';
       } else if (isStale) {
@@ -285,7 +307,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '逐项查看并勾选可信资料，默认保存到原文件。候选不会自动选中。',
+                      '逐项核对旧值与新值并勾选要保存的资料，默认保存到原文件。候选不会自动选中。',
                       style: theme.textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 20),
@@ -328,14 +350,19 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                     ),
                                 child: const Text('查看最新结果'),
                               )
-                            : isStale && track != null
+                            : isStale && track != null && !isManualRepair
                             ? TextButton(
                                 onPressed:
                                     controller.canOperate &&
-                                        controller
-                                            .settings
-                                            .enabledFields
-                                            .isNotEmpty
+                                        (widget.task.isRepair
+                                            ? widget
+                                                  .task
+                                                  .queriedFields
+                                                  .isNotEmpty
+                                            : controller
+                                                  .settings
+                                                  .enabledFields
+                                                  .isNotEmpty)
                                     ? () => _queryAgain(track)
                                     : null,
                                 child: const Text('重新查询'),
@@ -360,7 +387,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                       const NoticePanel(
                         icon: Icons.check_circle_outline,
                         title: '已保存到原文件',
-                        message: '缺失资料已补入，已有资料与音频内容保留。',
+                        message: '已保存所确认的修改，未选择的标签与音频内容保留。',
                       ),
                       const SizedBox(height: 16),
                     ],
@@ -417,7 +444,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                             SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                '仅补入缺失项，不覆盖已有资料\n保存前会再次校验文件。保存到原文件可能需要系统授权；也可另行导出副本。',
+                                '仅保存勾选的项目。标记「将替换已有资料」的项目会覆盖对应旧值，未勾选的标签保留。\n保存前会再次校验文件。保存到原文件可能需要系统授权；也可另行导出副本。',
                               ),
                             ),
                           ],
@@ -463,7 +490,10 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                           children: [
                             CheckboxListTile(
                               value:
-                                  !hasText(track?.valueOf(candidate.field)) &&
+                                  (candidate.replaceExisting ||
+                                      !hasText(
+                                        track?.valueOf(candidate.field),
+                                      )) &&
                                   !(track?.isInstrumental == true &&
                                       candidate.field == AudioField.lyrics) &&
                                   _selected[candidate.field] == candidate,
@@ -476,7 +506,10 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                           candidate.field ==
                                               AudioField.lyrics) &&
                                       hasText(candidate.value) &&
-                                      !hasText(track?.valueOf(candidate.field))
+                                      (candidate.replaceExisting ||
+                                          !hasText(
+                                            track?.valueOf(candidate.field),
+                                          ))
                                   ? (checked) => setState(() {
                                       if (checked == true) {
                                         _selected[candidate.field] = candidate;
@@ -491,7 +524,11 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                               ),
                               subtitle: Text(
                                 '来源：${candidate.source}'
-                                '${hasText(track?.valueOf(candidate.field)) ? '\n此项已有资料，不会覆盖' : ''}',
+                                '${hasText(track?.valueOf(candidate.field))
+                                    ? candidate.replaceExisting
+                                          ? '\n将替换已有资料 · ${candidate.field.label}'
+                                          : '\n此项已有资料，不会覆盖'
+                                    : '\n补入缺失资料'}',
                               ),
                               controlAffinity: ListTileControlAffinity.leading,
                             ),
@@ -500,17 +537,65 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    '当前：${candidate.field == AudioField.artwork ? (hasText(track?.artworkPath) ? '已有封面' : '无内嵌封面') : (hasText(track?.valueOf(candidate.field)) ? track!.valueOf(candidate.field) : '未读取到')}',
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurfaceVariant,
+                                  if ((candidate.field == AudioField.lyrics ||
+                                          candidate.field ==
+                                              AudioField.comment) &&
+                                      hasText(track?.valueOf(candidate.field)))
+                                    ExpansionTile(
+                                      tilePadding: EdgeInsets.zero,
+                                      title: Text(
+                                        '查看当前${candidate.field.label}',
+                                      ),
+                                      children: [
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxHeight: 180,
+                                          ),
+                                          child: SingleChildScrollView(
+                                            primary: false,
+                                            child: SelectableText(
+                                              track!.valueOf(candidate.field)!,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    SelectableText(
+                                      '当前：${candidate.field == AudioField.artwork ? (hasText(track?.artworkPath) ? '已有封面' : '无内嵌封面') : (hasText(track?.valueOf(candidate.field)) ? track!.valueOf(candidate.field) : '未读取到')}',
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(
+                                            color: theme
+                                                .colorScheme
+                                                .onSurfaceVariant,
+                                          ),
                                     ),
-                                  ),
+                                  if (candidate.field == AudioField.artwork &&
+                                      hasText(track?.artworkPath)) ...[
+                                    const SizedBox(height: 8),
+                                    TrackArtwork(
+                                      path: track!.artworkPath,
+                                      size: 120,
+                                    ),
+                                  ],
                                   const SizedBox(height: 12),
+                                  Text(
+                                    '↓ ${candidate.replaceExisting && hasText(track?.valueOf(candidate.field)) ? '替换为' : '补入'}',
+                                    style: theme.textTheme.labelLarge,
+                                  ),
+                                  const SizedBox(height: 8),
                                   if (candidate.field == AudioField.artwork)
-                                    _ArtworkPreview(value: candidate.value)
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        _ArtworkPreview(value: candidate.value),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                          '替换正面封面并保留其他类型图片；M4A/MP4 替换首张封面，保留其余图片。',
+                                        ),
+                                      ],
+                                    )
                                   else if (candidate.field == AudioField.lyrics)
                                     _LyricsPreview(
                                       candidate: candidate,
@@ -519,6 +604,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                               !_exporting &&
                                               !_translationWorking &&
                                               canReview &&
+                                              !isManualRepair &&
                                               track?.isInstrumental != true &&
                                               controller
                                                       .completion
@@ -645,37 +731,91 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   );
 }
 
-class _ArtworkPreview extends StatelessWidget {
+class _ArtworkPreview extends StatefulWidget {
   const _ArtworkPreview({required this.value});
   final String value;
+
+  @override
+  State<_ArtworkPreview> createState() => _ArtworkPreviewState();
+}
+
+class _ArtworkPreviewState extends State<_ArtworkPreview> {
+  Future<Uint8List>? _remote;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_ArtworkPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value != widget.value) _load();
+  }
+
+  void _load() {
+    _remote = Uri.tryParse(widget.value)?.scheme == 'https'
+        ? loadRemoteArtwork(widget.value)
+        : null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final uri = Uri.tryParse(value);
-    if (uri == null ||
-        uri.scheme != 'https' ||
-        uri.hasPort ||
-        uri.userInfo.isNotEmpty ||
-        !(uri.host == 'coverartarchive.org' ||
-            uri.host == 'archive.org' ||
-            uri.host.endsWith('.archive.org'))) {
+    final uri = Uri.tryParse(widget.value);
+    if (uri != null &&
+        uri.scheme == 'file' &&
+        uri.host.isEmpty &&
+        !uri.hasQuery &&
+        !uri.hasFragment &&
+        uri.path.startsWith('/')) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.file(
+          File.fromUri(uri),
+          height: 200,
+          width: 200,
+          fit: BoxFit.contain,
+          semanticLabel: '本机候选封面',
+          errorBuilder: (_, _, _) => const SizedBox(
+            height: 120,
+            child: Center(child: Text('封面预览加载失败')),
+          ),
+        ),
+      );
+    }
+    if (_remote == null) {
       return const Text('封面地址不可用，请重新查询。');
     }
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: Image.network(
-        value,
-        height: 200,
-        width: 200,
-        fit: BoxFit.contain,
-        semanticLabel: '在线候选封面',
-        errorBuilder: (_, _, _) =>
-            const SizedBox(height: 120, child: Center(child: Text('封面预览加载失败'))),
-        loadingBuilder: (_, child, progress) => progress == null
-            ? child
-            : const SizedBox(
-                height: 200,
-                child: Center(child: CircularProgressIndicator()),
-              ),
+      child: FutureBuilder<Uint8List>(
+        future: _remote,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const SizedBox(
+              height: 120,
+              child: Center(child: Text('封面预览加载失败')),
+            );
+          }
+          if (!snapshot.hasData) {
+            return const SizedBox(
+              height: 200,
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          return Image.memory(
+            snapshot.data!,
+            height: 200,
+            width: 200,
+            fit: BoxFit.contain,
+            semanticLabel: '在线候选封面',
+            errorBuilder: (_, _, _) => const SizedBox(
+              height: 120,
+              child: Center(child: Text('封面预览加载失败')),
+            ),
+          );
+        },
       ),
     );
   }

@@ -4,7 +4,8 @@ import 'dart:typed_data';
 
 import '../../models/audio_track.dart';
 
-/// Appends only absent iTunes tag atoms, retaining every existing ilst child.
+/// Adds absent iTunes tags, or replaces explicitly selected supported tags.
+/// Unselected tag atoms and untouched halves of number pairs are retained.
 /// The rebuilt moov is appended at EOF; the old moov becomes same-sized free
 /// padding. Existing media never moves, so stco/co64 offsets remain exact.
 /// This trades a larger, potentially non-fast-start copy for safer preservation.
@@ -12,8 +13,9 @@ Future<void> addMissingMp4Tags(
   File copy,
   Map<AudioField, String> values,
   Uint8List? artwork,
-  String? artworkMime,
-) async {
+  String? artworkMime, {
+  Set<AudioField> replaceFields = const {},
+}) async {
   if (values.isEmpty) throw const FormatException('请至少选择一项资料。');
   final reader = await copy.open();
   late Uint8List movie;
@@ -120,6 +122,7 @@ Future<void> addMissingMp4Tags(
       values,
       artwork,
       artworkMime,
+      replaceFields,
     );
     if (udta == null) {
       updatedMovie = _replace(movie, 0, movie.length, meta, rewrittenMeta);
@@ -180,7 +183,7 @@ List<int> _newMetadata(
       ...'appl'.codeUnits,
       ...List<int>.filled(9, 0),
     ]),
-    _atom('ilst', _additions(values, artwork, mime, {})),
+    _atom('ilst', _additions(values, artwork, mime)),
   ]),
 );
 
@@ -190,6 +193,7 @@ List<int> _editMetadata(
   Map<AudioField, String> values,
   Uint8List? artwork,
   String? mime,
+  Set<AudioField> replaceFields,
 ) {
   if (meta.end - meta.payload < 4 ||
       ByteData.sublistView(data).getUint32(meta.payload) != 0) {
@@ -218,28 +222,37 @@ List<int> _editMetadata(
       'meta',
       _join([
         data.sublist(meta.payload, meta.end),
-        _atom('ilst', _additions(values, artwork, mime, {})),
+        _atom('ilst', _additions(values, artwork, mime)),
       ]),
     );
   }
   final list = lists.single;
   final atoms = _nodes(data, list.payload, list.end);
+  if (values.containsKey(AudioField.genre) &&
+      atoms.any((atom) => atom.type == 'gnre')) {
+    throw const FormatException('MP4 含数字类型流派标签，暂不支持安全替换。');
+  }
   final targets = values.keys.map(_fieldType).toSet();
+  final remaining = Map<AudioField, String>.of(values);
   final retained = BytesBuilder(copy: false);
   for (final atom in atoms) {
     if (targets.contains(atom.type)) {
-      if (atoms.where((other) => other.type == atom.type).length != 1 ||
-          !_emptyTextTag(data, atom)) {
+      if (atoms.where((other) => other.type == atom.type).length != 1) {
         throw const FormatException('MP4 目标标签已存在或无法安全读取，未覆盖。');
       }
-      // Only one validated, whitespace-only UTF-8 data atom can be replaced.
-      // Unknown encodings, multiple values, artwork and private children stay
-      // protected; every unrelated atom is copied byte-for-byte.
+      final selected = <AudioField, String>{
+        for (final entry in values.entries)
+          if (_fieldType(entry.key) == atom.type) entry.key: entry.value,
+      };
+      retained.add(
+        _editTag(data, atom, selected, artwork, mime, replaceFields),
+      );
+      remaining.removeWhere((field, _) => selected.containsKey(field));
       continue;
     }
     retained.add(Uint8List.sublistView(data, atom.start, atom.end));
   }
-  retained.add(_additions(values, artwork, mime, {}));
+  retained.add(_additions(remaining, artwork, mime));
   final rewritten = _atom('ilst', retained.takeBytes());
   return _atom('meta', _replace(data, meta.payload, meta.end, list, rewritten));
 }
@@ -248,60 +261,187 @@ String _fieldType(AudioField field) => switch (field) {
   AudioField.title => '©nam',
   AudioField.artist => '©ART',
   AudioField.album => '©alb',
+  AudioField.albumArtist => 'aART',
+  AudioField.year => '©day',
+  AudioField.genre => '©gen',
+  AudioField.trackNumber || AudioField.trackTotal => 'trkn',
+  AudioField.discNumber || AudioField.discTotal => 'disk',
+  AudioField.composer => '©wrt',
+  AudioField.comment => '©cmt',
   AudioField.lyrics => '©lyr',
   AudioField.artwork => 'covr',
 };
 
-bool _emptyTextTag(Uint8List data, _Node atom) {
-  if (atom.type == 'covr') return false;
+List<int> _editTag(
+  Uint8List data,
+  _Node atom,
+  Map<AudioField, String> values,
+  Uint8List? artwork,
+  String? mime,
+  Set<AudioField> replaceFields,
+) {
+  for (final value in values.values) {
+    if (!hasText(value)) throw const FormatException('候选内容不能为空。');
+  }
   final children = _nodes(data, atom.payload, atom.end);
-  if (children.length != 1 || children.single.type != 'data') return false;
+  if (atom.type == 'covr') {
+    if (!replaceFields.contains(AudioField.artwork) || children.isEmpty) {
+      throw const FormatException('MP4 封面已存在或无法安全读取，未覆盖。');
+    }
+    for (final child in children) {
+      if (child.type != 'data' || child.end - child.payload < 9) {
+        throw const FormatException('MP4 封面结构无法安全读取。');
+      }
+      final format = ByteData.sublistView(data).getUint32(child.payload);
+      if (format != 13 && format != 14) {
+        throw const FormatException('MP4 封面格式不受支持。');
+      }
+    }
+    // iTunes covr has no picture-role flag. Its first image is the displayed
+    // cover; all later images (including their data headers) stay unchanged.
+    final first = children.first;
+    return _atom(
+      atom.type,
+      _replace(
+        data,
+        atom.payload,
+        atom.end,
+        first,
+        _artworkData(
+          artwork,
+          mime,
+          data.sublist(first.payload + 4, first.payload + 8),
+        ),
+      ),
+    );
+  }
+  if (children.length != 1 || children.single.type != 'data') {
+    throw const FormatException('MP4 目标标签包含不支持的附加资料。');
+  }
   final value = children.single;
+  if (atom.type == 'trkn' || atom.type == 'disk') {
+    final bytes = _numberPair(data, value);
+    final pair = ByteData.sublistView(bytes);
+    for (final entry in values.entries) {
+      final offset = _isTotal(entry.key) ? 4 : 2;
+      if (pair.getUint16(offset) != 0 && !replaceFields.contains(entry.key)) {
+        throw const FormatException('MP4 目标序号已存在，未覆盖。');
+      }
+      pair.setUint16(offset, _number(entry.value));
+    }
+    return _atom(
+      atom.type,
+      _atom(
+        'data',
+        _join([data.sublist(value.payload, value.payload + 8), bytes]),
+      ),
+    );
+  }
   if (value.end - value.payload < 8 ||
       ByteData.sublistView(data).getUint32(value.payload) != 1) {
-    return false;
+    throw const FormatException('MP4 目标标签不是受支持的 UTF-8 文字。');
   }
-  try {
-    return utf8
-        .decode(Uint8List.sublistView(data, value.payload + 8, value.end))
-        .trim()
-        .isEmpty;
-  } on FormatException {
-    return false;
+  final previous = utf8.decode(
+    Uint8List.sublistView(data, value.payload + 8, value.end),
+  );
+  final entry = values.entries.single;
+  if (previous.trim().isNotEmpty && !replaceFields.contains(entry.key)) {
+    throw const FormatException('MP4 目标标签已存在，未覆盖。');
   }
+  return _atom(
+    atom.type,
+    _atom(
+      'data',
+      _join([
+        data.sublist(value.payload, value.payload + 8),
+        utf8.encode(entry.value),
+      ]),
+    ),
+  );
 }
 
 List<int> _additions(
   Map<AudioField, String> values,
   Uint8List? artwork,
   String? mime,
-  Set<String> existing,
 ) {
   final result = BytesBuilder(copy: false);
+  final added = <String>{};
   for (final entry in values.entries) {
     final type = _fieldType(entry.key);
-    if (existing.contains(type)) {
-      throw const FormatException('MP4 目标标签已存在，未覆盖。');
-    }
     if (!hasText(entry.value)) throw const FormatException('候选内容不能为空。');
-    var format = 1;
-    List<int> bytes;
+    if (!added.add(type)) continue;
     if (entry.key == AudioField.artwork) {
-      if (artwork == null ||
-          artwork.isEmpty ||
-          !const {'image/jpeg', 'image/png'}.contains(mime)) {
-        throw const FormatException('封面未准备好。');
+      result.add(_atom(type, _artworkData(artwork, mime, _uint32(0))));
+      continue;
+    }
+    if (type == 'trkn' || type == 'disk') {
+      final pair = ByteData(type == 'trkn' ? 8 : 6);
+      for (final field in values.entries) {
+        if (_fieldType(field.key) == type) {
+          pair.setUint16(_isTotal(field.key) ? 4 : 2, _number(field.value));
+        }
       }
-      format = mime == 'image/png' ? 14 : 13;
-      bytes = artwork;
-    } else {
-      bytes = utf8.encode(entry.value);
+      result.add(
+        _atom(
+          type,
+          _atom(
+            'data',
+            _join([_uint32(0), _uint32(0), pair.buffer.asUint8List()]),
+          ),
+        ),
+      );
+      continue;
     }
     result.add(
-      _atom(type, _atom('data', _join([_uint32(format), _uint32(0), bytes]))),
+      _atom(
+        type,
+        _atom(
+          'data',
+          _join([_uint32(1), _uint32(0), utf8.encode(entry.value)]),
+        ),
+      ),
     );
   }
   return result.takeBytes();
+}
+
+bool _isTotal(AudioField field) =>
+    field == AudioField.trackTotal || field == AudioField.discTotal;
+
+int _number(String value) {
+  final text = value.trim();
+  final parsed = RegExp(r'^[0-9]+$').hasMatch(text) ? int.tryParse(text) : null;
+  if (parsed == null || parsed < 1 || parsed > 0xffff) {
+    throw const FormatException('MP4 曲目或碟片序号须介于 1 与 65535。');
+  }
+  return parsed;
+}
+
+Uint8List _numberPair(Uint8List data, _Node value) {
+  final length = value.end - value.payload;
+  if ((length != 14 && length != 16) ||
+      ByteData.sublistView(data).getUint32(value.payload) != 0) {
+    throw const FormatException('MP4 曲目或碟片序号结构不受支持。');
+  }
+  final bytes = Uint8List.fromList(data.sublist(value.payload + 8, value.end));
+  final pair = ByteData.sublistView(bytes);
+  if (pair.getUint16(0) != 0 || (bytes.length == 8 && pair.getUint16(6) != 0)) {
+    throw const FormatException('MP4 曲目或碟片序号保留资料不受支持。');
+  }
+  return bytes;
+}
+
+List<int> _artworkData(Uint8List? artwork, String? mime, List<int> locale) {
+  if (artwork == null ||
+      artwork.isEmpty ||
+      !const {'image/jpeg', 'image/png'}.contains(mime)) {
+    throw const FormatException('封面未准备好。');
+  }
+  return _atom(
+    'data',
+    _join([_uint32(mime == 'image/png' ? 14 : 13), locale, artwork]),
+  );
 }
 
 List<int> _replace(

@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/audio_track.dart';
+import 'standard_audio_tags.dart';
 
 // Only plain Dart values enter the isolate; native streams/handles stay outside.
 Future<AudioTrack> readTrackTags(AudioTrack track, String path, String root) =>
@@ -17,6 +18,7 @@ AudioTrack _read(AudioTrack track, String path, String root) {
   try {
     final file = File(path);
     final metadata = readMetadata(file, getImage: true);
+    final standard = readStandardAudioTags(file);
     final riffTags = _readRiffUtf8Tags(file);
     String? riffText(String key, String? current) {
       final value = riffTags[key];
@@ -24,12 +26,14 @@ AudioTrack _read(AudioTrack track, String path, String root) {
     }
 
     String? artworkPath;
+    String? artworkSha256;
     if (metadata.pictures.isNotEmpty) {
       final picture = metadata.pictures.firstWhere(
         (picture) => picture.pictureType == PictureType.coverFront,
         orElse: () => metadata.pictures.first,
       );
       if (picture.bytes.isNotEmpty) {
+        artworkSha256 = sha256.convert(picture.bytes).toString();
         final directory = Directory(
           p.join(root, track.isDeviceTrack ? 'device_artwork' : 'artwork'),
         );
@@ -37,53 +41,38 @@ AudioTrack _read(AudioTrack track, String path, String root) {
         final key = track.isDeviceTrack
             ? sha256.convert(utf8.encode(track.id)).toString()
             : track.id;
-        final file = File(p.join(directory.path, '$key.cover'));
+        // FileImage keys include the path. A content-addressed filename makes
+        // a repaired cover visible immediately and retains review snapshots.
+        final file = File(p.join(directory.path, '$key.$artworkSha256.cover'));
         file.writeAsBytesSync(picture.bytes, flush: true);
         artworkPath = file.path;
       }
     }
     return track.withDetails(
-      title: riffText('INAM', metadata.title),
-      artist: riffText('IART', metadata.artist),
-      album: riffText('IPRD', metadata.album),
-      year: metadata.year != null && metadata.year!.year > 0
-          ? metadata.year!.year
-          : null,
+      title: riffText('INAM', standard.title),
+      artist: riffText('IART', standard.artist),
+      album: riffText('IPRD', standard.album),
+      albumArtist: standard.albumArtist,
+      year: standard.year,
+      genre: riffText('IGNR', standard.genre),
+      trackNumber: standard.trackNumber,
+      trackTotal: standard.trackTotal,
+      discNumber: standard.discNumber,
+      discTotal: standard.discTotal,
+      composer: standard.composer,
+      comment: riffText('ICMT', standard.comment),
+      tagReadWarnings: standard.warnings,
       durationMs:
           _readOpusDurationMs(file) ??
           metadata.duration?.inMilliseconds ??
           track.durationMs,
-      lyrics: hasText(metadata.lyrics)
-          ? metadata.lyrics
-          : _readMp3AlternateLyrics(file),
+      lyrics: standard.lyrics,
       artworkPath: artworkPath,
+      artworkSha256: artworkSha256,
     );
   } catch (_) {
     return track.withReadError('标签读取失败，文件可能损坏或包含暂不支持的标签。');
   }
-}
-
-// Common MP3 taggers (including FFmpeg) store lyrics in a named TXXX frame.
-// The dependency retains these values but omits them from AudioMetadata.lyrics.
-String? _readMp3AlternateLyrics(File file) {
-  final reader = file.openSync();
-  try {
-    if (String.fromCharCodes(reader.readSync(3)) != 'ID3') return null;
-  } finally {
-    reader.closeSync();
-  }
-  final all = readAllMetadata(file, getImage: false);
-  if (all is! Mp3Metadata) return null;
-  final alternatives = <String, String>{
-    for (final entry in all.customMetadata.entries)
-      entry.key.replaceAll('\x00', '').trim().toUpperCase(): entry.value
-          .replaceAll('\x00', '')
-          .trim(),
-  };
-  for (final key in const ['LYRICS', 'UNSYNCEDLYRICS', 'LRC', 'USLT']) {
-    if (hasText(alternatives[key])) return alternatives[key];
-  }
-  return null;
 }
 
 // RIFF INFO text has no universal encoding marker. Modern encoders commonly
@@ -119,7 +108,7 @@ Map<String, (String, String)> _readRiffUtf8Tags(File file) {
           final count = ByteData.sublistView(textHeader)
               .getUint32(4, Endian.little);
           if (textOffset + 8 + count > end) break;
-          if (const {'INAM', 'IART', 'IPRD'}.contains(tag) &&
+          if (const {'INAM', 'IART', 'IPRD', 'IGNR', 'ICMT'}.contains(tag) &&
               count <= 1024 * 1024) {
             final bytes = reader.readSync(count);
             try {
