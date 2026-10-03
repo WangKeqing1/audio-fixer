@@ -99,17 +99,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   Future<void> _queryAgain(AudioTrack track) async {
     if (widget.task.suggestions.any((item) => item.source == '手动编辑')) return;
     final route = ModalRoute.of(context);
-    if (widget.task.isRepair) {
-      await widget.controller.queryRepair(
-        track.id,
-        fields: widget.task.queriedFields,
-        searchTitle: widget.task.searchMetadata['title'],
-        searchArtist: widget.task.searchMetadata['artist'],
-        searchAlbum: widget.task.searchMetadata['album'],
-      );
-    } else {
-      await widget.controller.complete(track: track);
-    }
+    await widget.controller.retryTaskQuery(widget.task);
     if (!mounted || route?.isCurrent != true) return;
     final latest = widget.controller.taskForTrack(track.id);
     if (latest == null || !widget.controller.isTaskCurrent(latest)) return;

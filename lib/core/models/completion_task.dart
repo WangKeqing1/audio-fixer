@@ -1,5 +1,6 @@
 import 'audio_track.dart';
 import 'lyrics_content.dart';
+import 'recording_candidate.dart';
 
 enum TaskStatus {
   waitingForSource('等待数据源'),
@@ -174,6 +175,8 @@ class CompletionTask {
     this.writeError,
     this.isRepair = false,
     this.searchMetadata = const {},
+    this.recordingCandidates = const [],
+    this.confirmedRecording,
   });
 
   final String trackId;
@@ -188,6 +191,10 @@ class CompletionTask {
   final String? writeError;
   final bool isRepair;
   final Map<String, String> searchMetadata;
+  final List<RecordingCandidate> recordingCandidates;
+  final RecordingCandidate? confirmedRecording;
+  bool get needsRecordingChoice =>
+      recordingCandidates.isNotEmpty && confirmedRecording == null;
 
   Map<String, Object?> toJson() => {
     'trackId': trackId,
@@ -204,6 +211,10 @@ class CompletionTask {
     'writeError': writeError,
     'isRepair': isRepair,
     'searchMetadata': searchMetadata,
+    'recordingCandidates': recordingCandidates
+        .map((item) => item.toJson())
+        .toList(),
+    'confirmedRecording': confirmedRecording?.toJson(),
   };
 
   factory CompletionTask.fromJson(Map<String, dynamic> json) => CompletionTask(
@@ -217,6 +228,17 @@ class CompletionTask {
     searchMetadata: Map<String, String>.from(
       json['searchMetadata'] as Map? ?? const {},
     ),
+    recordingCandidates: List.unmodifiable(
+      (json['recordingCandidates'] as List? ?? const []).map(
+        (item) =>
+            RecordingCandidate.fromJson(Map<String, dynamic>.from(item as Map)),
+      ),
+    ),
+    confirmedRecording: json['confirmedRecording'] == null
+        ? null
+        : RecordingCandidate.fromJson(
+            Map<String, dynamic>.from(json['confirmedRecording'] as Map),
+          ),
     approvedSuggestions: (json['approvedSuggestions'] as List? ?? const [])
         .map((item) => FieldSuggestion.fromJson(item as Map<String, dynamic>))
         .toList(),

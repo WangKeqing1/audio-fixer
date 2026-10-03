@@ -194,7 +194,7 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.4.1 · 自动检索元数据与封面',
+                  '0.4.2 · 按歌名查找歌曲版本',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),

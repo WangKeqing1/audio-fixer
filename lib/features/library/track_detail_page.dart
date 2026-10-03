@@ -9,6 +9,7 @@ import '../../shared/widgets/instrumental_control.dart';
 import 'library_controller.dart';
 import 'metadata_editor_page.dart';
 import '../tasks/candidate_review_page.dart';
+import '../tasks/recording_choice_page.dart';
 
 class TrackDetailPage extends StatefulWidget {
   const TrackDetailPage({
@@ -71,12 +72,14 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
       final task = controller.taskForTrack(track.id);
       final hasNewResult = task != null && task.createdAt != previous;
       if (hasNewResult &&
-          task.suggestions.isNotEmpty &&
+          (task.suggestions.isNotEmpty ||
+              task.recordingCandidates.isNotEmpty) &&
           controller.isTaskCurrent(task)) {
         Navigator.of(context).push(
           MaterialPageRoute<void>(
-            builder: (_) =>
-                CandidateReviewPage(task: task, controller: controller),
+            builder: (_) => task.suggestions.isEmpty
+                ? RecordingChoicePage(task: task, controller: controller)
+                : CandidateReviewPage(task: task, controller: controller),
           ),
         );
       } else {
@@ -140,6 +143,12 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
       }
       final canRepair = _canRepair(track);
       final task = controller.taskForTrack(track.id);
+      final pendingRecordingChoice =
+          task != null &&
+          task.suggestions.isEmpty &&
+          task.recordingCandidates.isNotEmpty &&
+          task.confirmedRecording == null &&
+          controller.isTaskCurrent(task);
       final emptyResult =
           task != null &&
           task.suggestions.isEmpty &&
@@ -326,14 +335,33 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         ? '已设为纯音乐，无需补全歌词。'
                         : '音频中尚未发现内嵌歌词。',
                   ),
-                  if (track.isInstrumental ||
-                      (track.detailsLoaded &&
-                          track.readError == null &&
-                          !hasText(track.lyrics))) ...[
+                  if (!pendingRecordingChoice &&
+                      (track.isInstrumental ||
+                          (track.detailsLoaded &&
+                              track.readError == null &&
+                              !hasText(track.lyrics)))) ...[
                     const SizedBox(height: 16),
                     InstrumentalControl(track: track, controller: controller),
                   ],
                   const SizedBox(height: 24),
+                  if (pendingRecordingChoice)
+                    OutlinedButton.icon(
+                      key: const ValueKey('review-recording-choices'),
+                      onPressed: controller.canOperate
+                          ? () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => RecordingChoicePage(
+                                  task: task,
+                                  controller: controller,
+                                ),
+                              ),
+                            )
+                          : null,
+                      icon: const Icon(Icons.library_music_outlined),
+                      label: Text(
+                        '确认 ${task.recordingCandidates.length} 个歌曲版本',
+                      ),
+                    ),
                   if (task != null)
                     if (task.suggestions.isNotEmpty)
                       OutlinedButton.icon(

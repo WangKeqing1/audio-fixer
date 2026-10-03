@@ -8,6 +8,7 @@ import '../../core/services/sources/track_search.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/track_artwork.dart';
 import '../tasks/candidate_review_page.dart';
+import '../tasks/recording_choice_page.dart';
 import 'library_controller.dart';
 
 /// Edits produce a reviewable candidate set; this page never writes audio.
@@ -196,12 +197,14 @@ class _MetadataEditorPageState extends State<MetadataEditorPage> {
           : await controller.createManualRepair(widget.track.id, changes);
       if (!mounted || route?.isCurrent != true) return;
       if (task != null &&
-          task.suggestions.isNotEmpty &&
+          (task.suggestions.isNotEmpty ||
+              task.recordingCandidates.isNotEmpty) &&
           controller.isTaskCurrent(task)) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute<void>(
-            builder: (_) =>
-                CandidateReviewPage(task: task, controller: controller),
+            builder: (_) => task.suggestions.isEmpty
+                ? RecordingChoicePage(task: task, controller: controller)
+                : CandidateReviewPage(task: task, controller: controller),
           ),
         );
       } else {

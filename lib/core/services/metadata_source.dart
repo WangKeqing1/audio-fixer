@@ -1,5 +1,6 @@
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
+import '../models/recording_candidate.dart';
 
 /// A healthy source answered, but its candidates cannot be safely identified.
 /// Keep the explanation visible without reporting a network/provider failure.
@@ -30,4 +31,16 @@ abstract interface class MetadataSource {
 
 abstract interface class SourceConnectionTester {
   Future<void> checkConnection();
+}
+
+/// Discovery may show title-only results, but may not choose one or produce
+/// field suggestions. Confirmed lookup must verify and retain that recording.
+abstract interface class RecordingDiscoverySource implements MetadataSource {
+  Future<DiscoveryResult> discover(AudioTrack track);
+
+  Future<List<FieldSuggestion>> lookupConfirmed(
+    AudioTrack track,
+    RecordingCandidate recording,
+    Set<AudioField> requestedFields,
+  );
 }

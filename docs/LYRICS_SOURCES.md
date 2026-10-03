@@ -37,6 +37,14 @@ Primary access/terms references reviewed:
 
 If anonymous access is denied or the format changes, the source surfaces an error and other providers remain usable. There is no login, proxy, signature spoofing, DRM, or alternate-endpoint bypass. No Sogou API was implemented because no current primary-source lyrics API contract was verified.
 
+## Title-only recording discovery
+
+When no artist can be read or inferred, the app first asks the experimental NetEase source for one title-only search page (20 results). Exact title or verified provider alias, explicit version markers and the existing three-second duration tolerance are checked. Up to five possible recordings are shown with artist, album, duration difference and provenance. A close duration is ranking evidence, not permission to choose an edition automatically.
+
+The user explicitly selects a recording before detail/lyric reads. Confirmation queries that exact ID, verifies the complete title, artist credit, album and duration against the persisted choice, and verifies the original query title evidence again. Missing alias evidence fails closed. Metadata, cover and lyrics all use the chosen ID; normal automatic matching stays strict. Retrying a confirmed result, including translation, cannot silently switch source or edition. Field approval and file writing remain separate.
+
+Discovery diagnostics distinguish provider failure, zero results, rejected title/version/duration, truncated first-page scope and providers skipped pending artist/recording confirmation. No file comment or private provider key is used as a query.
+
 ## Chinese translation
 
 “附加中文翻译” defaults on, can be turned off in Settings, and can be overridden per lyric candidate before approval/export/save. Provider-supplied Chinese translation is preferred. When no provider translation is available, users can enable Google Translate / ML Kit on-device machine translation. No whole lyric is sent to a cloud translation service, no paid translator is configured, and translation coverage/quality is not guaranteed.

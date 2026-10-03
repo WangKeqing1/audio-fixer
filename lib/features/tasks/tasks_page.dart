@@ -9,6 +9,7 @@ import '../../shared/widgets/instrumental_control.dart';
 import '../library/library_controller.dart';
 import '../library/metadata_editor_page.dart';
 import 'candidate_review_page.dart';
+import 'recording_choice_page.dart';
 import '../library/library_selection_toolbar.dart';
 import 'batch_progress_panel.dart';
 
@@ -38,6 +39,8 @@ class TasksPage extends StatelessWidget {
           ),
         ),
       );
+    } else if (task.confirmedRecording != null) {
+      controller.retryTaskQuery(task);
     } else if (task.isRepair) {
       controller.queryRepair(
         track.id,
@@ -236,16 +239,19 @@ class TasksPage extends StatelessWidget {
                             ),
                             if (controller.trackById(task.trackId)
                                 case final track?)
-                              if (track.isInstrumental ||
-                                  (controller.isTaskCurrent(task) &&
-                                      task.queriedFields.contains(
-                                        AudioField.lyrics,
-                                      ) &&
-                                      !hasText(track.lyrics) &&
-                                      !task.suggestions.any(
-                                        (item) =>
-                                            item.field == AudioField.lyrics,
-                                      ))) ...[
+                              if (!(task.recordingCandidates.isNotEmpty &&
+                                      task.confirmedRecording == null &&
+                                      task.suggestions.isEmpty) &&
+                                  (track.isInstrumental ||
+                                      (controller.isTaskCurrent(task) &&
+                                          task.queriedFields.contains(
+                                            AudioField.lyrics,
+                                          ) &&
+                                          !hasText(track.lyrics) &&
+                                          !task.suggestions.any(
+                                            (item) =>
+                                                item.field == AudioField.lyrics,
+                                          )))) ...[
                                 const SizedBox(height: 12),
                                 InstrumentalControl(
                                   track: track,
@@ -308,6 +314,33 @@ class TasksPage extends StatelessWidget {
                               spacing: 8,
                               runSpacing: 8,
                               children: [
+                                if (task.suggestions.isEmpty &&
+                                    task.recordingCandidates.isNotEmpty &&
+                                    task.confirmedRecording == null)
+                                  FilledButton.tonalIcon(
+                                    key: ValueKey(
+                                      'review-recordings-${task.trackId}',
+                                    ),
+                                    onPressed:
+                                        controller.canOperate &&
+                                            controller.isTaskCurrent(task)
+                                        ? () => Navigator.of(context).push(
+                                            MaterialPageRoute<void>(
+                                              builder: (_) =>
+                                                  RecordingChoicePage(
+                                                    task: task,
+                                                    controller: controller,
+                                                  ),
+                                            ),
+                                          )
+                                        : null,
+                                    icon: const Icon(
+                                      Icons.library_music_outlined,
+                                    ),
+                                    label: Text(
+                                      '确认 ${task.recordingCandidates.length} 个歌曲版本',
+                                    ),
+                                  ),
                                 if (task.suggestions.isNotEmpty)
                                   FilledButton.tonalIcon(
                                     onPressed: () => Navigator.of(context).push(

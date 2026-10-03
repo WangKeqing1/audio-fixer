@@ -1,6 +1,7 @@
 import '../../models/audio_track.dart';
 import '../../models/completion_task.dart';
 import '../../models/lyrics_content.dart';
+import '../../models/recording_candidate.dart';
 import '../metadata_source.dart';
 import 'json_api_client.dart';
 import 'track_search.dart';
@@ -27,7 +28,11 @@ bool isNeteaseArtworkUri(Uri uri) =>
 /// Experimental anonymous, read-only endpoint, not the authenticated OpenAPI.
 /// No login cookies, browser impersonation, audio download, or API bypass.
 /// Public availability is not a service guarantee; see docs/LYRICS_SOURCES.md.
-class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
+class NeteaseLyricsSource
+    implements
+        MetadataSource,
+        RecordingDiscoverySource,
+        SourceConnectionTester {
   NeteaseLyricsSource(this.client);
   final JsonApiClient client;
 
@@ -45,11 +50,13 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
     AudioField.lyrics,
   };
 
-  static Uri _searchUri(String title, String artist) => Uri.https(
-    'music.163.com',
-    '/api/search/get',
-    {'s': '$title $artist', 'type': '1', 'limit': '20', 'offset': '0'},
-  );
+  static Uri _searchUri(String title, String artist) =>
+      Uri.https('music.163.com', '/api/search/get', {
+        's': [title, artist].where(hasText).join(' '),
+        'type': '1',
+        'limit': '20',
+        'offset': '0',
+      });
 
   Map<String, dynamic> _response(Object? response) {
     if (response is! Map) throw const ApiException('网易云返回格式异常。');
@@ -74,6 +81,169 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
     if (result['result'] is! Map) {
       throw const ApiException('网易云搜索暂时不可用。');
     }
+  }
+
+  @override
+  Future<DiscoveryResult> discover(AudioTrack track) async {
+    final search = TrackSearch.fromTrack(track);
+    if (!hasText(search.title)) {
+      return DiscoveryResult(diagnostics: ['没有可用于查找录音的歌名，请手动填写检索词。']);
+    }
+    final response = _response(
+      await client.getJson(_searchUri(search.title, '')),
+    );
+    final result = response['result'];
+    if (result is! Map) throw const ApiException('网易云搜索结果格式异常。');
+    final rawSongs = result['songs'];
+    if (rawSongs != null && rawSongs is! List) {
+      throw const ApiException('网易云搜索结果格式异常。');
+    }
+    final songs = rawSongs as List? ?? const [];
+    final total = result['songCount'];
+    final totalNotice = total is int && total >= songs.length
+        ? '（来源报告共 $total 条）'
+        : '';
+    if (songs.isEmpty) {
+      return DiscoveryResult(diagnostics: ['按歌名查询，来源返回 0 条结果$totalNotice。']);
+    }
+    var invalidCount = 0;
+    var titleCount = 0;
+    var durationCount = 0;
+    var artistCount = 0;
+    var duplicateCount = 0;
+    final candidates = <RecordingCandidate>[];
+    final seen = <int, RecordingCandidate>{};
+    final conflictingIds = <int>{};
+    // Match only the bounded page actually requested; never crawl variants.
+    for (final raw in songs.take(20)) {
+      final song = _Song.parse(raw);
+      if (song == null) {
+        invalidCount++;
+        continue;
+      }
+      final titleEvidence = song.discoveryTitleEvidence(search);
+      if (titleEvidence == null) {
+        titleCount++;
+        continue;
+      }
+      if (!search.matchesDuration(song.duration, tolerance: 3)) {
+        durationCount++;
+        continue;
+      }
+      if (!song.matchesArtist(search)) {
+        artistCount++;
+        continue;
+      }
+      final candidate = RecordingCandidate(
+        sourceName: name,
+        sourceId: 'netease:${song.id}',
+        sourceUrl: 'https://music.163.com/song?id=${song.id}',
+        title: song.title,
+        artist: song.artists.join('/'),
+        album: song.album,
+        durationMs: (song.duration * 1000).round(),
+        matchDescription:
+            '$titleEvidence；'
+            '${search.durationSeconds == null ? '本地时长未知，未核对时长' : '时长相差${(song.duration - search.durationSeconds!).abs().toStringAsFixed(3)}秒（不超过3秒）'}；'
+            '${hasText(search.artist) ? '已有歌手匹配' : '本地缺少歌手，尚未确认录音身份'}；'
+            '请核对歌手、专辑和版本后选择',
+      );
+      if (!candidate.isValid) {
+        invalidCount++;
+      } else if (seen.containsKey(song.id)) {
+        duplicateCount++;
+        if (!seen[song.id]!.sameAs(candidate)) {
+          conflictingIds.add(song.id);
+          candidates.removeWhere((item) => item.sourceId == candidate.sourceId);
+        }
+      } else {
+        seen[song.id] = candidate;
+        candidates.add(candidate);
+      }
+    }
+    if (search.durationSeconds != null) {
+      candidates.sort((a, b) {
+        final distance = (a.durationMs - track.durationMs!).abs().compareTo(
+          (b.durationMs - track.durationMs!).abs(),
+        );
+        return distance == 0 ? a.sourceId.compareTo(b.sourceId) : distance;
+      });
+    }
+    final count = candidates.length;
+    return DiscoveryResult(
+      candidates: candidates.take(5).toList(),
+      diagnostics: [
+        '按歌名查询，本页返回 ${songs.length} 条$totalNotice，检查 ${songs.take(20).length} 条；'
+            '歌名或版本不符 $titleCount 条、时长不符 $durationCount 条、'
+            '歌手不符 $artistCount 条、资料无效 $invalidCount 条、重复 ID $duplicateCount 条；'
+            '${conflictingIds.isEmpty ? '' : '已排除资料冲突的 ${conflictingIds.length} 个 ID；'}'
+            '保留 $count 条录音候选${count > 5 ? '，仅展示前 5 条' : ''}。',
+        if (total is int && total > songs.length)
+          '当前仅核对首个结果页，未查询其余 ${total - songs.length} 条。',
+        if (count > 0)
+          '${hasText(search.artist) ? '请进一步确认录音版本' : '本地缺少歌手，需要先选择并确认录音'}；'
+              '不会自动选择，也尚未查询歌词或封面。',
+      ],
+    );
+  }
+
+  @override
+  Future<List<FieldSuggestion>> lookupConfirmed(
+    AudioTrack track,
+    RecordingCandidate recording,
+    Set<AudioField> requestedFields,
+  ) async {
+    final fields = requestedFields.intersection(supportedFields);
+    if (fields.isEmpty) return const [];
+    final match = RegExp(r'^netease:([1-9][0-9]{0,18})$')
+        .firstMatch(recording.sourceId);
+    final id = match == null ? null : int.tryParse(match.group(1)!);
+    if (!recording.isValid ||
+        recording.sourceName != name ||
+        id == null ||
+        recording.sourceUrl != 'https://music.163.com/song?id=$id') {
+      throw const SourceNoMatch('已选录音的网易云身份无效，请重新查找并选择。');
+    }
+    final search = TrackSearch.fromTrack(track);
+    if (!hasText(search.title) ||
+        !search.matchesDuration(recording.durationMs / 1000, tolerance: 3)) {
+      throw const SourceNoMatch('当前检索歌名或时长已变化，请重新查找并选择录音。');
+    }
+    // Confirmation is an ID lookup, never another search or best-hit fallback.
+    // Even a lyrics-only request must first verify the complete chosen record.
+    final detail = _response(
+      await client.getJson(
+        Uri.https('music.163.com', '/api/song/detail', {'ids': '[$id]'}),
+      ),
+    );
+    final songs = detail['songs'];
+    final verified = songs is List && songs.length == 1
+        ? _Song.parse(songs.single)
+        : null;
+    if (verified == null ||
+        verified.id != id ||
+        verified.title != recording.title ||
+        verified.artists.join('/') != recording.artist ||
+        verified.album != recording.album ||
+        (verified.duration * 1000).round() != recording.durationMs ||
+        !verified.matchesArtist(search) ||
+        !search.matchesDuration(verified.duration, tolerance: 3)) {
+      throw const SourceNoMatch(
+        '歌曲详情与已选录音的 ID、歌名、完整歌手、专辑或时长不一致，未采用任何资料；请重新查找。',
+      );
+    }
+    if (verified.discoveryTitleEvidence(search) == null) {
+      throw const SourceNoMatch(
+        '已选录音详情未提供与原检索歌名一致的名称或来源别名，无法复核歌名证据；未查询歌词，请重新查找。',
+      );
+    }
+    return _lookupSelected(
+      search,
+      verified,
+      fields,
+      '${recording.matchDescription}；用户已选择录音，ID、歌名、完整歌手、专辑和时长已复核',
+      confirmedDetail: detail,
+    );
   }
 
   @override
@@ -140,29 +310,44 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
       return const [];
     }
 
+    return _lookupSelected(
+      search,
+      best,
+      fields,
+      '歌名/歌手匹配；${albumRank(best) == 0 ? '专辑匹配' : '专辑未核对'}；'
+      '${search.durationSeconds == null ? '时长未核对' : '时长相差${distance(best).toStringAsFixed(1)}秒'}',
+    );
+  }
+
+  Future<List<FieldSuggestion>> _lookupSelected(
+    TrackSearch search,
+    _Song best,
+    Set<AudioField> fields,
+    String matching, {
+    Map<String, dynamic>? confirmedDetail,
+  }) async {
     final suggestions = <FieldSuggestion>[];
     final failures = <String>[];
     ApiException? firstFailure;
     var stopRequests = false;
-    String matching(_Song song) =>
-        '歌名/歌手匹配；${albumRank(song) == 0 ? '专辑匹配' : '专辑未核对'}；'
-        '${search.durationSeconds == null ? '时长未核对' : '时长相差${distance(song).toStringAsFixed(1)}秒'}';
     if (fields.any((field) => field != AudioField.lyrics)) {
       try {
-        final detail = _response(
-          await client.getJson(
-            Uri.https('music.163.com', '/api/song/detail', {
-              'ids': '[${best.id}]',
-            }),
-          ),
-        );
+        final detail =
+            confirmedDetail ??
+            _response(
+              await client.getJson(
+                Uri.https('music.163.com', '/api/song/detail', {
+                  'ids': '[${best.id}]',
+                }),
+              ),
+            );
         final songs = detail['songs'];
         if (songs is! List || songs.length != 1) {
           throw const ApiException('网易云歌曲详情缺失或格式异常。');
         }
         final verified = _Song.parse(songs.single);
         if (verified == null ||
-            !verified.matches(search) ||
+            (confirmedDetail == null && !verified.matches(search)) ||
             !verified.sameRecordingAs(best)) {
           throw const ApiException('网易云歌曲详情与已匹配录音不一致，未采用资料。');
         }
@@ -175,7 +360,7 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
               source: name,
               sourceUrl: 'https://music.163.com/song?id=${verified.id}',
               matchDescription:
-                  '${matching(verified)}；同一歌曲 ID 详情已复核'
+                  '$matching；同一歌曲 ID 详情已复核'
                   '${evidence == null ? '' : '；$evidence'}',
             ),
           );
@@ -278,7 +463,7 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
     }
     if (fields.contains(AudioField.lyrics) && !stopRequests) {
       try {
-        final lyric = await _lyrics(best, matching(best));
+        final lyric = await _lyrics(best, matching);
         if (lyric != null) suggestions.add(lyric);
       } on ApiException catch (error) {
         if (suggestions.isEmpty && failures.isEmpty) rethrow;
@@ -373,6 +558,7 @@ class _Song {
     required this.artists,
     required this.album,
     required this.duration,
+    this.aliases = const [],
     this.albumId,
     this.artworkUrl,
   });
@@ -381,6 +567,7 @@ class _Song {
   final List<String> artists;
   final String album;
   final double duration;
+  final List<String> aliases;
   final int? albumId;
   final String? artworkUrl;
 
@@ -422,6 +609,7 @@ class _Song {
       artists: names,
       album: albumName is String ? albumName : '',
       duration: durationMs / 1000,
+      aliases: _providerAliases(raw),
       albumId: albumId is int && albumId > 0 ? albumId : null,
       artworkUrl: artwork is String ? artwork : null,
     );
@@ -431,13 +619,32 @@ class _Song {
   // insufficient. No fuzzy/title-only matches or live-version stripping.
   bool matches(TrackSearch search) =>
       search.matchesTitle(title) &&
-      search.matchesArtist([
-        artists.first,
-        artists.join('/'),
-        artists.join(' & '),
-        artists.join('、'),
-      ]) &&
+      matchesArtist(search) &&
       search.matchesDuration(duration, tolerance: 3);
+
+  bool matchesArtist(TrackSearch search) => search.matchesArtist([
+    artists.first,
+    artists.join('/'),
+    artists.join(' & '),
+    artists.join('、'),
+  ]);
+
+  String? discoveryTitleEvidence(TrackSearch search) {
+    if (search.matchesTitle(title)) return '来源歌名与检索歌名一致';
+    // A bare translated/alternative alias must never erase an explicit live,
+    // remix or instrumental qualifier on either title. Versioned recordings
+    // use the complete primary title; no guessed alias-to-version mapping.
+    if (_recordingVersion.hasMatch(title) ||
+        _recordingVersion.hasMatch(search.title)) {
+      return null;
+    }
+    for (final alias in aliases) {
+      if (!_recordingVersion.hasMatch(alias) && search.matchesTitle(alias)) {
+        return '来源明确提供的别名“$alias”与检索歌名一致';
+      }
+    }
+    return null;
+  }
 
   bool sameRecordingAs(_Song song) =>
       id == song.id &&
@@ -452,4 +659,26 @@ class _Song {
       (!hasText(song.album) ||
           normalizedIdentity(album) == normalizedIdentity(song.album)) &&
       (song.albumId == null || albumId == song.albumId);
+}
+
+final _recordingVersion = RegExp(
+  r'\b(?:live|remix|instrumental|acoustic|remaster(?:ed)?|edition|version|mix|edit|karaoke|cover|bootleg|sped[ -]?up|slowed)\b|'
+  r'伴奏|纯音乐|純音樂|现场|現場|重制|重製|重混|版本|翻唱|カラオケ|ライブ|リミックス|インスト',
+  caseSensitive: false,
+);
+
+List<String> _providerAliases(Map raw) {
+  final result = <String>{};
+  for (final key in ['alias', 'transNames', 'transName']) {
+    final value = raw[key];
+    for (final alias in value is List ? value.take(20) : [value]) {
+      if (alias is String &&
+          hasText(alias) &&
+          alias.length <= 1024 &&
+          !RegExp(r'[\x00-\x1f\x7f]').hasMatch(alias)) {
+        result.add(alias);
+      }
+    }
+  }
+  return List.unmodifiable(result);
 }

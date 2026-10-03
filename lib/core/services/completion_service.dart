@@ -1,6 +1,7 @@
 import '../models/app_settings.dart';
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
+import '../models/recording_candidate.dart';
 import 'metadata_source.dart';
 import 'lyrics_translation_service.dart';
 import 'sources/json_api_client.dart';
@@ -16,11 +17,68 @@ class CompletionService {
   Set<AudioField> get availableFields =>
       Set.unmodifiable(sources.expand((source) => source.supportedFields));
 
+  Future<DiscoveryResult> discoverRecordings(AudioTrack track) async {
+    if (track.readError != null || !track.detailsLoaded) {
+      return DiscoveryResult(
+        diagnostics: ['请先成功读取歌曲资料后再查找录音候选。'],
+        hasFailures: true,
+      );
+    }
+    final candidates = <RecordingCandidate>[];
+    final diagnostics = <String>[];
+    var hasFailures = false;
+    final discoverySources = sources.whereType<RecordingDiscoverySource>();
+    for (final source in sources.where(
+      (source) => source is! RecordingDiscoverySource,
+    )) {
+      diagnostics.add('${source.name}：需要先确认歌手及录音版本，未进行仅凭歌名的查询。');
+    }
+    if (discoverySources.isEmpty) {
+      diagnostics.add('尚未接入支持录音候选发现的数据源。');
+    }
+    for (final source in discoverySources) {
+      try {
+        final result = await source
+            .discover(track)
+            .timeout(const Duration(seconds: 45));
+        for (final candidate in result.candidates) {
+          if (!candidate.isValid || candidate.sourceName != source.name) {
+            hasFailures = true;
+            diagnostics.add('${source.name}：已忽略来源或格式无效的录音候选。');
+            continue;
+          }
+          if (!candidates.any((item) => item.sameIdentity(candidate))) {
+            candidates.add(candidate);
+          }
+        }
+        diagnostics.addAll(
+          result.diagnostics.map((message) => '${source.name}：$message'),
+        );
+        hasFailures |= result.hasFailures;
+      } catch (error) {
+        hasFailures |= error is! SourceNoMatch;
+        diagnostics.add(
+          '${source.name}：${error is SourceNoMatch
+              ? error.message
+              : error is ApiException
+              ? error.message
+              : '查询失败或超时'}',
+        );
+      }
+    }
+    return DiscoveryResult(
+      candidates: candidates,
+      diagnostics: diagnostics,
+      hasFailures: hasFailures,
+    );
+  }
+
   Future<CompletionTask> preview(
     AudioTrack track,
     AppSettings settings, {
     Set<AudioField>? requestedFields,
     AudioTrack? searchTrack,
+    RecordingCandidate? confirmedRecording,
   }) async {
     CompletionTask result(
       TaskStatus status,
@@ -62,12 +120,32 @@ class CompletionService {
             : '选定的补全项目没有缺失信息。',
       );
     }
-    final available = availableFields;
+    final activeSources = confirmedRecording == null
+        ? sources
+        : sources
+              .where(
+                (source) =>
+                    source is RecordingDiscoverySource &&
+                    source.name == confirmedRecording.sourceName,
+              )
+              .toList();
+    if (confirmedRecording != null &&
+        (!confirmedRecording.isValid || activeSources.length != 1)) {
+      return result(TaskStatus.failed, '已选录音的来源不可用或身份无效，请重新查找并选择。');
+    }
+    final available = activeSources
+        .expand((source) => source.supportedFields)
+        .toSet();
     final unavailable = requested.difference(available);
+    final unavailableNotice = confirmedRecording == null
+        ? '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。'
+        : '所选版本的来源不提供${unavailable.map((field) => field.label).join('、')}，保留原资料。';
     if (requested.intersection(available).isEmpty) {
       return result(
-        TaskStatus.waitingForSource,
-        '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。',
+        confirmedRecording == null
+            ? TaskStatus.waitingForSource
+            : TaskStatus.noMatch,
+        unavailableNotice,
       );
     }
 
@@ -75,13 +153,22 @@ class CompletionService {
     final suggestions = <FieldSuggestion>[];
     final failedSources = <String>[];
     final sourceNotices = <String>[];
-    for (final source in sources) {
+    bool hasRecordingProvenance(FieldSuggestion candidate) =>
+        confirmedRecording == null ||
+        (candidate.source == confirmedRecording.sourceName &&
+            candidate.sourceUrl == confirmedRecording.sourceUrl);
+    for (final source in activeSources) {
       final fields = requested.intersection(source.supportedFields);
       if (fields.isEmpty) continue;
       try {
-        final candidates = await source
-            .lookup(searchTrack ?? track, Set.unmodifiable(fields))
-            .timeout(const Duration(seconds: 45));
+        final operation = confirmedRecording == null
+            ? source.lookup(searchTrack ?? track, Set.unmodifiable(fields))
+            : (source as RecordingDiscoverySource).lookupConfirmed(
+                searchTrack ?? track,
+                confirmedRecording,
+                Set.unmodifiable(fields),
+              );
+        final candidates = await operation.timeout(const Duration(seconds: 45));
         suggestions.addAll(
           candidates
               .map(
@@ -93,7 +180,8 @@ class CompletionService {
                 (candidate) =>
                     fields.contains(candidate.field) &&
                     hasText(candidate.value) &&
-                    hasText(candidate.source),
+                    hasText(candidate.source) &&
+                    hasRecordingProvenance(candidate),
               ),
         );
       } catch (error) {
@@ -115,7 +203,8 @@ class CompletionService {
                   (candidate) =>
                       fields.contains(candidate.field) &&
                       hasText(candidate.value) &&
-                      hasText(candidate.source),
+                      hasText(candidate.source) &&
+                      hasRecordingProvenance(candidate),
                 ),
           );
         }
@@ -161,8 +250,7 @@ class CompletionService {
       }
     }
     final warnings = <String>[
-      if (unavailable.isNotEmpty)
-        '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。',
+      if (unavailable.isNotEmpty) unavailableNotice,
       ...failedSources,
       ...sourceNotices,
     ];

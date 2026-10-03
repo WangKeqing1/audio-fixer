@@ -9,6 +9,7 @@ import '../../core/models/audio_track.dart';
 import '../../core/models/audio_field_validation.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
+import '../../core/models/recording_candidate.dart';
 import '../../core/services/audio_importer.dart';
 import '../../core/services/artwork_picker.dart';
 import '../../core/services/audio_preview_service.dart';
@@ -18,6 +19,7 @@ import '../../core/services/device_music_library.dart';
 import '../../core/services/export/audio_copy_exporter.dart';
 import '../../core/services/metadata_source.dart';
 import '../../core/services/sources/json_api_client.dart';
+import '../../core/services/sources/track_search.dart';
 import '../../core/storage/library_store.dart';
 
 class LibraryController extends ChangeNotifier {
@@ -320,14 +322,9 @@ class LibraryController extends ChangeNotifier {
       final repairTask = failed.length == 1
           ? taskForTrack(failed.single)
           : null;
-      if (repairTask?.isRepair == true) {
-        await queryRepair(
-          failed.single,
-          fields: repairTask!.queriedFields,
-          searchTitle: repairTask.searchMetadata['title'],
-          searchArtist: repairTask.searchMetadata['artist'],
-          searchAlbum: repairTask.searchMetadata['album'],
-        );
+      if (repairTask != null &&
+          (repairTask.isRepair || repairTask.confirmedRecording != null)) {
+        await retryTaskQuery(repairTask);
       } else {
         await complete(trackIds: failed);
       }
@@ -634,7 +631,7 @@ class LibraryController extends ChangeNotifier {
             ? TaskStatus.exported
             : approved.isNotEmpty
             ? TaskStatus.readyToSave
-            : suggestions.isNotEmpty
+            : suggestions.isNotEmpty || task.needsRecordingChoice
             ? TaskStatus.needsReview
             : remaining.isEmpty
             ? TaskStatus.skipped
@@ -670,6 +667,8 @@ class LibraryController extends ChangeNotifier {
           queriedFields: task.queriedFields.difference({AudioField.lyrics}),
           isRepair: task.isRepair,
           searchMetadata: task.searchMetadata,
+          recordingCandidates: task.recordingCandidates,
+          confirmedRecording: task.confirmedRecording,
           exportedCopyUri: task.exportedCopyUri,
           writeError: task.writeError,
         );
@@ -951,12 +950,95 @@ class LibraryController extends ChangeNotifier {
     );
   }
 
+  Future<CompletionTask?> confirmRecordingChoice(
+    CompletionTask task,
+    RecordingCandidate candidate,
+  ) async {
+    final current = taskForTrack(task.trackId);
+    if (!canOperate ||
+        current == null ||
+        !isTaskCurrent(task) ||
+        !current.needsRecordingChoice ||
+        !current.recordingCandidates.any((item) => item.sameAs(candidate))) {
+      _announce('歌曲或版本候选已变化，请重新检索后选择。');
+      return null;
+    }
+    final track = trackById(task.trackId)!;
+    await complete(
+      track: track,
+      repairFields: current.isRepair ? current.queriedFields : null,
+      searchMetadata: current.searchMetadata,
+      confirmedRecording: candidate,
+      recordingTask: current,
+    );
+    final updated = taskForTrack(task.trackId);
+    return updated != null && updated.createdAt != task.createdAt
+        ? updated
+        : null;
+  }
+
+  /// Re-query a reviewed recording by its selected provider ID. A translation
+  /// retry must not silently switch to a similarly named edition.
+  Future<void> retryTaskQuery(CompletionTask task) async {
+    final current = taskForTrack(task.trackId);
+    final track = trackById(task.trackId);
+    if (!canOperate ||
+        current == null ||
+        track == null ||
+        current.createdAt != task.createdAt) {
+      return;
+    }
+    if (current.confirmedRecording != null) {
+      if (!isTaskCurrent(task)) {
+        _announce('旧版本选择已清除，正在根据当前歌曲资料重新检索。');
+        await complete(
+          track: track,
+          repairFields: current.isRepair ? current.queriedFields : null,
+        );
+        return;
+      }
+      await complete(
+        track: track,
+        repairFields: current.isRepair ? current.queriedFields : null,
+        searchMetadata: current.searchMetadata,
+        confirmedRecording: current.confirmedRecording,
+        recordingTask: current,
+      );
+    } else if (current.isRepair) {
+      await queryRepair(
+        track.id,
+        fields: current.queriedFields,
+        searchTitle: current.searchMetadata['title'],
+        searchArtist: current.searchMetadata['artist'],
+        searchAlbum: current.searchMetadata['album'],
+      );
+    } else {
+      await complete(track: track);
+    }
+  }
+
   Future<void> complete({
     AudioTrack? track,
     Set<String>? trackIds,
     Set<AudioField>? repairFields,
     Map<String, String> searchMetadata = const {},
+    RecordingCandidate? confirmedRecording,
+    CompletionTask? recordingTask,
   }) => _operate(() async {
+    if (confirmedRecording != null &&
+        (track == null ||
+            recordingTask == null ||
+            recordingTask.trackId != track.id ||
+            !isTaskCurrent(recordingTask) ||
+            !((taskForTrack(track.id)?.confirmedRecording
+                        ?.sameAs(confirmedRecording) ??
+                    false) ||
+                (taskForTrack(track.id)?.recordingCandidates
+                        .any((item) => item.sameAs(confirmedRecording)) ??
+                    false)))) {
+      _announce('版本选择已失效，请重新检索。');
+      return;
+    }
     if (!await _refreshForExclusions(
       trackIds: track != null ? [track.id] : trackIds,
     )) {
@@ -1039,12 +1121,60 @@ class LibraryController extends ChangeNotifier {
                   if (searchMetadata.containsKey('album'))
                     'album': searchMetadata['album'],
                 });
-          task = await completion.preview(
-            item,
-            settings,
-            requestedFields: repairFields,
-            searchTrack: searchTrack,
-          );
+          if (confirmedRecording != null &&
+              (!isTaskCurrent(recordingTask!) ||
+                  _tagSnapshotChanged(eligible, item))) {
+            _setBatchItem(
+              item.id,
+              BatchItemStatus.skipped,
+              '歌曲资料已变化，请重新检索并选择版本。',
+            );
+            await _commit(
+              tracks: _snapshot.tracks
+                  .map((current) => current.id == item.id ? item : current)
+                  .toList(),
+              tasks: _invalidateTasks({item.id}),
+            );
+            continue;
+          }
+          final requested =
+              (repairFields ??
+                      item.missingFields.intersection(settings.enabledFields))
+                  .difference(item.isInstrumental ? {AudioField.lyrics} : {});
+          final queryTrack = searchTrack ?? item;
+          if (confirmedRecording == null &&
+              requested.isNotEmpty &&
+              !hasText(TrackSearch.fromTrack(queryTrack).artist) &&
+              completion.sources.any(
+                (source) => source is RecordingDiscoverySource,
+              )) {
+            final discovered = await completion.discoverRecordings(queryTrack);
+            task = CompletionTask(
+              trackId: item.id,
+              trackTitle: item.displayTitle,
+              createdAt: DateTime.now(),
+              status: discovered.candidates.isNotEmpty
+                  ? TaskStatus.needsReview
+                  : discovered.hasFailures
+                  ? TaskStatus.failed
+                  : TaskStatus.noMatch,
+              message: [
+                discovered.candidates.isNotEmpty
+                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。缺少歌手标签，请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
+                    : '仅按歌名与时长检索，尚未找到可供确认的歌曲版本。可以调整检索条件后重试。',
+                ...discovered.diagnostics,
+              ].join('\n'),
+              recordingCandidates: discovered.candidates,
+            );
+          } else {
+            task = await completion.preview(
+              item,
+              settings,
+              requestedFields: repairFields,
+              searchTrack: searchTrack,
+              confirmedRecording: confirmedRecording,
+            );
+          }
           if (repairFields != null) {
             final candidates = task.suggestions
                 .where(
@@ -1069,6 +1199,8 @@ class LibraryController extends ChangeNotifier {
                   ? '已检索到的所选资料与当前标签一致，无需替换。${task.message.replaceFirst('已找到候选信息，尚未写入音频。', '').trim()}'
                   : task.message,
               suggestions: candidates,
+              recordingCandidates: task.recordingCandidates,
+              confirmedRecording: confirmedRecording,
             );
           }
         } catch (error, stack) {
@@ -1099,6 +1231,8 @@ class LibraryController extends ChangeNotifier {
           status: task.status,
           message: task.message,
           suggestions: task.suggestions,
+          recordingCandidates: task.recordingCandidates,
+          confirmedRecording: confirmedRecording,
           queriedFields: repairFields == null
               ? _enabledFieldsFor(item)
               : repairFields.difference(
@@ -1111,7 +1245,7 @@ class LibraryController extends ChangeNotifier {
           item.id,
           task.status == TaskStatus.failed
               ? BatchItemStatus.failed
-              : task.suggestions.isNotEmpty
+              : task.suggestions.isNotEmpty || task.needsRecordingChoice
               ? BatchItemStatus.needsReview
               : BatchItemStatus.skipped,
           task.message,
@@ -1153,6 +1287,8 @@ class LibraryController extends ChangeNotifier {
           queriedFields: task.queriedFields,
           isRepair: task.isRepair,
           searchMetadata: task.searchMetadata,
+          recordingCandidates: task.recordingCandidates,
+          confirmedRecording: task.confirmedRecording,
         );
       }).toList();
 
@@ -1173,7 +1309,7 @@ class LibraryController extends ChangeNotifier {
     final task = taskForTrack(track.id);
     return task != null &&
         isTaskCurrent(task) &&
-        task.suggestions.isNotEmpty &&
+        (task.suggestions.isNotEmpty || task.needsRecordingChoice) &&
         task.queriedFields.containsAll(_enabledFieldsFor(track)) &&
         (task.status == TaskStatus.needsReview ||
             task.status == TaskStatus.readyToSave ||
@@ -1251,6 +1387,8 @@ class LibraryController extends ChangeNotifier {
     queriedFields: task.queriedFields,
     isRepair: task.isRepair,
     searchMetadata: task.searchMetadata,
+    recordingCandidates: task.recordingCandidates,
+    confirmedRecording: task.confirmedRecording,
     approvedSuggestions: approved ?? task.approvedSuggestions,
     writeError: error,
   );
@@ -1299,6 +1437,8 @@ class LibraryController extends ChangeNotifier {
         queriedFields: current.queriedFields,
         isRepair: current.isRepair,
         searchMetadata: current.searchMetadata,
+        recordingCandidates: current.recordingCandidates,
+        confirmedRecording: current.confirmedRecording,
       );
       await _commit(
         tasks: tasks
@@ -1592,6 +1732,8 @@ class LibraryController extends ChangeNotifier {
         queriedFields: current.queriedFields,
         isRepair: current.isRepair,
         searchMetadata: current.searchMetadata,
+        recordingCandidates: current.recordingCandidates,
+        confirmedRecording: current.confirmedRecording,
         approvedSuggestions: exportCopy
             ? current.approvedSuggestions
             : const [],
