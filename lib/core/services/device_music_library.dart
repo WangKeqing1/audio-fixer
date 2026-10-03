@@ -62,6 +62,9 @@ class AndroidMusicLibrary implements DeviceMusicLibrary {
         album: data['album'] as String?,
         year: data['year'] as int?,
         durationMs: data['durationMs'] as int?,
+        indexedDurationMs: data['durationMs'] as int?,
+        volumeName: data['volumeName'] as String?,
+        relativePath: data['relativePath'] as String?,
         detailsLoaded: false,
       );
     }).toList();

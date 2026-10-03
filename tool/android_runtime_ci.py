@@ -20,14 +20,23 @@ import time
 import xml.etree.ElementTree as ET
 
 from generate_audio_fixtures import generate
+from android_runtime_fixtures import generate_library_fixtures
 from validate_audio import compare, inspect
 
-PACKAGE = "com.audiofixer.audio_fixer.qa"
+PACKAGE = "com.audiofixer.audio_fixer.qa.v030"
+APP_LABEL = "Audio Fixer QA 0.3"
 SOURCE_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_fixture.mp3"
+UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
-PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm")
-CHECKPOINTS = ("permission_denied_ready", "details_ready", "review_ready",
-               "cancelled_ready", "saved_ready")
+PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
+          "original_cancel", "original_confirm")
+CHECKPOINTS = ("permission_denied_ready", "selection_toolbar_top",
+               "selection_toolbar_scrolled", "library_filters_ready",
+               "library_filters_reloaded", "details_ready", "review_ready",
+               "cancelled_ready", "exported_ready", "original_cancelled_ready",
+               "bulk_review_ready", "saved_ready")
+RECOVERY_PHASES = ("recovery_export_cancel", "recovery_export")
+RECOVERY_CHECKPOINTS = ("recovery_export_corrupted", "recovery_export_restored")
 SMOKE_SCREENS = ("packaged_library", "packaged_settings")
 
 
@@ -44,14 +53,30 @@ class AndroidRuntime:
                               capture_output=True, text=not binary,
                               timeout=timeout, check=check)
 
-    def phase(self) -> str:
+    def test_command(self, test_file: str, *extra: str) -> list[str]:
+        # Flutter 3.47 defaults to uninstalling integration apps during teardown.
+        # Keep this disposable QA install so host-side private-file evidence,
+        # fresh-Activity recovery setup and the normal packaged smoke survive.
+        return ["flutter", "test", test_file, "-d", self.serial, "--no-pub",
+                "--no-uninstall", "--reporter", "expanded", *extra]
+
+    def read_app_json(self, relative_path: str) -> dict:
+        # Shell v2 propagates run-as/cat errors instead of letting diagnostics be
+        # mistaken for JSON when an app or evidence file is missing.
+        result = self.adb("shell", "-T", "run-as", PACKAGE, "cat", relative_path)
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            raise RuntimeError("Expected a JSON object in native evidence: " + relative_path)
+        return value
+
+    def phase(self, path: str = "files/native_runtime_phase") -> str:
         # exec-out can return success while run-as reports an unknown package
         # during the initial APK build. Shell v2 propagates the remote status;
         # the allowlist also prevents diagnostics from becoming app phases.
         result = self.adb("shell", "-T", "run-as", PACKAGE, "cat",
-                          "files/native_runtime_phase", check=False)
+                          path, check=False)
         value = result.stdout.strip()
-        known = PHASES + CHECKPOINTS + ("read_details", "complete")
+        known = PHASES + CHECKPOINTS + RECOVERY_PHASES + RECOVERY_CHECKPOINTS + ("read_details", "complete", "recovery_complete")
         return value if result.returncode == 0 and value in known else ""
 
     def hierarchy(self) -> list[ET.Element]:
@@ -61,7 +86,7 @@ class AndroidRuntime:
         return list(ET.fromstring(xml).iter("node"))
 
     def screenshot(self, name: str) -> None:
-        assert name in PHASES + CHECKPOINTS + SMOKE_SCREENS
+        assert name in PHASES + CHECKPOINTS + RECOVERY_PHASES + SMOKE_SCREENS
         screenshots = self.output / "screenshots"
         screenshots.mkdir(exist_ok=True)
         data = self.adb("exec-out", "screencap", "-p", binary=True).stdout
@@ -82,7 +107,8 @@ class AndroidRuntime:
                              "text": node.get("text"), "bounds": node.get("bounds")})
         print(f"Native UI: {phase}: {node.get('resource-id')} {node.get('text')}", flush=True)
 
-    def act(self, phase: str, nodes: list[ET.Element]) -> bool:
+    def act(self, phase: str, nodes: list[ET.Element],
+            file_name: str = "native_fixture-fixed.mp3") -> bool:
         if phase.startswith("permission_"):
             suffix = ("permission_deny_button" if phase == "permission_deny"
                       else "permission_allow_button")
@@ -96,16 +122,40 @@ class AndroidRuntime:
                 return True
             return False
 
+        if phase in {"original_cancel", "original_confirm"}:
+            # MediaStore's write-consent surface belongs to MediaProvider. A
+            # system button alone is insufficient: require the QA app identity
+            # and explicit audio-modification wording in this fresh hierarchy.
+            media_nodes = [node for node in nodes if node.get("package") in {
+                "com.android.providers.media.module", "com.google.android.providers.media.module",
+                "com.android.providers.media"}]
+            words = " ".join(node.get("text", "") for node in media_nodes).lower()
+            if not (APP_LABEL.lower() in words and "modify" in words and "audio" in words):
+                return False
+            button_id = "android:id/button2" if phase == "original_cancel" else "android:id/button1"
+            labels = {"don't allow", "don’t allow", "deny", "cancel"} if phase == "original_cancel" else {"allow"}
+            buttons = [node for node in media_nodes
+                       if node.get("resource-id") == button_id
+                       and node.get("text", "").lower() in labels
+                       and node.get("enabled") == "true"]
+            if len(buttons) != 1:
+                return False
+            self.screenshot(phase)
+            self.tap(buttons[0], phase)
+            return True
+
+        if phase not in {"save_cancel", "save_confirm", "recovery_export_cancel", "recovery_export"}:
+            return False
         document_nodes = [node for node in nodes
                           if node.get("package") == "com.android.documentsui"]
         # A create-document filename proves this is our expected save sheet.
         names = [node for node in document_nodes
                  if node.get("resource-id") == "android:id/title"
                  and node.get("class") == "android.widget.EditText"
-                 and node.get("text") == "native_fixture-fixed.mp3"]
+                 and node.get("text") == file_name]
         if names:
             self.save_observed.add(phase)
-        if phase == "save_confirm" and phase in self.save_observed:
+        if phase in {"save_confirm", "recovery_export"} and phase in self.save_observed:
             roots = [node for node in document_nodes
                      if node.get("resource-id") == "com.android.documentsui:id/roots_list"]
             downloads = [node for root in roots for node in root.iter("node")
@@ -116,14 +166,14 @@ class AndroidRuntime:
                 return False
         if not names:
             return False
-        if phase == "save_cancel":
+        if phase in {"save_cancel", "recovery_export_cancel"}:
             if any(node.get("package") == "com.android.inputmethod.latin" for node in nodes):
                 self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
                 return False
             self.screenshot(phase)
             self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
             self.actions.append({"phase": phase, "action": "back",
-                                 "observed_filename": "native_fixture-fixed.mp3"})
+                                 "observed_filename": file_name})
             print("Native UI: cancelled the observed create-document sheet", flush=True)
             return True
 
@@ -158,32 +208,40 @@ class AndroidRuntime:
         assert baseline["full_decode_ok"] and baseline["cover_count"] == 1
         assert not baseline["lyrics_present"]
         (self.output / "source-baseline.json").write_text(json.dumps(baseline, indent=2))
-        self.adb("shell", "mkdir", "-p", "/sdcard/Music/AudioFixerSynthetic")
-        self.adb("push", str(original), SOURCE_DEVICE)
-        self.adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                 "-d", "file://" + SOURCE_DEVICE)
+        library_fixtures = self.output / "library-fixtures"
+        library_manifest = generate_library_fixtures(library_fixtures)
+        destinations = [(original, SOURCE_DEVICE), (original, UNAPPROVED_DEVICE)]
+        destinations += [(library_fixtures / entry["file"], entry["device_path"])
+                         for entry in library_manifest["entries"]]
+        self.adb("shell", "mkdir", "-p", *sorted({str(Path(destination).parent)
+                                                for _, destination in destinations}))
+        for local, destination in destinations:
+            self.adb("push", str(local), destination)
+            self.adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                     "-d", "file://" + destination)
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             result = self.adb("shell", "content", "query", "--uri",
                               "content://media/external/audio/media", "--projection",
                               "_id:_display_name:is_music", check=False)
-            if any("_display_name=native_fixture.mp3" in line and "is_music=1" in line
-                   for line in result.stdout.splitlines()):
+            if all(any("_display_name=" + name in line and "is_music=1" in line
+                       for line in result.stdout.splitlines())
+                   for name in [Path(destination).name for _, destination in destinations]):
                 (self.output / "mediastore-seed.txt").write_text(result.stdout)
-                print("Synthetic covered MP3 is indexed as music by Android MediaStore", flush=True)
+                print(f"{len(destinations)} synthetic MP3/WAV fixtures are indexed as music by Android MediaStore", flush=True)
                 return original
             time.sleep(2)
-        raise RuntimeError("Synthetic MP3 was not indexed in MediaStore within 60 seconds")
+        raise RuntimeError("Synthetic MP3/WAV fixtures were not indexed in MediaStore within 60 seconds")
 
     def test(self) -> None:
         env = dict(os.environ, ORG_GRADLE_PROJECT_audioFixerQa="true")
         env.pop("AUDIO_FIXER_REAL_INPUTS", None)
         # A preceding release build excludes integration_test's native plugin.
-        # Restore the debug registrant while enforcing the committed lockfile.
-        subprocess.run(["flutter", "pub", "get", "--enforce-lockfile"],
+        # Restore the debug registrant from cached packages only, enforcing the
+        # committed lockfile without any dependency network requests.
+        subprocess.run(["flutter", "pub", "get", "--offline", "--enforce-lockfile"],
                        env=env, check=True, timeout=180)
-        command = ["flutter", "test", "integration_test/native_flow_test.dart", "-d", self.serial,
-                   "--no-pub", "--reporter", "expanded", "--timeout", "8m"]
+        command = self.test_command("integration_test/native_flow_test.dart", "--timeout", "11m")
         process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
         assert process.stdout is not None
@@ -217,6 +275,12 @@ class AndroidRuntime:
                     raise RuntimeError(f"Native phase stalled: {phase}")
                 if phase in CHECKPOINTS and phase not in captured:
                     self.screenshot(phase)
+                    if phase in {"exported_ready", "original_cancelled_ready"}:
+                        pulled = self.output / (phase + ".mp3")
+                        self.adb("pull", SOURCE_DEVICE, str(pulled))
+                        baseline = self.output / "generated/cover_without_lyrics_mp3.mp3"
+                        assert hashlib.sha256(pulled.read_bytes()).digest() == hashlib.sha256(baseline.read_bytes()).digest(), \
+                            "Original bytes changed during export or cancelled write consent"
                     subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
                                     "tee", "files/native_runtime_ack"],
                                    input=phase, capture_output=True, text=True, check=True, timeout=15)
@@ -250,15 +314,153 @@ class AndroidRuntime:
                     process.wait(timeout=5)
             (self.output / "native-ui-actions.json").write_text(json.dumps(self.actions, indent=2))
 
+    def verify_recovery(self, original: Path) -> None:
+        # The only fabricated input is an interrupted persisted state. The
+        # recovery bridge, backup validation, truncating writer, fsync, reread,
+        # cleanup and notice acknowledgement all execute on actual Android.
+        self.adb("shell", "am", "force-stop", PACKAGE)
+        app_root = self.adb("exec-out", "run-as", PACKAGE, "pwd").stdout.strip()
+        assert app_root in {"/data/user/0/" + PACKAGE, "/data/data/" + PACKAGE}, app_root
+        digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        target = app_root + "/files/audio/" + digest + ".audio"
+        backup = app_root + "/no_backup/original_audio_backups/00000000-0000-4000-8000-000000000003.backup"
+        values = {"stage": "writing", "target": "file://" + target,
+                  "backup": backup, "originalHash": digest,
+                  "outputHash": hashlib.sha256(b"synthetic interrupted tagged output").hexdigest()}
+        document = ET.Element("map")
+        for key, value in values.items():
+            ET.SubElement(document, "string", {"name": key}).text = value
+        journal = ET.tostring(document, encoding="utf-8", xml_declaration=True)
+        current_bytes = original.read_bytes()[:32]
+        current_hash = hashlib.sha256(current_bytes).hexdigest()
+        assert current_bytes.startswith(b"ID3")
+        export_name = "audio-fixer-recovery-preserved-" + current_hash[:8] + ".mp3"
+        expected = json.dumps({"synthetic_only": True, "target_path": target,
+                               "backup_path": backup, "original_sha256": digest,
+                               "current_sha256": current_hash}).encode()
+        self.adb("shell", "run-as", PACKAGE, "mkdir", "-p", "files/audio",
+                 "no_backup/original_audio_backups", "shared_prefs")
+        writes = {target: current_bytes, backup: original.read_bytes(),
+                  "shared_prefs/audio_fixer_original_recovery.xml": journal,
+                  "files/native_recovery_expected.json": expected}
+        for destination, data in writes.items():
+            subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
+                            "tee", destination], input=data, capture_output=True,
+                           check=True, timeout=30)
+        env = dict(os.environ, ORG_GRADLE_PROJECT_audioFixerQa="true")
+        env.pop("AUDIO_FIXER_REAL_INPUTS", None)
+        process = subprocess.Popen(self.test_command("integration_test/native_recovery_test.dart"),
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, bufsize=1)
+        assert process.stdout is not None
+        def log_recovery() -> None:
+            with (self.output / "flutter-native-recovery.txt").open("w") as log:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    log.write(line)
+                    log.flush()
+                    print(line, end="", flush=True)
+        reader = threading.Thread(target=log_recovery, daemon=True)
+        reader.start()
+        handled_recovery: list[str] = []
+        checked_exports: set[str] = set()
+        deadline = time.monotonic() + 420
+        try:
+            while process.poll() is None:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Native conflict-recovery test exceeded seven minutes")
+                phase = self.phase("files/native_recovery_phase")
+                if phase in RECOVERY_CHECKPOINTS and phase not in checked_exports:
+                    replacement = self.output / (phase + ".bin")
+                    replacement.write_bytes(b"synthetic modified export" if phase == "recovery_export_corrupted" else current_bytes)
+                    self.adb("push", str(replacement), "/sdcard/Download/" + export_name)
+                    subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
+                                    "tee", "files/native_recovery_ack"], input=phase,
+                                   capture_output=True, text=True, check=True, timeout=15)
+                    checked_exports.add(phase)
+                if phase in RECOVERY_PHASES and phase not in handled_recovery:
+                    if phase != RECOVERY_PHASES[len(handled_recovery)]:
+                        raise RuntimeError(f"Unexpected recovery dialog order: {handled_recovery} then {phase}")
+                    try:
+                        nodes = self.hierarchy()
+                    except (subprocess.CalledProcessError, ET.ParseError):
+                        time.sleep(1)
+                        continue
+                    if self.act(phase, nodes, file_name=export_name):
+                        handled_recovery.append(phase)
+                time.sleep(1)
+            reader.join(timeout=5)
+            if process.returncode:
+                raise RuntimeError(f"Native conflict-recovery test failed with exit {process.returncode}")
+            if handled_recovery != list(RECOVERY_PHASES):
+                raise RuntimeError("Native recovery did not exercise actual preserved-version export cancel and retry")
+            if checked_exports != set(RECOVERY_CHECKPOINTS):
+                raise RuntimeError("Recovery did not revalidate its exported document before safe finish")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            (self.output / "native-ui-actions.json").write_text(json.dumps(self.actions, indent=2))
+        result = self.read_app_json("files/native_recovery_result.json")
+        assert result["passed"] and result["synthetic_only"]
+        assert result["injected_interrupted_journal"] is True
+        assert result["mocked_native_channels"] is False
+        assert result["current_sha256"] == current_hash
+        preserved_export = self.output / "preserved-current-export.mp3"
+        self.adb("pull", "/sdcard/Download/" + export_name, str(preserved_export))
+        assert preserved_export.read_bytes() == current_bytes, "Recovery export did not preserve the third-hash bytes"
+        restored = self.adb("exec-out", "run-as", PACKAGE, "cat", target, binary=True).stdout
+        assert hashlib.sha256(restored).hexdigest() == digest
+        restored_file = self.output / "restored-private-fixture.mp3"
+        restored_file.write_bytes(restored)
+        assert inspect(restored_file)["full_decode_ok"]
+        (self.output / "native-recovery-result.json").write_text(json.dumps(result, indent=2))
+        summary = json.loads((self.output / "summary.json").read_text())
+        summary["passed"] = True
+        summary["status"] = "passed"
+        summary["native_seeded_recovery_checks"] = len(result["checks"])
+        summary["native_seeded_recovery_passed"] = True
+        summary["native_preserved_version_export_sha256_exact"] = True
+        summary["real_recovery_export_dialogs"] = len(RECOVERY_PHASES)
+        summary["timed_process_crash_tested"] = False
+        (self.output / "summary.json").write_text(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=2), flush=True)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+                stream.write("- Native conflict recovery preserved unknown bytes, explicitly restored the original and exported the retained version exactly\n")
+                stream.write("- This verifies recovery from persisted state, not crash-timing or MediaStore permission-loss behavior\n")
+
     def verify(self, original: Path) -> None:
-        result = json.loads(self.adb("exec-out", "run-as", PACKAGE, "cat",
-                                     "files/native_runtime_result.json").stdout)
+        result = self.read_app_json("files/native_runtime_result.json")
         assert result["passed"] and result["synthetic_only"]
         assert result["mocked_native_channels"] is False
         assert result["online_provider_calls"] == 0
         assert result["source_uri"].startswith("content://media/")
         assert result["export_uri"].startswith("content://")
         assert result["source_uri"] != result["export_uri"]
+        assert result["original_save_status"] == "savedOriginal"
+        assert result["batch_saved_original"] == 1
+        assert result["batch_skipped_unapproved"] == 1
+        fixtures = json.loads((self.output / "library-fixtures/manifest.json").read_text())
+        assert fixtures["synthetic_only"] is True
+        fixture_hashes = self.adb("shell", "sha256sum", *[
+            entry["device_path"] for entry in fixtures["entries"]
+        ]).stdout.splitlines()
+        actual_hashes = {line.split(maxsplit=1)[1].strip(): line.split(maxsplit=1)[0]
+                         for line in fixture_hashes}
+        expected_hashes = {entry["device_path"]: entry["sha256"] for entry in fixtures["entries"]}
+        assert actual_hashes == expected_hashes, "Library filtering changed or removed a synthetic source"
+        backups = self.adb("exec-out", "run-as", PACKAGE, "ls",
+                           "no_backup/original_audio_backups").stdout.strip()
+        assert not backups, "Verified original backup was not acknowledged after task persistence"
+        journal = self.adb("exec-out", "run-as", PACKAGE, "cat",
+                           "shared_prefs/audio_fixer_original_recovery.xml").stdout
+        assert not any(item.get("name") == "stage" for item in ET.fromstring(journal)), \
+            "Verified original journal is still pending despite successful persistence"
         (self.output / "native-test-result.json").write_text(json.dumps(result, indent=2))
         # The real system save UI was explicitly navigated to Downloads. Pull
         # from shared storage independently of the app's tagged temporary copy.
@@ -267,21 +469,36 @@ class AndroidRuntime:
         assert found == [EXPORT_DEVICE], f"Unexpected export or cancellation leftovers: {found}"
         pulled_original = self.output / "source-after.mp3"
         pulled_export = self.output / "exported-from-system-save.mp3"
+        pulled_unapproved = self.output / "unapproved-after.mp3"
         self.adb("pull", SOURCE_DEVICE, str(pulled_original))
         self.adb("pull", EXPORT_DEVICE, str(pulled_export))
+        self.adb("pull", UNAPPROVED_DEVICE, str(pulled_unapproved))
         digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-        assert digest(original) == digest(pulled_original), "Android source bytes changed"
+        assert digest(original) != digest(pulled_original), "Original save did not add the selected tag"
+        assert digest(original) == digest(pulled_unapproved), "Unapproved selected song was modified"
         assert digest(original) != digest(pulled_export), "Export did not add the selected tag"
-        checked = compare(pulled_original, pulled_export,
+        checked = compare(original, pulled_export,
                           expected_tags=result["expected_tags"],
                           expected_cover_sha256=result["cover_sha256"])
         (self.output / "independent-audio-check.json").write_text(json.dumps(checked, indent=2))
         assert checked["passed"], checked["checks"]
-        summary = {"passed": True, "synthetic_only": True,
+        original_checked = compare(original, pulled_original,
+                                   expected_tags=result["expected_tags"],
+                                   expected_cover_sha256=result["cover_sha256"])
+        (self.output / "independent-original-check.json").write_text(json.dumps(original_checked, indent=2))
+        assert original_checked["passed"], original_checked["checks"]
+        summary = {"passed": False, "status": "awaiting_native_recovery",
+                   "original_flow_passed": True, "synthetic_only": True,
                    "native_checks": len(result["checks"]),
+                   "library_filter_checks": result["library_filters"],
+                   "library_fixture_source_hashes_unchanged": len(expected_hashes),
                    "real_system_dialogs": len(PHASES),
                    "independent_audio_checks": len(checked["checks"]),
-                   "original_whole_file_sha256_unchanged": True,
+                   "source_unchanged_after_export_and_cancel": True,
+                   "original_saved_and_revalidated": True,
+                   "verified_original_backup_acknowledged": True,
+                   "unapproved_source_sha256_unchanged": True,
+                   "independent_original_checks": len(original_checked["checks"]),
                    "existing_cover_preserved": True,
                    "audio_uploaded": False}
         (self.output / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -289,10 +506,10 @@ class AndroidRuntime:
         step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if step_summary:
             with open(step_summary, "a") as stream:
-                stream.write("### Android native synthetic runtime: PASS\n")
-                stream.write(f"- {summary['native_checks']} app/native checks; four real Android dialogs\n")
+                stream.write("### Android native original-save/export flow: PASS\n")
+                stream.write(f"- {summary['native_checks']} app/native checks; six real Android dialogs\n")
                 stream.write(f"- {summary['independent_audio_checks']} independent FFmpeg checks\n")
-                stream.write("- Original whole-file hash unchanged; encoded audio, decoded samples, and cover preserved\n")
+                stream.write("- Export/cancel and unapproved-song hashes unchanged; approved original updated with audio and cover preserved\n")
                 stream.write("- Synthetic fixtures only; no audio or APKs published\n")
                 stream.write("- Allowlisted synthetic screenshots and sanitized check summaries retained for one day\n")
 
@@ -307,6 +524,7 @@ def main() -> None:
     original = runtime.seed()
     runtime.test()
     runtime.verify(original)
+    runtime.verify_recovery(original)
 
 
 if __name__ == "__main__":

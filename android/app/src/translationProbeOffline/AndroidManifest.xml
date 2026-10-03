@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Test-only AOT probe overlay; never enabled for lib/main.dart builds. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+</manifest>

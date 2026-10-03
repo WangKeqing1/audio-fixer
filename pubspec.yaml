@@ -1,7 +1,7 @@
 name: audio_fixer
 description: "Android 音频元数据、歌词和封面补全工具的 Flutter 基础框架。"
 publish_to: 'none'
-version: 0.2.0+4
+version: 0.3.1+6
 
 environment:
   sdk: ^3.13.2
@@ -26,3 +26,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/google_translate/greyscale_regular_3x.png

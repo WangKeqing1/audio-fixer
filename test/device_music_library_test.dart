@@ -35,6 +35,9 @@ void main() {
               'sizeBytes': 1234,
               'title': '系统歌曲',
               'dateModifiedMs': 1000,
+              'volumeName': 'external_primary',
+              'relativePath': 'Music/中文/',
+              'durationMs': 59999,
             },
           ];
         }
@@ -46,6 +49,9 @@ void main() {
       expect(track.title, '系统歌曲');
       expect(track.detailsLoaded, isFalse);
       expect(track.localPath, isEmpty);
+      expect(track.volumeName, 'external_primary');
+      expect(track.folder!.normalizedPath, 'Music/中文');
+      expect(track.durationMs, 59999);
     },
   );
 

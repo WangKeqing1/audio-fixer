@@ -65,7 +65,7 @@ void main() {
         expect(tester.takeException(), isNull);
         await tester.tap(find.text('设置'));
         await tester.pumpAndSettle();
-        expect(find.text('补全内容'), findsOneWidget);
+        expect(find.text('音乐库排除规则'), findsOneWidget);
         expect(tester.takeException(), isNull);
       },
     );

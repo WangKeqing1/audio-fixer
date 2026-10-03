@@ -12,6 +12,28 @@ AudioTrack _file(String name, {String? title, String? artist}) => AudioTrack(
 );
 
 void main() {
+  test(
+    'Chinese filename separators recover artist without title-only matching',
+    () {
+      for (final name in [
+        '周杰伦-晴天.mp3',
+        '周杰伦_晴天.mp3',
+        '周杰伦－晴天.mp3',
+        '周杰伦 ｜ 晴天.mp3',
+        '周杰伦 — 晴天.mp3',
+      ]) {
+        final search = TrackSearch.fromTrack(_file(name));
+        expect(search.title, '晴天');
+        expect(search.artist, '周杰伦');
+      }
+      expect(TrackSearch.fromTrack(_file('AC-DC.mp3')).artist, isNull);
+      expect(
+        TrackSearch.fromTrack(_file('周杰伦-晴天.mp3', artist: '其他歌手')).artist,
+        '其他歌手',
+      );
+    },
+  );
+
   test('punctuation-only artist credits do not count as matching evidence', () {
     const query = TrackSearch(title: 'Song', artist: '---');
     expect(query.matchesArtist(['...']), isFalse);

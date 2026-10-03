@@ -24,13 +24,18 @@ class TrackSearch {
           .basenameWithoutExtension(track.fileName)
           .replaceFirst(RegExp(r'^\d{1,3}\s*[._-]\s*'), '')
           .trim();
-      final separator = title.indexOf(' - ');
-      if (separator > 0) {
-        final prefix = title.substring(0, separator).trim();
+      final separator =
+          RegExp(r'\s+[-–—]\s+|[－｜]').firstMatch(title) ??
+          (RegExp(r'[\u3400-\u9fff]').hasMatch(title)
+              ? RegExp(r'(?<=[\u3400-\u9fff])[-_](?=[\u3400-\u9fff])')
+                    .firstMatch(title)
+              : null);
+      if (separator != null && separator.start > 0) {
+        final prefix = title.substring(0, separator.start).trim();
         if (!hasText(artist) ||
             normalizedIdentity(prefix) == normalizedIdentity(artist!)) {
           if (!hasText(artist)) artist = prefix;
-          title = title.substring(separator + 3).trim();
+          title = title.substring(separator.end).trim();
         }
       }
     }

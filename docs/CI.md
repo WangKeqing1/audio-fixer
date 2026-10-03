@@ -1,7 +1,7 @@
 # Quality checks and QA APK
 
 [`.github/workflows/quality.yml`](../.github/workflows/quality.yml) runs on pushes to
-`dev/audio-fixer-quality` and on pull requests. One Ubuntu 24.04 job checks Dart
+`main` and `dev/audio-fixer-quality`, and on pull requests. One Ubuntu 24.04 job checks Dart
 formatting, runs `flutter analyze`, runs every test under `test/` including the
 FFmpeg-backed synthetic-media cases, and builds an optimized ARM64 QA APK. A newer run cancels
 an older run for the same branch or pull request; the job has a 35-minute limit.
@@ -14,7 +14,7 @@ From the repository root on Linux:
 
 ```sh
 flutter pub get --enforce-lockfile
-dart format --output=none --set-exit-if-changed lib test tool
+dart format --output=none --set-exit-if-changed lib test tool integration_test
 flutter analyze --no-pub
 env -u AUDIO_FIXER_REAL_INPUTS flutter test --no-pub --coverage --concurrency=2 --reporter expanded
 ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi \
@@ -55,7 +55,7 @@ cannot silently expand this package list. The approved main terms are
 ## Results and limits
 
 The output is `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`. CI verifies
-`com.audiofixer.audio_fixer.qa`, the **Audio Fixer QA** label, the pubspec version
+`com.audiofixer.audio_fixer.qa.v030`, the **Audio Fixer QA 0.3** label, the pubspec version
 with `-qa` suffix, the ARM64 split version code, and the single `arm64-v8a` ABI. It
 also checks that the APK is **not debuggable**, verifies its signature and Android
 Debug test signer, and records its SHA-256 and size.
@@ -64,11 +64,25 @@ Debug test signer, and records its SHA-256 and size.
 **debug TEST signing, not production signing**. This is a side-by-side QA build
 for ARM64 devices, not a production release. It can coexist with the normal app;
 without the opt-in property, the normal package identity remains unchanged.
+The 0.3 QA namespace also differs from the prior `com.audiofixer.audio_fixer.qa`
+package: it installs alongside the old QA, preserving that app's private data.
+The new QA has independent settings/tasks and requests its own media permission;
+it does not migrate or delete the old private copies. Long-term release updates
+still require a future user-controlled stable signing setup.
 
-The workflow does not upload APKs or artifacts, create releases, install on a
-device, or publish to a store. Build logs and a compact test/package/checksum
-summary are available on the Actions run. APK delivery remains separate and
-requires the requested delivery destination.
+The workflow retains an exact allowlist consisting of the verified ARM64 QA APK,
+its identity/provenance JSON, SHA-256, signature report and package badging for
+**one day** as an Actions artifact. This permits delivery even if a development
+workspace disappears. It does not create a release or publish to a store. No
+music, private inputs, signing keys, credentials, broad logs or build directories
+are included. The final APK can be delivered separately through the requested
+file destination after exact-head checks pass.
+
+The CI debug TEST signing key is ephemeral and may differ between runs or from
+previous local QA builds. Compare the certificate before claiming update
+compatibility. A different signature cannot replace an installed package with
+the same ID; do not uninstall an older app without preserving its private data.
+This pipeline does not generate or distribute a production signing identity.
 
 Only generated synthetic media is used. No private input, audio files, device
 logs, credentials, keystores or broad build/cache directories are uploaded.
@@ -78,19 +92,54 @@ Runtime Android acceptance still needs separate verification.
 
 [`android-runtime.yml`](../.github/workflows/android-runtime.yml) separately runs
 an AOSP API 35 x86_64 emulator when the hosted runner already permits access to
-KVM. Its first step opens the existing device and checks the KVM API; it does not
-change device permissions. A preflight failure means the emulator and app tests
-did not run, not that application behavior passed or failed.
+KVM. The workflow verifies KVM API access before starting the emulator. A preflight
+failure means emulator and app tests did not run, not that application behavior
+passed or failed. The separately approved hosted-runner setup may temporarily
+give only the current test user read/write access to `/dev/kvm`, with original
+owner/group/mode restored after emulator cleanup. That narrowly scoped setup is
+for ephemeral GitHub-hosted runners; it does not authorize permission changes on
+a developer computer or this cloud workspace. No world-writable mode or persistent
+udev rule is required.
 
 The native integration test uses the production widgets, controller, MediaStore
 bridge, tag exporter and system document picker. Only the online metadata source
 is replaced with explicitly synthetic, offline lyrics. The host generates and
-indexes a covered MP3, then operates freshly observed Android permission and
+indexes two MP3s plus 34 authored WAVs (36 rows), then operates freshly observed Android permission and
 save dialogs. Assertions cover permission denial/retry, content-URI reading,
-Unicode tags, candidate review, save cancellation, retry, persisted results and
-temporary-copy cleanup. Pulled original and exported files undergo independent
-FFmpeg decoded-sample and encoded-packet checks, tag/cover checks, and an exact
-original-file SHA-256 comparison.
+Unicode tags, initially unchecked candidates, explicit field review, optional
+export cancellation/retry, original-write consent cancellation/retry, an approved
+song saved in a batch alongside an unapproved skipped song, persisted per-song
+results/batch counters and temporary-copy cleanup. Library tests also assert a fixed
+selection toolbar after long scrolling, strict 60-second and folder-hierarchy
+exclusions, restored settings and selection safety on fresh controller/store
+initialization. Four synthetic screenshots show the toolbar before/after scrolling
+and filter settings before/after reloading; unknown duration and cross-volume
+matching receive unit coverage. Process kill is not claimed for filter persistence. The host verifies the source
+hash at cancellation checkpoints and the unapproved song's final exact hash.
+Both the optional exported file and the updated original undergo independent
+FFmpeg decoded-sample and encoded-packet checks and existing tag/cover checks.
+
+A second native integration test launches a fresh Activity after the host seeds
+an interrupted production-format journal, valid original backup and a distinct
+current synthetic file. Startup inspection and reauthorization must leave the
+third-hash current version untouched. Only explicit restoration may restore the
+original; the current version must first be retained, and safe completion must
+not discard an unexported distinct version. Private content-addressed legacy
+copies remain readable for recovery, but new original-save requests are rejected.
+The main MediaStore test separately rejects a deliberately stale source SHA-256
+before writing, while retaining unchanged source bytes and a clear journal.
+
+This is deterministic persisted-state recovery coverage, not a timed crash or
+MediaStore grant-loss test. No production fault-injection hook is added. Check
+the actual run result before treating any individual recovery assertion as passed.
+
+The native harness resets its debug plugin registrant using `flutter pub get
+--offline --enforce-lockfile`; dependencies must already have been restored by the
+setup step. Both native test commands use `--no-uninstall`, so Flutter teardown
+cannot delete the app-private evidence before host checks and the next test.
+The harness never downloads packages or queries metadata providers.
+Run `python3 tool/android_runtime_driver_test.py` for offline tests of the dialog
+recognition/coordinate guard logic. Those tests are not Android runtime evidence.
 
 A subsequent smoke builds and launches the optimized normal `lib/main.dart`
 entrypoint on the emulator. It checks the resumed activity and launch errors;
@@ -115,3 +164,11 @@ References: [checkout](https://github.com/actions/checkout/tree/v6.0.2),
 [flutter-action](https://github.com/subosito/flutter-action/tree/v2.21.0),
 [Ubuntu runner inventory](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
 [disabling SDK auto-download](https://developer.android.com/studio/intro/update#download-with-gradle).
+
+## 0.3 original-save acceptance checklist
+
+See [native acceptance scope](NATIVE_ACCEPTANCE.md) for commands, fixture boundaries
+and the distinction between automated coverage and device behavior that still
+needs runtime verification. Version changes or passing Dart tests do not by
+themselves establish that Android write consent, recovery, or storage-provider
+compatibility has passed.

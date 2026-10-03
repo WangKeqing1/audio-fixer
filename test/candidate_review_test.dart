@@ -26,7 +26,7 @@ class _Exporter implements AudioCopyExporter {
 
 void main() {
   testWidgets(
-    'review can deselect, cancel save, retry and reports separate copy',
+    'review starts unchecked, selects explicitly, cancels and retries copy',
     (tester) async {
       final task = CompletionTask(
         trackId: 'fixture',
@@ -64,7 +64,21 @@ void main() {
       await tester.tap(find.text('确认 2 项候选'));
       await tester.pumpAndSettle();
       expect(find.text('确认候选资料'), findsOneWidget);
-      await tester.tap(find.byType(Checkbox).first);
+      expect(
+        tester
+            .widgetList<Checkbox>(find.byType(Checkbox))
+            .every((box) => box.value == false),
+        isTrue,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const ValueKey('save-original')))
+            .onPressed,
+        isNull,
+      );
+      await tester.ensureVisible(find.byType(Checkbox).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Checkbox).last);
       await tester.pumpAndSettle();
       await tester.tap(find.text('导出副本（1 项）'));
       await tester.pumpAndSettle();

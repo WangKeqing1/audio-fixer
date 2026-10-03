@@ -37,6 +37,7 @@ class DeviceLibraryBridge(
     private val preferences = activity.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val channel = MethodChannel(messenger, CHANNEL_NAME)
     private val exportJournal = ExportRecoveryJournal(activity)
+    private val audioWriteBridge = AudioWriteBridge(activity, ioExecutor, exportJournal)
     @Volatile private var exportActive = false
 
     @Volatile
@@ -55,7 +56,7 @@ class DeviceLibraryBridge(
         permissions: Array<out String>,
         grantResults: IntArray,
     ) {
-        if (disposed || requestCode != PERMISSION_REQUEST_CODE) return
+        if (disposed || audioWriteBridge.onRequestPermissionsResult(requestCode) || requestCode != PERMISSION_REQUEST_CODE) return
 
         val reply = pendingPermissionResult ?: return
         pendingPermissionResult = null
@@ -68,6 +69,7 @@ class DeviceLibraryBridge(
     fun dispose() {
         if (disposed) return
         disposed = true
+        audioWriteBridge.dispose()
         pendingPermissionResult = null
         channel.setMethodCallHandler(null)
         ioExecutor.shutdownNow()
@@ -76,6 +78,10 @@ class DeviceLibraryBridge(
     private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         if (disposed) return
 
+        if (audioWriteBridge.handles(call.method)) {
+            audioWriteBridge.onMethodCall(call, result, exportActive || pendingPermissionResult != null)
+            return
+        }
         when (call.method) {
             "permissionStatus" -> OneShotResult(result).success(permissionStatusValue())
             "requestPermission" -> requestPermission(result)
@@ -85,16 +91,16 @@ class DeviceLibraryBridge(
             "releaseReadCopy" -> releaseReadCopy(call, result)
             "exportAudioCopy" -> exportAudioCopy(call, result)
             "recoverExport" -> executeIo(OneShotResult(result), "export_recovery_failed") {
-                if (exportActive) exportJournal.notice() else exportJournal.recover()
+                if (exportActive || audioWriteBridge.active) audioWriteBridge.notices() else audioWriteBridge.recover()
             }
             "acknowledgeExportRecovery" -> executeIo(OneShotResult(result), "export_recovery_failed") {
-                exportJournal.setNotice(null)
+                audioWriteBridge.acknowledgeRecovery()
                 null
             }
             "confirmExportRecorded" -> executeIo(OneShotResult(result), "export_recovery_failed") {
                 val uri = call.argument<String>("uri")
                     ?: throw BridgeException("invalid_argument", "An exported document URI is required.")
-                exportJournal.acknowledgeVerified(uri)
+                audioWriteBridge.confirmRecorded(uri)
                 null
             }
             else -> result.notImplemented()
@@ -103,7 +109,7 @@ class DeviceLibraryBridge(
 
     private fun requestPermission(result: MethodChannel.Result) {
         val reply = OneShotResult(result)
-        if (pendingPermissionResult != null) {
+        if (pendingPermissionResult != null || audioWriteBridge.active || exportActive) {
             reply.error(
                 "request_in_progress",
                 "An audio permission request is already in progress.",
@@ -246,7 +252,7 @@ class DeviceLibraryBridge(
 
     private fun exportAudioCopy(call: MethodCall, result: MethodChannel.Result) {
         val reply = OneShotResult(result)
-        if (exportActive || pendingExport != null) {
+        if (exportActive || pendingExport != null || audioWriteBridge.active) {
             reply.error("export_in_progress", "An export is already in progress.", null)
             return
         }
@@ -286,7 +292,7 @@ class DeviceLibraryBridge(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (disposed || requestCode != EXPORT_REQUEST_CODE) return
+        if (disposed || audioWriteBridge.onActivityResult(requestCode, resultCode, data) || requestCode != EXPORT_REQUEST_CODE) return
         val pending = pendingExport
         pendingExport = null
         val target = if (resultCode == Activity.RESULT_OK) data?.data else null
@@ -451,6 +457,12 @@ class DeviceLibraryBridge(
         volume: String,
         rows: MutableList<Map<String, Any?>>,
     ) {
+        val folderColumn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.MediaColumns.RELATIVE_PATH
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.MediaColumns.DATA
+        }
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -463,6 +475,7 @@ class DeviceLibraryBridge(
             MediaStore.MediaColumns.DATE_ADDED,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.Audio.AudioColumns.IS_MUSIC,
+            folderColumn,
         )
         val selectionParts = mutableListOf(
             "${MediaStore.Audio.AudioColumns.IS_MUSIC} != 0",
@@ -495,6 +508,7 @@ class DeviceLibraryBridge(
             val durationIndex = cursor.getColumnIndex(MediaStore.Audio.AudioColumns.DURATION)
             val addedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
             val modifiedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+            val folderIndex = cursor.getColumnIndex(folderColumn)
 
             while (cursor.moveToNext()) {
                 if (idIndex < 0 || sizeIndex < 0 || cursor.isNull(idIndex) || cursor.isNull(sizeIndex)) continue
@@ -509,6 +523,21 @@ class DeviceLibraryBridge(
                 val dateModifiedMs = cursor.getLongOrNull(modifiedIndex)?.secondsToMillis() ?: 0L
                 val year = cursor.getIntOrNull(yearIndex)?.takeIf { it > 0 }
 
+                // DATA is used only for a folder label on pre-29 devices.
+                // It is never opened and never derived from the content URI.
+                val folderPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getStringOrNull(folderIndex)
+                } else {
+                    cursor.getStringOrNull(folderIndex)
+                        ?.takeIf { it.startsWith("/") }
+                        ?.let { File(it).parent }
+                }
+                val folderVolume = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    volume
+                } else {
+                    "legacy-filesystem"
+                }
+
                 rows += linkedMapOf(
                     "id" to "media:$volume:$id",
                     "contentUri" to contentUri,
@@ -521,6 +550,8 @@ class DeviceLibraryBridge(
                     "durationMs" to cursor.getLongOrNull(durationIndex),
                     "dateAddedMs" to dateAddedMs,
                     "dateModifiedMs" to dateModifiedMs,
+                    "volumeName" to folderVolume,
+                    "relativePath" to folderPath,
                 )
             }
         }

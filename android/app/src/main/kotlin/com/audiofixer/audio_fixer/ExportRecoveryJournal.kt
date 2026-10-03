@@ -56,6 +56,11 @@ internal class ExportRecoveryJournal(context: Context) {
     private fun recoverLocked(): String? {
         val entry = read() ?: return notice()
         when (entry.stage) {
+            CREATING -> {
+                setNotice("上次批量导出在建立新副本时中断，所选文件夹可能留有空白文件，请检查后重试。原音频未修改。文件夹：${entry.target}")
+                cleanupTemporary(entry.path)
+                clear()
+            }
             VERIFIED -> {
                 setNotice("上次音频副本已保存并通过校验，但应用在记录结果前中断。任务记录可能尚未更新。保存位置：${entry.target}")
                 cleanupTemporary(entry.path)
@@ -139,6 +144,7 @@ internal class ExportRecoveryJournal(context: Context) {
 
     companion object {
         private val exportLock = Any()
+        const val CREATING = "creating"
         const val PREPARED = "prepared"
         const val WRITING = "writing"
         const val VERIFIED = "verified"

@@ -6,6 +6,7 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private var deviceLibraryBridge: DeviceLibraryBridge? = null
+    private var lyricsTranslationBridge: LyricsTranslationBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -13,6 +14,16 @@ class MainActivity : FlutterActivity() {
             activity = this,
             messenger = flutterEngine.dartExecutor.binaryMessenger,
         )
+        disposeLyricsTranslationBridge()
+        lyricsTranslationBridge = LyricsTranslationBridge(
+            activity = this,
+            messenger = flutterEngine.dartExecutor.binaryMessenger,
+        )
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        disposeLyricsTranslationBridge()
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onRequestPermissionsResult(
@@ -30,8 +41,14 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        disposeLyricsTranslationBridge()
         deviceLibraryBridge?.dispose()
         deviceLibraryBridge = null
         super.onDestroy()
+    }
+
+    private fun disposeLyricsTranslationBridge() {
+        lyricsTranslationBridge?.dispose()
+        lyricsTranslationBridge = null
     }
 }

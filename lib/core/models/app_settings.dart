@@ -1,4 +1,5 @@
 import 'audio_track.dart';
+import 'audio_folder.dart';
 
 enum AppTheme { system, light, dark }
 
@@ -8,12 +9,28 @@ class AppSettings {
     this.metadata = true,
     this.lyrics = true,
     this.artwork = true,
+    this.excludeShortAudio = false,
+    this.includeChineseTranslation = true,
+    this.onDeviceTranslationEnabled = false,
+    this.excludedFolders = const [],
   });
 
   final AppTheme theme;
   final bool metadata;
   final bool lyrics;
   final bool artwork;
+  final bool excludeShortAudio;
+  final bool includeChineseTranslation;
+  final bool onDeviceTranslationEnabled;
+  final List<AudioFolder> excludedFolders;
+
+  bool excludes(AudioTrack track) =>
+      (excludeShortAudio &&
+          track.durationMs != null &&
+          track.durationMs! > 0 &&
+          track.durationMs! < 60000) ||
+      (track.folder != null &&
+          excludedFolders.any((folder) => folder.contains(track.folder!)));
 
   Set<AudioField> get enabledFields => {
     if (metadata) ...[AudioField.title, AudioField.artist, AudioField.album],
@@ -26,11 +43,23 @@ class AppSettings {
     bool? metadata,
     bool? lyrics,
     bool? artwork,
+    bool? excludeShortAudio,
+    bool? includeChineseTranslation,
+    bool? onDeviceTranslationEnabled,
+    List<AudioFolder>? excludedFolders,
   }) => AppSettings(
     theme: theme ?? this.theme,
     metadata: metadata ?? this.metadata,
     lyrics: lyrics ?? this.lyrics,
     artwork: artwork ?? this.artwork,
+    excludeShortAudio: excludeShortAudio ?? this.excludeShortAudio,
+    includeChineseTranslation:
+        includeChineseTranslation ?? this.includeChineseTranslation,
+    onDeviceTranslationEnabled:
+        onDeviceTranslationEnabled ?? this.onDeviceTranslationEnabled,
+    excludedFolders: excludedFolders == null
+        ? this.excludedFolders
+        : List.unmodifiable(excludedFolders),
   );
 
   Map<String, Object> toJson() => {
@@ -38,6 +67,12 @@ class AppSettings {
     'metadata': metadata,
     'lyrics': lyrics,
     'artwork': artwork,
+    'excludeShortAudio': excludeShortAudio,
+    'includeChineseTranslation': includeChineseTranslation,
+    'onDeviceTranslationEnabled': onDeviceTranslationEnabled,
+    'excludedFolders': excludedFolders
+        .map((folder) => folder.toJson())
+        .toList(),
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -45,5 +80,16 @@ class AppSettings {
     metadata: json['metadata'] as bool,
     lyrics: json['lyrics'] as bool,
     artwork: json['artwork'] as bool,
+    excludeShortAudio: json['excludeShortAudio'] as bool? ?? false,
+    includeChineseTranslation:
+        json['includeChineseTranslation'] as bool? ?? true,
+    onDeviceTranslationEnabled:
+        json['onDeviceTranslationEnabled'] as bool? ?? false,
+    excludedFolders: List.unmodifiable(
+      (json['excludedFolders'] as List? ?? const []).map(
+        (folder) =>
+            AudioFolder.fromJson(Map<String, dynamic>.from(folder as Map)),
+      ),
+    ),
   );
 }

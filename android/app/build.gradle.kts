@@ -1,26 +1,62 @@
+import com.android.build.api.dsl.ApplicationExtension
+import java.io.File
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Opt-in test identity for safe side-by-side QA installs in every build mode.
+// Versioned opt-in QA identity: CI test signers cannot replace older local QA
+// installs safely. Keep the previous QA package/private data alongside 0.3.
 // Normal builds keep the application's existing identity.
 val audioFixerQa = providers.gradleProperty("audioFixerQa")
     .map { it.equals("true", ignoreCase = true) }
     .getOrElse(false)
+
+// An opt-in, synthetic-only runtime probe uses a second APK without INTERNET
+// to prove already-downloaded models translate without network access.
+val audioFixerTranslationProbe = providers.gradleProperty("audioFixerTranslationProbe")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+val audioFixerTranslationOffline = providers.gradleProperty("audioFixerTranslationOffline")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+require(!audioFixerTranslationProbe || audioFixerQa) {
+    "The translation probe requires the isolated audioFixerQa application."
+}
+require(!audioFixerTranslationOffline || (audioFixerTranslationProbe && audioFixerQa)) {
+    "The offline translation manifest is allowed only in an isolated QA translation probe."
+}
+if (audioFixerTranslationProbe) {
+    val target = providers.gradleProperty("target").orNull
+    val targetFile = target?.let {
+        val path = File(it)
+        if (path.isAbsolute) path else rootProject.file("../$it")
+    }
+    require(targetFile?.canonicalFile == rootProject.file("../tool/native_translation_probe.dart").canonicalFile) {
+        "The translation probe flags require --target tool/native_translation_probe.dart."
+    }
+}
+
+// Keep a real android { namespace = ... } block for Flutter's source parser,
+// while resolving configuration through AGP's public interface rather than the
+// deprecated generated BaseAppModuleExtension accessor.
+fun android(block: ApplicationExtension.() -> Unit) {
+    extensions.configure<ApplicationExtension> { block(this) }
+}
 
 android {
     namespace = "com.audiofixer.audio_fixer"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
-    compileOptions {
+    compileOptions.apply {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    defaultConfig {
+    defaultConfig.apply {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.audiofixer.audio_fixer"
         // You can update the following values to match your application needs.
@@ -36,18 +72,27 @@ android {
         manifestPlaceholders["audioFixerLabel"] = "Audio Fixer"
     }
 
-    buildTypes {
-        configureEach {
-            if (audioFixerQa) {
-                applicationIdSuffix = ".qa"
-                versionNameSuffix = "-qa"
-                manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA"
-            }
+    buildTypes.configureEach {
+        if (audioFixerQa) {
+            applicationIdSuffix = ".qa.v030"
+            versionNameSuffix = "-qa"
+            manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.3"
         }
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+    }
+    buildTypes.named("release") {
+        // Preserve the small manifest-reflection/JNI boundary used by ML Kit.
+        // Flutter's normal release shrinking and optimization remain enabled.
+        proguardFiles("proguard-rules.pro")
+        // TODO: Add your own signing config for the release build.
+        // Signing with the debug keys for now, so `flutter run --release` works.
+        signingConfig = signingConfigs.getByName("debug")
+    }
+
+    sourceSets.configureEach {
+        if (audioFixerTranslationOffline && name in setOf("debug", "profile", "release")) {
+            // A higher-priority build-type overlay removes INTERNET from the
+            // main manifest and every transitive library manifest.
+            manifest.srcFile("src/translationProbeOffline/AndroidManifest.xml")
         }
     }
 }
@@ -60,4 +105,11 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Models are downloaded explicitly over Wi-Fi; lyric inference stays on device.
+    implementation("com.google.mlkit:translate:17.0.3")
+    // Bundle identification so identifying a language never downloads its model.
+    implementation("com.google.mlkit:language-id:17.0.6")
 }

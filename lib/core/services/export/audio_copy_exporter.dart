@@ -22,6 +22,94 @@ abstract interface class AudioCopyExporter {
   Future<String?> export(AudioTrack track, List<FieldSuggestion> selected);
 }
 
+/// Optional original-file writer. A null result means consent was cancelled.
+abstract interface class AudioOriginalSaver {
+  bool supportsOriginal(AudioTrack track);
+  Future<String?> saveOriginal(
+    AudioTrack track,
+    List<FieldSuggestion> selected,
+  );
+}
+
+/// Optional batch consent. Only reviewed/eligible originals may be passed.
+/// This requests access without changing any audio and returns false on cancel.
+abstract interface class AudioBatchOriginalSaver {
+  Future<bool> authorizeOriginalWrites(List<AudioTrack> tracks);
+}
+
+/// A retained recovery version; [id] is opaque except native's "original".
+class RecoveryAudioVersion {
+  const RecoveryAudioVersion({
+    required this.id,
+    required this.label,
+    required this.sha256,
+    required this.sizeBytes,
+    this.exportedUri,
+  });
+  final String id;
+  final String label;
+  final String sha256;
+  final int sizeBytes;
+  final String? exportedUri;
+  factory RecoveryAudioVersion.fromMap(Map<Object?, Object?> data) =>
+      RecoveryAudioVersion(
+        id: data['id'] as String,
+        label: data['label'] as String,
+        sha256: data['sha256'] as String,
+        sizeBytes: (data['sizeBytes'] as num).toInt(),
+        exportedUri: data['exportedUri'] as String?,
+      );
+}
+
+/// Structured recovery choices. UI must use flags, not translated notice text.
+class OriginalRecoveryState {
+  const OriginalRecoveryState({
+    required this.status,
+    required this.targetUri,
+    required this.canRestore,
+    required this.canFinish,
+    required this.versions,
+  });
+  final String status;
+  final String targetUri;
+  final bool canRestore;
+  final bool canFinish;
+  final List<RecoveryAudioVersion> versions;
+  factory OriginalRecoveryState.fromMap(Map<Object?, Object?> data) =>
+      OriginalRecoveryState(
+        status: data['status'] as String,
+        targetUri: data['targetUri'] as String,
+        canRestore: data['canRestore'] == true,
+        canFinish: data['canFinish'] == true,
+        versions: (data['versions'] as List<Object?>)
+            .map(
+              (value) => RecoveryAudioVersion.fromMap(
+                Map<Object?, Object?>.from(value! as Map),
+              ),
+            )
+            .toList(growable: false),
+      );
+}
+
+/// Rechecking/regranting permission never authorizes replacing unknown content.
+abstract interface class AudioOriginalRecovery {
+  Future<String?> retryOriginalRecovery();
+  Future<OriginalRecoveryState?> getOriginalRecoveryState();
+  Future<String?> restoreOriginalBackup();
+  Future<String?> exportOriginalRecoveryVersion(String versionId);
+  Future<void> finishOriginalRecovery();
+}
+
+/// A batch chooses one destination tree and then creates separate verified files.
+abstract interface class AudioBatchExporter {
+  Future<String?> chooseExportDirectory();
+  Future<String?> exportToDirectory(
+    AudioTrack track,
+    List<FieldSuggestion> selected,
+    String directoryUri,
+  );
+}
+
 /// Optional native lifecycle recovery; simple exporters/mocks need not implement it.
 abstract interface class AudioExportRecovery {
   Future<String?> recoverInterruptedExport();
@@ -36,9 +124,16 @@ class ExportException implements Exception {
   String toString() => message;
 }
 
-/// Every edit is made to a temporary copy. Android's system save dialog creates
-/// a new document; no write permission or writable handle to the source is used.
-class SafeAudioCopyExporter implements AudioCopyExporter, AudioExportRecovery {
+/// Tags are prepared and verified on a temporary copy before native storage
+/// handles consent, backup, source-race checks, destination verification/recovery.
+class SafeAudioCopyExporter
+    implements
+        AudioCopyExporter,
+        AudioOriginalSaver,
+        AudioBatchOriginalSaver,
+        AudioOriginalRecovery,
+        AudioBatchExporter,
+        AudioExportRecovery {
   SafeAudioCopyExporter(
     this.cacheDirectory, {
     this.channel = const MethodChannel('audio_fixer/device_library'),
@@ -64,10 +159,78 @@ class SafeAudioCopyExporter implements AudioCopyExporter, AudioExportRecovery {
       supportedExtensions.contains(track.extension.toLowerCase());
 
   @override
-  Future<String?> export(
+  bool supportsOriginal(AudioTrack track) =>
+      supports(track) && track.isDeviceTrack;
+
+  @override
+  Future<String?> saveOriginal(
     AudioTrack track,
     List<FieldSuggestion> selected,
   ) async {
+    if (!supportsOriginal(track)) {
+      throw const ExportException('旧版导入副本使用固定内容标识，不能覆盖；请导出新的音频副本。');
+    }
+    return _save(track, selected, original: true);
+  }
+
+  @override
+  Future<bool> authorizeOriginalWrites(List<AudioTrack> tracks) async =>
+      await channel.invokeMethod<bool>('authorizeOriginalWrites', {
+        'uris': tracks
+            .where((track) => track.isDeviceTrack)
+            .map((track) => track.contentUri!)
+            .toSet()
+            .toList(),
+      }) ??
+      false;
+
+  @override
+  Future<String?> retryOriginalRecovery() =>
+      channel.invokeMethod<String>('retryOriginalRecovery');
+
+  @override
+  Future<OriginalRecoveryState?> getOriginalRecoveryState() async {
+    final value = await channel.invokeMapMethod<Object?, Object?>(
+      'getOriginalRecoveryState',
+    );
+    return value == null ? null : OriginalRecoveryState.fromMap(value);
+  }
+
+  @override
+  Future<String?> restoreOriginalBackup() =>
+      channel.invokeMethod<String>('restoreOriginalBackup');
+
+  @override
+  Future<String?> exportOriginalRecoveryVersion(String versionId) =>
+      channel.invokeMethod<String>('exportOriginalRecoveryVersion', {
+        'versionId': versionId,
+      });
+
+  @override
+  Future<void> finishOriginalRecovery() =>
+      channel.invokeMethod<void>('finishOriginalRecovery');
+
+  @override
+  Future<String?> chooseExportDirectory() =>
+      channel.invokeMethod<String>('chooseExportDirectory');
+
+  @override
+  Future<String?> exportToDirectory(
+    AudioTrack track,
+    List<FieldSuggestion> selected,
+    String directoryUri,
+  ) => _save(track, selected, directoryUri: directoryUri);
+
+  @override
+  Future<String?> export(AudioTrack track, List<FieldSuggestion> selected) =>
+      _save(track, selected);
+
+  Future<String?> _save(
+    AudioTrack track,
+    List<FieldSuggestion> selected, {
+    bool original = false,
+    String? directoryUri,
+  }) async {
     if (!supports(track)) {
       throw const ExportException('此格式暂不支持安全导出，目前支持 MP3、FLAC 和 M4A/MP4。');
     }
@@ -103,6 +266,11 @@ class SafeAudioCopyExporter implements AudioCopyExporter, AudioExportRecovery {
           artwork = await _downloadArtwork(candidate.value);
         }
       }
+      // This is the exact source snapshot used to generate the verified tags.
+      // Native compares it again against the live original immediately before
+      // opening a truncating writer, including after an Android consent dialog.
+      final sourceSha256 =
+          (await sha256.bind(File(sourcePath).openRead()).first).toString();
       await prepareTaggedCopy(
         sourcePath: sourcePath,
         outputPath: output,
@@ -111,16 +279,29 @@ class SafeAudioCopyExporter implements AudioCopyExporter, AudioExportRecovery {
         artwork: artwork,
         expectedTrack: track,
       );
-      return await channel.invokeMethod<String>('exportAudioCopy', {
-        'path': output,
-        'fileName':
-            '${p.basenameWithoutExtension(track.fileName)}-fixed.$extension',
-        'mimeType': switch (extension) {
-          'mp3' => 'audio/mpeg',
-          'flac' => 'audio/flac',
-          _ => 'audio/mp4',
+      return await channel.invokeMethod<String>(
+        original
+            ? 'saveAudioOriginal'
+            : directoryUri != null
+            ? 'exportAudioToDirectory'
+            : 'exportAudioCopy',
+        {
+          if (original) ...{
+            'sourceUri': track.contentUri,
+            'sourcePath': track.isDeviceTrack ? null : track.localPath,
+            'sourceSha256': sourceSha256,
+          },
+          'directoryUri': ?directoryUri,
+          'path': output,
+          'fileName':
+              '${p.basenameWithoutExtension(track.fileName)}-fixed.$extension',
+          'mimeType': switch (extension) {
+            'mp3' => 'audio/mpeg',
+            'flac' => 'audio/flac',
+            _ => 'audio/mp4',
+          },
         },
-      });
+      );
     } finally {
       if (readCopy != null) {
         try {

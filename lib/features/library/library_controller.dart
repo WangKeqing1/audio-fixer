@@ -4,9 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/models/app_settings.dart';
+import '../../core/models/audio_folder.dart';
 import '../../core/models/audio_track.dart';
+import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/services/audio_importer.dart';
+import '../../core/services/audio_tag_reader.dart';
 import '../../core/services/completion_service.dart';
 import '../../core/services/device_music_library.dart';
 import '../../core/services/export/audio_copy_exporter.dart';
@@ -42,6 +45,7 @@ class LibraryController extends ChangeNotifier {
       AudioLibraryPermission.notRequested;
   String? libraryError;
   String? exportRecoveryNotice;
+  OriginalRecoveryState? originalRecoveryState;
   String? get recoveryNotice {
     final notices = [?_snapshot.recoveryNotice, ?exportRecoveryNotice];
     return notices.isEmpty ? null : notices.join('\n\n');
@@ -53,40 +57,312 @@ class LibraryController extends ChangeNotifier {
     try {
       exportRecoveryNotice = await (recovery as AudioExportRecovery)
           .recoverInterruptedExport();
+      if (recovery is AudioOriginalRecovery) {
+        originalRecoveryState = await (recovery as AudioOriginalRecovery)
+            .getOriginalRecoveryState();
+      }
       return true;
     } catch (error) {
-      exportRecoveryNotice = '无法检查上次音频保存的恢复记录，请重新启动应用后重试。原音频未修改。';
+      originalRecoveryState = null;
+      exportRecoveryNotice = '无法检查上次音频保存的恢复记录，请重新启动应用后重试。请先核对原文件，暂不进行新的写入。';
       debugPrint('Export recovery unavailable: $error');
       return false;
     }
   }
 
   Future<void> acknowledgeExportRecovery() => _operate(() async {
+    if (originalRecoveryState != null) {
+      _announce('请先处理原文件恢复事项并保留需要的版本，不能直接清除提醒。');
+      return;
+    }
     final recovery = exporter;
     if (recovery is! AudioExportRecovery) return;
     await (recovery as AudioExportRecovery).acknowledgeExportRecovery();
     exportRecoveryNotice = null;
     _notify();
   });
+  bool get canRetryOriginalRecovery => exporter is AudioOriginalRecovery;
+
+  Future<void> retryOriginalRecovery() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioOriginalRecovery) return;
+    progress = '正在检查权限与恢复状态，不会自动替换当前文件…';
+    _notify();
+    try {
+      exportRecoveryNotice = await (recovery as AudioOriginalRecovery)
+          .retryOriginalRecovery();
+      await _recoverExport();
+      await _syncDeviceLibrary();
+      _announce(exportRecoveryNotice ?? '原文件恢复检查完成，请重新读取歌曲确认。');
+    } on PlatformException catch (error) {
+      await _recoverExport();
+      _announce(error.message ?? '恢复尚未完成，备份已保留，请重新授权后重试。');
+    }
+  });
+
+  Future<void> restoreOriginalBackup() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioOriginalRecovery ||
+        originalRecoveryState?.canRestore != true) {
+      return;
+    }
+    final target = originalRecoveryState!.targetUri;
+    progress = '正在保留当前版本并恢复原始备份，请勿退出…';
+    _notify();
+    try {
+      exportRecoveryNotice = await (recovery as AudioOriginalRecovery)
+          .restoreOriginalBackup();
+      final affected = _snapshot.tracks
+          .where((track) => track.contentUri == target)
+          .map((track) => track.id)
+          .toSet();
+      final invalidated = _invalidateTasks(affected);
+      var catalogSaved = true;
+      try {
+        await _commit(tasks: invalidated);
+      } catch (_) {
+        catalogSaved = false;
+        _snapshot = LibrarySnapshot(
+          tracks: _snapshot.tracks,
+          tasks: invalidated,
+          settings: settings,
+          recoveredFromBackup: _snapshot.recoveredFromBackup,
+          batchOperation: batchOperation,
+        );
+      }
+      await _recoverExport();
+      await _syncDeviceLibrary();
+      _announce(
+        catalogSaved
+            ? exportRecoveryNotice ?? '恢复已完成，请核对原文件与保留的版本。'
+            : '原文件恢复步骤已完成，但目录记录保存失败。请查看恢复状态并重新读取歌曲，旧候选不能继续保存。',
+      );
+    } on PlatformException catch (error) {
+      await _recoverExport();
+      _announce(error.message ?? '恢复未完成，已有版本仍会保留。');
+    }
+  });
+
+  Future<void> exportOriginalRecoveryVersion(String versionId) => _operate(
+    () async {
+      final recovery = exporter;
+      if (recovery is! AudioOriginalRecovery || originalRecoveryState == null) {
+        return;
+      }
+      progress = '请选择保留版本的导出位置…';
+      _notify();
+      try {
+        final uri = await (recovery as AudioOriginalRecovery)
+            .exportOriginalRecoveryVersion(versionId);
+        await _recoverExport();
+        _announce(uri == null ? '已取消导出，恢复版本仍保留在应用中。' : '版本副本已导出并通过完整文件校验。');
+      } on PlatformException catch (error) {
+        await _recoverExport();
+        _announce(error.message ?? '版本导出未完成，恢复版本仍保留。');
+      }
+    },
+  );
+
+  Future<void> finishOriginalRecovery() => _operate(() async {
+    final recovery = exporter;
+    if (recovery is! AudioOriginalRecovery ||
+        originalRecoveryState?.canFinish != true) {
+      return;
+    }
+    try {
+      await (recovery as AudioOriginalRecovery).finishOriginalRecovery();
+      await _recoverExport();
+      _announce('恢复事项已处理，当前原文件保持不变。');
+    } on PlatformException catch (error) {
+      await _recoverExport();
+      _announce(error.message ?? '暂不能完成恢复，请先导出需要保留的版本。');
+    }
+  });
+
   bool isCompleting = false;
   bool completionStopRequested = false;
   final Map<String, String> sourceConnections = {};
+  final Set<String> _selectedTrackIds = {};
+  Set<String> get selectedTrackIds => Set.unmodifiable(
+    _selectedTrackIds.intersection(tracks.map((track) => track.id).toSet()),
+  );
+  int get selectedCount => selectedTrackIds.length;
+  BatchOperation? batchOperation;
+  bool _batchStopRequested = false;
+  bool _writeRecordUncertain = false;
+  bool get hasRetryableBatchFailures =>
+      !isBusy &&
+      (batchOperation?.items.any(
+            (item) =>
+                item.status == BatchItemStatus.failed &&
+                trackById(item.trackId) != null,
+          ) ??
+          false);
+
+  void toggleTrackSelection(String id) {
+    if (!canOperate || trackById(id) == null) return;
+    if (!_selectedTrackIds.add(id)) _selectedTrackIds.remove(id);
+    _notify();
+  }
+
+  void selectTracks(Iterable<String> ids) {
+    if (!canOperate) return;
+    _selectedTrackIds.addAll(ids.where((id) => trackById(id) != null));
+    _notify();
+  }
+
+  void retainSelection(Iterable<String> allowedIds) {
+    // Removing hidden choices is safe even while a batch owns its frozen scope.
+    // Never let a search changed during work revive selections for a later batch.
+    final allowed = allowedIds.toSet();
+    final before = _selectedTrackIds.length;
+    _selectedTrackIds.removeWhere((id) => !allowed.contains(id));
+    if (_selectedTrackIds.length != before) _notify();
+  }
+
+  void clearSelection() {
+    if (!canOperate) return;
+    _selectedTrackIds.clear();
+    _notify();
+  }
+
+  void stopBatch() {
+    if (!(batchOperation?.isRunning ?? false)) return;
+    _batchStopRequested = true;
+    completionStopRequested = true;
+    batchOperation = batchOperation!.copyWith(stopRequested: true);
+    progress = '正在停止，当前歌曲完成安全处理后将停止…';
+    _notify();
+  }
+
+  Future<void> _startBatch(
+    BatchOperationKind kind,
+    List<AudioTrack> targets,
+  ) async {
+    _batchStopRequested = false;
+    completionStopRequested = false;
+    _writeRecordUncertain = false;
+    batchOperation = BatchOperation(
+      kind: kind,
+      items: targets
+          .map(
+            (track) => BatchItemResult(
+              trackId: track.id,
+              trackTitle: track.displayTitle,
+            ),
+          )
+          .toList(),
+    );
+    await _commit();
+  }
+
+  void _setBatchItem(String id, BatchItemStatus status, String message) {
+    final batch = batchOperation;
+    if (batch == null) return;
+    batchOperation = batch.copyWith(
+      items: batch.items
+          .map(
+            (item) =>
+                item.trackId == id ? item.withResult(status, message) : item,
+          )
+          .toList(),
+    );
+    _notify();
+  }
+
+  Future<void> _finishBatch() async {
+    final batch = batchOperation;
+    if (batch == null) return;
+    batchOperation = batch.copyWith(
+      isRunning: false,
+      items: batch.items
+          .map(
+            (item) => item.isFinished
+                ? item
+                : item.withResult(BatchItemStatus.cancelled, '未处理；可以重新选择后继续。'),
+          )
+          .toList(),
+    );
+    try {
+      await _commit();
+    } catch (error) {
+      _announce('批量记录保存失败，请核对已完成的文件与恢复提醒后再操作。');
+      rethrow;
+    } finally {
+      isCompleting = false;
+      completionStopRequested = false;
+      _notify();
+    }
+  }
+
+  Future<void> retryFailedBatch() async {
+    if (!canOperate || batchOperation == null) return;
+    final failed = batchOperation!.items
+        .where(
+          (item) =>
+              item.status == BatchItemStatus.failed &&
+              trackById(item.trackId) != null,
+        )
+        .map((item) => item.trackId)
+        .toSet();
+    if (failed.isEmpty) return;
+    if (batchOperation!.kind == BatchOperationKind.identify) {
+      await complete(trackIds: failed);
+    } else {
+      await _saveBatch(
+        failed,
+        exportCopies: batchOperation!.kind == BatchOperationKind.exportCopies,
+      );
+    }
+  }
 
   bool get usesDeviceLibrary => deviceLibrary != null;
   bool get canReadDeviceLibrary =>
       !usesDeviceLibrary || libraryPermission == AudioLibraryPermission.granted;
-  List<AudioTrack> get tracks => List.unmodifiable(
+  List<AudioTrack> get allTracks => List.unmodifiable(
     _snapshot.tracks.where(
       (track) => !track.isDeviceTrack || canReadDeviceLibrary,
     ),
   );
+  List<AudioTrack> get tracks =>
+      List.unmodifiable(allTracks.where((track) => !isTrackExcluded(track)));
+  bool isTrackExcluded(AudioTrack track) => settings.excludes(track);
+  int get excludedTrackCount => allTracks.where(isTrackExcluded).length;
+  int get unknownDurationCount =>
+      tracks.where((track) => !track.hasKnownDuration).length;
+  int get unknownFolderCount =>
+      allTracks.where((track) => track.folder == null).length;
+  List<AudioFolder> get folderChoices {
+    final folders = <AudioFolder>{...settings.excludedFolders};
+    for (final track in allTracks) {
+      folders.addAll(track.folder?.ancestors ?? const <AudioFolder>[]);
+    }
+    for (final folder in settings.excludedFolders) {
+      folders.addAll(folder.ancestors);
+    }
+    final sorted = folders.toList()
+      ..sort((a, b) {
+        final volumeOrder = a.volumeName.compareTo(b.volumeName);
+        return volumeOrder == 0
+            ? a.normalizedPath.compareTo(b.normalizedPath)
+            : volumeOrder;
+      });
+    return List.unmodifiable(sorted);
+  }
+
   List<CompletionTask> get tasks => List.unmodifiable(_snapshot.tasks);
   AppSettings get settings => _snapshot.settings;
   int get incompleteCount =>
       tracks.where((track) => track.needsCompletion).length;
   bool get canOperate => !isLoading && !isBusy && loadError == null;
 
+  void _pruneSelection() {
+    final eligibleIds = tracks.map((track) => track.id).toSet();
+    _selectedTrackIds.removeWhere((id) => !eligibleIds.contains(id));
+  }
+
   void _notify() {
+    _pruneSelection();
     if (!_disposed) notifyListeners();
   }
 
@@ -105,6 +381,18 @@ class LibraryController extends ChangeNotifier {
     try {
       await _recoverExport();
       _snapshot = await store.load();
+      batchOperation = _snapshot.batchOperation;
+      if (batchOperation?.isRunning ?? false) {
+        final uncertainIds =
+            batchOperation!.kind == BatchOperationKind.saveOriginal
+            ? batchOperation!.items
+                  .where((item) => item.status == BatchItemStatus.running)
+                  .map((item) => item.trackId)
+                  .toSet()
+            : <String>{};
+        batchOperation = batchOperation!.recoverInterrupted();
+        await _commit(tasks: _invalidateTasks(uncertainIds));
+      }
       await _pruneUnusedFiles();
       if (recoveryNotice case final message?) {
         _announce(
@@ -158,10 +446,7 @@ class LibraryController extends ChangeNotifier {
   });
 
   void stopCompletion() {
-    if (!isCompleting) return;
-    completionStopRequested = true;
-    progress = '正在停止，等待当前歌曲处理结束…';
-    _notify();
+    if (isCompleting) stopBatch();
   }
 
   Future<void> authorizeLibrary() => _operate(() async {
@@ -200,7 +485,9 @@ class LibraryController extends ChangeNotifier {
             (old.dateModifiedMs != track.dateModifiedMs ||
                 old.sizeBytes != track.sizeBytes ||
                 old.fileName != track.fileName ||
-                old.contentUri != track.contentUri)) {
+                old.contentUri != track.contentUri ||
+                old.folder != track.folder ||
+                old.indexedDurationMs != track.indexedDurationMs)) {
           changedIds.add(track.id);
         }
         if (old == null ||
@@ -208,7 +495,9 @@ class LibraryController extends ChangeNotifier {
             old.dateModifiedMs != track.dateModifiedMs ||
             old.sizeBytes != track.sizeBytes ||
             old.fileName != track.fileName ||
-            old.contentUri != track.contentUri) {
+            old.contentUri != track.contentUri ||
+            old.folder != track.folder ||
+            old.indexedDurationMs != track.indexedDurationMs) {
           return track;
         }
         return track.withDetails(
@@ -297,9 +586,11 @@ class LibraryController extends ChangeNotifier {
       tasks: tasks ?? _snapshot.tasks,
       settings: settings ?? _snapshot.settings,
       recoveredFromBackup: _snapshot.recoveredFromBackup,
+      batchOperation: batchOperation,
     );
     await store.save(next);
     _snapshot = next;
+    _pruneSelection();
     _notify();
   }
 
@@ -322,8 +613,8 @@ class LibraryController extends ChangeNotifier {
   Future<void> importAudio() => _operate(() async {
     final selected = await picker.pick();
     if (selected.isEmpty) return;
-    final next = [...tracks];
-    final existing = tracks.map((track) => track.id).toSet();
+    final next = [..._snapshot.tracks];
+    final existing = _snapshot.tracks.map((track) => track.id).toSet();
     var imported = 0;
     var duplicates = 0;
     var readErrors = 0;
@@ -361,14 +652,48 @@ class LibraryController extends ChangeNotifier {
     );
   });
 
-  Future<void> complete({AudioTrack? track}) => _operate(() async {
-    final targets = track == null
-        ? tracks
+  bool get _hasLibraryExclusions =>
+      settings.excludeShortAudio || settings.excludedFolders.isNotEmpty;
+
+  // Revalidate the native metadata while filters are active. A stale folder or
+  // duration must not become an online query/write simply because it was once
+  // selected. A failed refresh is not permission to act on old metadata.
+  Future<bool> _refreshForExclusions({Iterable<String>? trackIds}) async {
+    if (!_hasLibraryExclusions || !usesDeviceLibrary) return true;
+    final requestedIds = trackIds?.toSet();
+    if (!_snapshot.tracks.any(
+      (track) =>
+          track.isDeviceTrack &&
+          (requestedIds == null || requestedIds.contains(track.id)),
+    )) {
+      return true;
+    }
+    await _syncDeviceLibrary();
+    if (!canReadDeviceLibrary || libraryError != null) {
+      _announce('无法重新确认排除条件，请恢复音乐库访问并刷新后重试。');
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> complete({
+    AudioTrack? track,
+    Set<String>? trackIds,
+  }) => _operate(() async {
+    if (!await _refreshForExclusions(
+      trackIds: track != null ? [track.id] : trackIds,
+    )) {
+      return;
+    }
+    final targets = track != null
+        ? [?trackById(track.id)]
+        : trackIds != null
+        ? tracks.where((item) => trackIds.contains(item.id)).toList()
+        : tracks
               .where(
                 (item) => canQueryTrack(item) && !_hasReviewableResult(item),
               )
-              .toList()
-        : [?trackById(track.id)];
+              .toList();
     if (targets.isEmpty || settings.enabledFields.isEmpty) {
       _announce(
         settings.enabledFields.isEmpty
@@ -377,22 +702,46 @@ class LibraryController extends ChangeNotifier {
       );
       return;
     }
+    await _startBatch(BatchOperationKind.identify, targets);
     isCompleting = true;
-    completionStopRequested = false;
     var finished = 0;
     try {
       for (var index = 0; index < targets.length; index++) {
-        if (completionStopRequested || _disposed) break;
+        if (_batchStopRequested || _disposed) break;
         var item = targets[index];
+        if (item.isDeviceTrack &&
+            !await _refreshForExclusions(trackIds: [item.id])) {
+          _batchStopRequested = true;
+          break;
+        }
+        final eligible = trackById(item.id);
+        if (eligible == null || isTrackExcluded(eligible)) {
+          _setBatchItem(item.id, BatchItemStatus.skipped, '已被音乐库排除条件过滤，未查询。');
+          await _commit();
+          continue;
+        }
+        item = eligible;
         progress = '正在查询 ${index + 1} / ${targets.length}：${item.displayTitle}';
-        _notify();
+        _setBatchItem(item.id, BatchItemStatus.running, '正在检查和查询');
+        await _commit();
         CompletionTask task;
         try {
           if (item.isDeviceTrack &&
-              !item.detailsLoaded &&
+              (!item.detailsLoaded || item.readError != null) &&
               completion.sources.isNotEmpty) {
             item = await deviceLibrary!.readDetails(item);
           }
+          if (isTrackExcluded(item)) {
+            _setBatchItem(item.id, BatchItemStatus.skipped, '读取后符合排除条件，未查询。');
+            await _commit(
+              tracks: _snapshot.tracks
+                  .map((current) => current.id == item.id ? item : current)
+                  .toList(),
+              tasks: _invalidateTasks({item.id}),
+            );
+            continue;
+          }
+          if (item.readError != null) throw StateError(item.readError!);
           task = await completion.preview(item, settings);
         } catch (error, stack) {
           debugPrint('Completion failed: $error\n$stack');
@@ -400,7 +749,7 @@ class LibraryController extends ChangeNotifier {
               error is PlatformException && error.code == 'permission_denied';
           if (permissionLost) {
             libraryPermission = AudioLibraryPermission.denied;
-            completionStopRequested = true;
+            stopBatch();
           }
           task = CompletionTask(
             trackId: item.id,
@@ -409,9 +758,10 @@ class LibraryController extends ChangeNotifier {
             status: TaskStatus.failed,
             message: permissionLost
                 ? '音乐访问权限已关闭，请重新授权。'
-                : error is TimeoutException
-                ? '数据源响应超时，请稍后重试。'
-                : '查询失败，请检查网络或稍后重试。',
+                : item.readError ??
+                      (error is TimeoutException
+                          ? '数据源响应超时，请稍后重试。'
+                          : '查询失败，请检查网络或稍后重试。'),
           );
         }
         task = CompletionTask(
@@ -422,6 +772,15 @@ class LibraryController extends ChangeNotifier {
           message: task.message,
           suggestions: task.suggestions,
           queriedFields: settings.enabledFields,
+        );
+        _setBatchItem(
+          item.id,
+          task.status == TaskStatus.failed
+              ? BatchItemStatus.failed
+              : task.suggestions.isNotEmpty
+              ? BatchItemStatus.needsReview
+              : BatchItemStatus.skipped,
+          task.message,
         );
         await _commit(
           tracks: _snapshot.tracks
@@ -434,19 +793,19 @@ class LibraryController extends ChangeNotifier {
         );
         finished++;
       }
-      _announce(
-        '${completionStopRequested ? '已停止，' : ''}已查询 $finished 首歌曲，请在「补全任务」查看结果。',
-      );
     } finally {
-      isCompleting = false;
-      completionStopRequested = false;
+      await _finishBatch();
     }
+    _announce(
+      '${_batchStopRequested ? '已停止，' : ''}已查询 $finished 首歌曲，请在「补全任务」查看结果。 ${batchOperation!.summary}',
+    );
   });
 
   List<CompletionTask> _invalidateTasks(Set<String> trackIds) =>
       tasks.map((task) {
         if (!trackIds.contains(task.trackId) ||
-            task.status == TaskStatus.outdated) {
+            task.status == TaskStatus.outdated ||
+            task.status == TaskStatus.savedOriginal) {
           return task;
         }
         return CompletionTask(
@@ -467,6 +826,7 @@ class LibraryController extends ChangeNotifier {
     return current != null &&
         current.createdAt == task.createdAt &&
         current.status != TaskStatus.outdated &&
+        current.status != TaskStatus.savedOriginal &&
         track != null &&
         track.detailsLoaded &&
         track.readError == null;
@@ -479,10 +839,12 @@ class LibraryController extends ChangeNotifier {
         task.suggestions.isNotEmpty &&
         task.queriedFields.containsAll(settings.enabledFields) &&
         (task.status == TaskStatus.needsReview ||
+            task.status == TaskStatus.readyToSave ||
             task.status == TaskStatus.exported);
   }
 
   bool canQueryTrack(AudioTrack track) =>
+      !isTrackExcluded(track) &&
       track.readError == null &&
       settings.enabledFields.isNotEmpty &&
       (!track.detailsLoaded ||
@@ -492,7 +854,8 @@ class LibraryController extends ChangeNotifier {
       .where((track) => canQueryTrack(track) && !_hasReviewableResult(track))
       .length;
 
-  bool canExportTrack(AudioTrack track) => exporter?.supports(track) ?? false;
+  bool canExportTrack(AudioTrack track) =>
+      !isTrackExcluded(track) && (exporter?.supports(track) ?? false);
 
   CompletionTask? taskForTrack(String id) {
     for (final task in tasks) {
@@ -501,91 +864,471 @@ class LibraryController extends ChangeNotifier {
     return null;
   }
 
-  Future<bool> exportCandidates(
+  bool canSaveOriginalTrack(AudioTrack track) {
+    final writer = exporter;
+    return !isTrackExcluded(track) &&
+        writer is AudioOriginalSaver &&
+        (writer as AudioOriginalSaver).supportsOriginal(track);
+  }
+
+  bool _validCandidates(CompletionTask task, List<FieldSuggestion> selected) =>
+      selected.isNotEmpty &&
+      selected.map((item) => item.field).toSet().length == selected.length &&
+      selected.every(
+        (item) =>
+            hasText(item.value) &&
+            task.suggestions.any((candidate) => candidate.permits(item)),
+      );
+
+  List<FieldSuggestion> approvedSuggestionsFor(CompletionTask task) {
+    final current = taskForTrack(task.trackId);
+    if (current == null ||
+        !isTaskCurrent(task) ||
+        !_validCandidates(current, current.approvedSuggestions)) {
+      return const [];
+    }
+    return List.unmodifiable(current.approvedSuggestions);
+  }
+
+  CompletionTask _withReview(
+    CompletionTask task, {
+    List<FieldSuggestion>? approved,
+    String? error,
+  }) => CompletionTask(
+    trackId: task.trackId,
+    trackTitle: task.trackTitle,
+    createdAt: task.createdAt,
+    status: approved != null ? TaskStatus.readyToSave : task.status,
+    message: approved != null
+        ? '已确认 ${approved.length} 项资料，可保存到原文件或选择导出副本。'
+        : task.message,
+    suggestions: task.suggestions,
+    exportedCopyUri: task.exportedCopyUri,
+    queriedFields: task.queriedFields,
+    approvedSuggestions: approved ?? task.approvedSuggestions,
+    writeError: error,
+  );
+
+  Future<bool> approveCandidates(
     CompletionTask task,
     List<FieldSuggestion> selected,
   ) async {
+    var approved = false;
+    await _operate(() async {
+      final current = taskForTrack(task.trackId);
+      if (current == null ||
+          !isTaskCurrent(task) ||
+          !_validCandidates(current, selected)) {
+        _announce('请选择当前结果中的候选资料。歌曲或候选已变化时请重新查询。');
+        return;
+      }
+      await _commit(
+        tasks: tasks
+            .map(
+              (item) => item.trackId == task.trackId
+                  ? _withReview(current, approved: List.unmodifiable(selected))
+                  : item,
+            )
+            .toList(),
+      );
+      approved = true;
+      _announce('已确认 ${selected.length} 项资料，尚未修改文件。可在批量操作中保存。');
+    });
+    return approved;
+  }
+
+  Future<bool> revokeCandidateApproval(CompletionTask task) async {
+    var revoked = false;
+    await _operate(() async {
+      final current = taskForTrack(task.trackId);
+      if (current == null || !isTaskCurrent(task)) return;
+      final updated = CompletionTask(
+        trackId: current.trackId,
+        trackTitle: current.trackTitle,
+        createdAt: current.createdAt,
+        status: TaskStatus.needsReview,
+        message: '已撤销确认，请重新核对候选资料。文件未修改。',
+        suggestions: current.suggestions,
+        exportedCopyUri: current.exportedCopyUri,
+        queriedFields: current.queriedFields,
+      );
+      await _commit(
+        tasks: tasks
+            .map((item) => item.trackId == task.trackId ? updated : item)
+            .toList(),
+      );
+      revoked = true;
+      _announce('已撤销确认，批量保存将跳过此歌曲。');
+    });
+    return revoked;
+  }
+
+  Future<bool> saveCandidates(
+    CompletionTask task,
+    List<FieldSuggestion> selected,
+  ) => _saveOne(task, selected, exportCopy: false);
+
+  Future<bool> exportCandidates(
+    CompletionTask task,
+    List<FieldSuggestion> selected,
+  ) => _saveOne(task, selected, exportCopy: true);
+
+  Future<bool> _saveOne(
+    CompletionTask task,
+    List<FieldSuggestion> selected, {
+    required bool exportCopy,
+  }) async {
     var saved = false;
     await _operate(() async {
-      final track = trackById(task.trackId);
-      final current = taskForTrack(task.trackId);
-      if (track == null || current == null || !isTaskCurrent(task)) {
-        _announce('歌曲或候选已更新，请返回重新打开结果。');
-        return;
-      }
-      if (selected.isEmpty ||
-          selected.any(
-            (item) => !current.suggestions.any(
-              (candidate) =>
-                  candidate.field == item.field &&
-                  candidate.value == item.value &&
-                  candidate.source == item.source,
-            ),
-          )) {
-        _announce('请选择当前结果中的候选资料。');
-        return;
-      }
-      if (!canExportTrack(track)) {
-        _announce('此格式暂不支持安全导出，目前支持 MP3、FLAC 和 M4A/MP4。');
-        return;
-      }
-      progress = '正在生成并校验副本，原音频保持不变…';
-      _notify();
-      try {
-        if (!await _recoverExport()) {
-          _announce(exportRecoveryNotice!);
-          return;
-        }
-        final uri = await exporter!.export(track, selected);
-        if (uri == null) {
-          _announce('已取消保存，原音频未修改。');
-          return;
-        }
-        saved = true;
-        final exported = CompletionTask(
-          trackId: current.trackId,
-          trackTitle: current.trackTitle,
-          createdAt: current.createdAt,
-          status: TaskStatus.exported,
-          message: '已将所选资料写入新副本，并通过音频完整性和标签校验。原音频未修改。',
-          suggestions: current.suggestions,
-          exportedCopyUri: uri,
-          queriedFields: current.queriedFields,
-        );
-        try {
-          await _commit(
-            tasks: tasks
-                .map((item) => item.trackId == task.trackId ? exported : item)
-                .toList(),
-          );
-          if (exporter case final AudioExportRecovery recovery) {
-            try {
-              await recovery.confirmExportRecorded(uri);
-            } catch (error) {
-              // The saved copy and committed task are valid. Leave the native
-              // journal for startup recovery rather than report a failed save.
-              debugPrint('Export journal acknowledgement deferred: $error');
-            }
-          }
-          _announce('已导出校验通过的音频副本，原音频未修改。');
-        } catch (_) {
-          _announce('音频副本已保存，但任务记录保存失败。请在刚选择的位置查看文件。');
-        }
-      } on ExportException catch (error) {
-        _announce(error.message);
-      } on FormatException catch (error) {
-        _announce('音频校验未通过：${error.message} 原音频未修改。');
-      } on TimeoutException {
-        _announce('封面下载超时，未导出副本。请稍后重试。');
-      } on PlatformException catch (error) {
-        _announce(
-          error.code == 'export_cleanup_failed'
-              ? '保存未完成，所选位置可能留有不完整副本，请删除该副本后重试。原音频未修改。'
-              : '保存未完成。原音频未修改，请检查保存位置和可用空间后重试。',
-        );
-      }
+      final result = await _writeCandidates(
+        task,
+        selected,
+        exportCopy: exportCopy,
+      );
+      saved =
+          result.status == BatchItemStatus.savedOriginal ||
+          result.status == BatchItemStatus.exported;
+      _announce(result.message);
     });
     return saved;
+  }
+
+  Future<void> saveSelectedCandidates({
+    bool exportCopies = false,
+    Set<String>? trackIds,
+  }) => _saveBatch(
+    trackIds == null
+        ? selectedTrackIds
+        : selectedTrackIds.intersection(trackIds),
+    exportCopies: exportCopies,
+  );
+
+  Future<void> _saveBatch(
+    Set<String> ids, {
+    required bool exportCopies,
+  }) => _operate(() async {
+    if (!await _refreshForExclusions(trackIds: ids)) return;
+    final targets = tracks.where((track) => ids.contains(track.id)).toList();
+    if (targets.isEmpty) {
+      _announce('请先选择歌曲。');
+      return;
+    }
+    await _startBatch(
+      exportCopies
+          ? BatchOperationKind.exportCopies
+          : BatchOperationKind.saveOriginal,
+      targets,
+    );
+    String? directory;
+    try {
+      final eligible = targets.where((track) {
+        final task = taskForTrack(track.id);
+        return task != null && approvedSuggestionsFor(task).isNotEmpty;
+      }).toList();
+      if (!exportCopies &&
+          eligible.isNotEmpty &&
+          exporter is AudioBatchOriginalSaver) {
+        final supported = eligible.where(canSaveOriginalTrack).toList();
+        if (supported.isNotEmpty) {
+          progress = '正在请求 ${supported.length} 首原文件的系统写入授权…';
+          _notify();
+          final allowed = await (exporter as AudioBatchOriginalSaver)
+              .authorizeOriginalWrites(supported);
+          if (!allowed) {
+            _batchStopRequested = true;
+            return;
+          }
+        }
+      }
+      if (exportCopies && eligible.isNotEmpty) {
+        final writer = exporter;
+        if (writer is! AudioBatchExporter) {
+          for (final item in targets) {
+            _setBatchItem(
+              item.id,
+              BatchItemStatus.failed,
+              '当前环境不支持批量导出，请逐首导出副本。',
+            );
+          }
+          return;
+        }
+        progress = '请选择批量副本保存文件夹…';
+        _notify();
+        directory = await (writer as AudioBatchExporter)
+            .chooseExportDirectory();
+        if (directory == null) {
+          _batchStopRequested = true;
+          return;
+        }
+      }
+      for (var index = 0; index < targets.length; index++) {
+        if (_batchStopRequested || _disposed) break;
+        final item = targets[index];
+        final task = taskForTrack(item.id);
+        final approved = task == null
+            ? <FieldSuggestion>[]
+            : approvedSuggestionsFor(task);
+        if (task == null || approved.isEmpty) {
+          _setBatchItem(
+            item.id,
+            BatchItemStatus.skipped,
+            task?.status == TaskStatus.savedOriginal
+                ? '原文件已保存，不重复写入。'
+                : '尚无已确认的有效资料，请逐项确认候选后再保存。',
+          );
+          await _commit();
+          continue;
+        }
+        progress =
+            '正在${exportCopies ? '导出副本' : '保存原文件'} ${index + 1} / ${targets.length}：${item.displayTitle}';
+        _setBatchItem(item.id, BatchItemStatus.running, '正在准备、保存并校验');
+        await _commit();
+        final result = await _writeCandidates(
+          task,
+          approved,
+          exportCopy: exportCopies,
+          directory: directory,
+        );
+        _setBatchItem(item.id, result.status, result.message);
+        if (result.status == BatchItemStatus.cancelled ||
+            _writeRecordUncertain) {
+          _batchStopRequested = true;
+        }
+        await _commit();
+      }
+    } catch (error, stack) {
+      debugPrint('Batch write interrupted: $error\n$stack');
+      final message = _writeErrorMessage(error, exportCopies);
+      final current = batchOperation!;
+      for (final item in current.items.where((item) => !item.isFinished)) {
+        _setBatchItem(item.trackId, BatchItemStatus.failed, message);
+      }
+    } finally {
+      await _finishBatch();
+      _announce(
+        '${_batchStopRequested ? '已停止。' : ''}${batchOperation!.summary}',
+      );
+    }
+  });
+
+  Future<BatchItemResult> _writeCandidates(
+    CompletionTask task,
+    List<FieldSuggestion> selected, {
+    required bool exportCopy,
+    String? directory,
+  }) async {
+    BatchItemResult result(BatchItemStatus status, String message) =>
+        BatchItemResult(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          status: status,
+          message: message,
+        );
+    if (!await _refreshForExclusions(trackIds: [task.trackId])) {
+      return result(BatchItemStatus.skipped, '无法确认最新排除条件，未保存。');
+    }
+    var candidateTrack = trackById(task.trackId);
+    if (candidateTrack == null) {
+      return result(BatchItemStatus.skipped, '歌曲不可用或已被音乐库排除条件过滤，未保存。');
+    }
+    if (_hasLibraryExclusions &&
+        candidateTrack.isDeviceTrack &&
+        deviceLibrary != null) {
+      try {
+        final updated = await deviceLibrary!.readDetails(candidateTrack);
+        final changed =
+            candidateTrack.title != updated.title ||
+            candidateTrack.artist != updated.artist ||
+            candidateTrack.album != updated.album ||
+            candidateTrack.durationMs != updated.durationMs ||
+            candidateTrack.lyrics != updated.lyrics ||
+            candidateTrack.artworkPath != updated.artworkPath ||
+            updated.readError != null;
+        await _commit(
+          tracks: _snapshot.tracks
+              .map((item) => item.id == updated.id ? updated : item)
+              .toList(),
+          tasks: changed ? _invalidateTasks({updated.id}) : null,
+        );
+        if (isTrackExcluded(updated)) {
+          return result(BatchItemStatus.skipped, '读取后符合排除条件，未保存。');
+        }
+        candidateTrack = trackById(task.trackId);
+      } catch (error) {
+        if (error is PlatformException && error.code == 'permission_denied') {
+          libraryPermission = AudioLibraryPermission.denied;
+          _batchStopRequested = true;
+          _notify();
+        }
+        return result(
+          BatchItemStatus.failed,
+          _writeErrorMessage(error, exportCopy),
+        );
+      }
+    }
+    final track = candidateTrack;
+    final current = taskForTrack(task.trackId);
+    if (track == null || current == null || !isTaskCurrent(task)) {
+      return result(BatchItemStatus.skipped, '歌曲或候选已更新，请返回重新打开结果。');
+    }
+    if (!_validCandidates(current, selected)) {
+      return result(BatchItemStatus.skipped, '请选择当前结果中的候选资料，同一字段只能选择一项。');
+    }
+    if (exportCopy ? !canExportTrack(track) : !canSaveOriginalTrack(track)) {
+      return result(
+        BatchItemStatus.skipped,
+        !exportCopy && !track.isDeviceTrack && canExportTrack(track)
+            ? '这是旧版导入的应用内副本，请选择导出副本。系统音乐库原文件支持直接保存。'
+            : '此格式或来源暂不支持安全${exportCopy ? '导出' : '保存原文件'}，目前支持 MP3、FLAC 和 M4A/MP4。',
+      );
+    }
+    progress ??= exportCopy ? '正在生成并校验副本，原音频保持不变…' : '正在校验资料并备份原文件，请勿退出…';
+    _notify();
+    try {
+      if (!await _recoverExport()) {
+        return result(BatchItemStatus.failed, exportRecoveryNotice!);
+      }
+      final String? uri;
+      if (!exportCopy) {
+        uri = await (exporter as AudioOriginalSaver).saveOriginal(
+          track,
+          selected,
+        );
+      } else if (directory != null) {
+        uri = await (exporter as AudioBatchExporter).exportToDirectory(
+          track,
+          selected,
+          directory,
+        );
+      } else {
+        uri = await exporter!.export(track, selected);
+      }
+      if (uri == null) {
+        return result(BatchItemStatus.cancelled, '已取消保存，原音频未修改。');
+      }
+      final status = exportCopy
+          ? BatchItemStatus.exported
+          : BatchItemStatus.savedOriginal;
+      var message = exportCopy
+          ? '已导出校验通过的音频副本，原音频未修改。'
+          : '已保存到原文件，并通过标签与音频完整性校验。';
+      AudioTrack updated = track;
+      if (!exportCopy) {
+        final values = {for (final item in selected) item.field: item.value};
+        updated = track.withDetails(
+          title: values[AudioField.title] ?? track.title,
+          artist: values[AudioField.artist] ?? track.artist,
+          album: values[AudioField.album] ?? track.album,
+          year: track.year,
+          durationMs: track.durationMs,
+          lyrics: values[AudioField.lyrics] ?? track.lyrics,
+          artworkPath: track.artworkPath,
+        );
+        try {
+          if (track.isDeviceTrack && deviceLibrary != null) {
+            updated = await deviceLibrary!.readDetails(track);
+          } else if (importer is LocalAudioImporter) {
+            final root = await (importer as LocalAudioImporter)
+                .directoryProvider();
+            updated = await readTrackTags(track, track.localPath, root.path);
+          }
+          if (updated.readError != null) message += ' 列表资料重新读取失败，请刷新核对。';
+        } catch (_) {
+          updated = updated.withReadError('文件已保存，但列表资料重新读取失败，请刷新核对。');
+          message += ' 列表资料重新读取失败，请刷新核对。';
+        }
+      }
+      final savedTask = CompletionTask(
+        trackId: current.trackId,
+        trackTitle: updated.displayTitle,
+        createdAt: current.createdAt,
+        status: exportCopy ? TaskStatus.exported : TaskStatus.savedOriginal,
+        message: message,
+        suggestions: current.suggestions,
+        exportedCopyUri: exportCopy ? uri : current.exportedCopyUri,
+        queriedFields: current.queriedFields,
+        approvedSuggestions: exportCopy
+            ? current.approvedSuggestions
+            : const [],
+      );
+      try {
+        await _commit(
+          tasks: tasks
+              .map((item) => item.trackId == task.trackId ? savedTask : item)
+              .toList(),
+          tracks: _snapshot.tracks
+              .map((item) => item.id == track.id ? updated : item)
+              .toList(),
+        );
+        if (exporter case final AudioExportRecovery recovery) {
+          try {
+            await recovery.confirmExportRecorded(uri);
+          } catch (error) {
+            debugPrint('Write journal acknowledgement deferred: $error');
+          }
+        }
+      } catch (_) {
+        _writeRecordUncertain = true;
+        if (!exportCopy) {
+          // Physical verification already succeeded. Keep that truth in memory
+          // so another tap cannot re-submit this original while disk is full.
+          // The native journal remains unacknowledged for process recovery.
+          _snapshot = LibrarySnapshot(
+            tracks: _snapshot.tracks
+                .map((item) => item.id == track.id ? updated : item)
+                .toList(),
+            tasks: tasks
+                .map((item) => item.trackId == task.trackId ? savedTask : item)
+                .toList(),
+            settings: settings,
+            recoveredFromBackup: _snapshot.recoveredFromBackup,
+            batchOperation: batchOperation,
+          );
+          _notify();
+        }
+        message = exportCopy
+            ? '音频副本已保存，但任务记录保存失败。请在刚选择的位置查看文件。'
+            : '原文件已保存，但任务记录保存失败。请查看恢复提醒并重新读取歌曲，勿重复保存。';
+      }
+      return result(status, message);
+    } catch (error) {
+      final message = _writeErrorMessage(error, exportCopy);
+      try {
+        await _commit(
+          tasks: tasks
+              .map(
+                (item) => item.trackId == current.trackId
+                    ? _withReview(current, error: message)
+                    : item,
+              )
+              .toList(),
+        );
+      } catch (_) {
+        _writeRecordUncertain = true;
+      }
+      if (error is PlatformException &&
+          (error.code.contains('recovery') ||
+              error.code.contains('rollback'))) {
+        _writeRecordUncertain = true;
+        await _recoverExport();
+      }
+      return result(BatchItemStatus.failed, message);
+    }
+  }
+
+  String _writeErrorMessage(Object error, bool exportCopy) {
+    if (error is ExportException) return error.message;
+    if (error is FormatException) return '音频校验未通过：${error.message}';
+    if (error is TimeoutException) return '封面下载超时，未开始写入。请稍后重试。';
+    if (error is PlatformException) {
+      if (error.code == 'export_cleanup_failed') {
+        return '保存未完成，所选位置可能留有不完整副本，请删除该副本后重试。原音频未修改。';
+      }
+      if (hasText(error.message)) return error.message!;
+    }
+    return exportCopy
+        ? '保存未完成。原音频未修改，请检查保存位置和可用空间后重试。'
+        : '原文件保存未完成，请检查系统写入权限、可用空间与恢复提醒后重试。';
   }
 
   Future<void> updateSettings(AppSettings value) =>
@@ -594,6 +1337,7 @@ class LibraryController extends ChangeNotifier {
   @override
   void dispose() {
     completionStopRequested = true;
+    _batchStopRequested = true;
     _disposed = true;
     super.dispose();
   }
