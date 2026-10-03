@@ -1,10 +1,12 @@
-# Audio repair, inventory and original-save Android acceptance (0.4.0)
+# Audio repair, inventory and original-save Android acceptance (0.4.1)
 
 The preview assertions below are prepared native test coverage. Version 0.4.0 additionally adds common-tag replacement, local covers and the all-audio TXT inventory tool. They have
 not yet been executed on an emulator or physical device in this implementation
 session. Host unit tests, Flutter checks and an APK build cannot establish native
 playback success. Retain the exact commit/device/run result when this harness is
 executed; earlier native results do not cover these new assertions.
+
+Version 0.4.1 changes the Dart repair entry to automatic lookup, expands supported source fields and improves conservative filename search clues. These flows have widget/provider regression coverage, including populated tags and large text; that does not establish installed Android runtime behavior.
 
 ## New repair and inventory validation
 

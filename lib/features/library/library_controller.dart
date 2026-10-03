@@ -913,6 +913,17 @@ class LibraryController extends ChangeNotifier {
         : null;
   }
 
+  /// Explicit automatic repair includes existing values and all fields the
+  /// installed sources actually support. Nothing is approved or written here.
+  Future<void> queryAutomaticRepair({
+    AudioTrack? track,
+    Set<String>? trackIds,
+  }) => complete(
+    track: track,
+    trackIds: trackIds,
+    repairFields: completion.availableFields,
+  );
+
   Future<void> queryRepair(
     String trackId, {
     required Set<AudioField> fields,
@@ -955,6 +966,8 @@ class LibraryController extends ChangeNotifier {
         ? [?trackById(track.id)]
         : trackIds != null
         ? tracks.where((item) => trackIds.contains(item.id)).toList()
+        : repairFields != null
+        ? tracks.toList()
         : tracks
               .where(
                 (item) => canQueryTrack(item) && !_hasReviewableResult(item),
@@ -963,7 +976,9 @@ class LibraryController extends ChangeNotifier {
     if (targets.isEmpty || (repairFields ?? settings.enabledFields).isEmpty) {
       _announce(
         (repairFields ?? settings.enabledFields).isEmpty
-            ? '请先在设置中选择要补全的内容。'
+            ? repairFields != null
+                  ? '没有可用的在线来源，请在设置中查看来源状态。已有资料保留，可使用手动编辑。'
+                  : '请先在设置中选择要补全的内容。'
             : '没有新的待查询歌曲，已有候选可在补全任务中确认。',
       );
       return;

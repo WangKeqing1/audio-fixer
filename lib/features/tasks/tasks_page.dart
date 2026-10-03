@@ -80,7 +80,7 @@ class TasksPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '查询或编辑 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。仅保存勾选的修改，替换已有值会明确标注。',
+                  '自动检索 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。仅保存勾选的修改，替换已有值会明确标注。',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -118,7 +118,7 @@ class TasksPage extends StatelessWidget {
                   NoticePanel(
                     icon: Icons.tune_outlined,
                     title: '尚未选择补全内容',
-                    message: '在设置中启用至少一项资料后，即可重新查询。已有结果仍可查看。',
+                    message: '仅补全缺失信息已关闭；仍可从音乐库自动检索并修复，已有结果也可查看。',
                     action: TextButton(
                       onPressed: onOpenSettings,
                       child: const Text('选择补全内容'),
@@ -149,7 +149,7 @@ class TasksPage extends StatelessWidget {
                   const EmptyState(
                     icon: Icons.playlist_add_check_outlined,
                     title: '还没有补全任务',
-                    description: '从音乐库打开一首歌曲，查询缺失资料后在这里确认结果。',
+                    description: '从音乐库自动检索歌曲资料，再在这里逐项确认元数据、封面与歌词候选。',
                   )
                 else
                   for (final task in controller.tasks)

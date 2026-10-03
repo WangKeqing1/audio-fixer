@@ -39,14 +39,22 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('文件内嵌歌词'), findsOneWidget);
-      await tester.tap(find.text('补全缺失信息'));
+      await tester.tap(find.text('自动检索并修复'));
       await tester.pumpAndSettle();
+      expect(controller.tasks, isEmpty);
+      expect(controller.notice, contains('在线来源'));
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('automatic-repair-result')),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('重试自动检索'), findsOneWidget);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       await tester.tap(find.text('补全任务'));
       await tester.pumpAndSettle();
       expect(find.text('等待接入在线数据源'), findsOneWidget);
-      expect(find.textContaining('等待数据源 ·'), findsOneWidget);
+      expect(controller.tasks, isEmpty);
       expect(tester.takeException(), isNull);
     },
   );

@@ -2,6 +2,7 @@ import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_folder.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,6 +51,7 @@ void main() {
       (tester) async {
         _phone(tester, scale: scale, size: const Size(320, 740));
         final controller = testController(
+          completion: CompletionService(sources: [NoResultMetadataSource()]),
           store: MemoryStore(
             LibrarySnapshot(
               tracks: [for (var i = 0; i < 60; i++) _track('$i')],

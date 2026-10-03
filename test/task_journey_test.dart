@@ -469,7 +469,7 @@ void main() {
       expect(retry.onPressed, isNull);
       await tester.tap(find.text('选择补全内容'));
       await tester.pumpAndSettle();
-      expect(find.text('补全内容'), findsOneWidget);
+      expect(find.text('缺失项补全设置'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );

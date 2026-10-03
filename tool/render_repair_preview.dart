@@ -1,4 +1,4 @@
-// Real Flutter previews with authored offline records. No native I/O or query.
+// Real Flutter previews with authored offline records. No native I/O or network.
 // AUDIO_FIXER_PREVIEW_FONT=/path/to/CJK.ttf flutter test tool/render_repair_preview.dart
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -24,15 +24,32 @@ import 'package:flutter_test/flutter_test.dart';
 import '../test/support/fakes.dart';
 
 class _Source implements MetadataSource {
+  _Source(this.cover);
+  final String cover;
   @override
   String get name => '离线示例';
   @override
-  Set<AudioField> get supportedFields => AudioField.coreFields;
+  Set<AudioField> get supportedFields =>
+      AudioField.values.toSet()..remove(AudioField.comment);
   @override
   Future<List<FieldSuggestion>> lookup(
     AudioTrack track,
     Set<AudioField> requestedFields,
-  ) async => [];
+  ) async => [
+    FieldSuggestion(
+      field: AudioField.artwork,
+      value: cover,
+      source: 'Cover Art Archive（离线示例）',
+      sourceUrl: 'https://coverartarchive.org/',
+      matchDescription: '歌名、歌手、专辑一致；图片为本机绘制的测试素材。',
+    ),
+    const FieldSuggestion(
+      field: AudioField.title,
+      value: '示例曲目',
+      source: 'MusicBrainz（离线示例）',
+      matchDescription: '歌名、歌手与时长匹配，仅用于界面验证。',
+    ),
+  ];
 }
 
 class _Writer implements AudioCopyExporter, AudioOriginalSaver {
@@ -68,6 +85,65 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    Future<File> cover(String name, Color color, String label) async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawColor(color, BlendMode.src);
+      canvas.drawCircle(
+        const Offset(128, 95),
+        64,
+        Paint()..color = Colors.white.withValues(alpha: .2),
+      );
+      canvas.drawCircle(
+        const Offset(128, 95),
+        25,
+        Paint()..color = Colors.white.withValues(alpha: .85),
+      );
+      final labelPainter = TextPainter(
+        text: TextSpan(
+          text: '$label\n离线测试',
+          style: const TextStyle(
+            fontFamily: 'Preview CJK',
+            color: Colors.white,
+            fontSize: 24,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+      )..layout(minWidth: 256, maxWidth: 256);
+      labelPainter.paint(canvas, const Offset(0, 173));
+      labelPainter.dispose();
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(256, 256);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      final file = File('build/previews/$name.png').absolute;
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes!.buffer.asUint8List());
+      image.dispose();
+      picture.dispose();
+      return file;
+    }
+
+    final currentCover = await tester.runAsync(
+      () => cover('fixture-current-cover', const Color(0xFF485D87), '当前封面'),
+    );
+    final nextCover = await tester.runAsync(
+      () => cover('fixture-next-cover', const Color(0xFF006B5E), '候选封面'),
+    );
+    // Decode authored assets before mounting Image.file in the fake-async tree.
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+    final imageContext = tester.element(find.byType(SizedBox).last);
+    await tester.runAsync(() async {
+      await Future.wait([
+        for (final file in [currentCover!, nextCover!])
+          precacheImage(FileImage(file), imageContext),
+        for (final width in [120, 160])
+          precacheImage(
+            ResizeImage(FileImage(currentCover), width: width),
+            imageContext,
+          ),
+      ]);
+    });
     final track = AudioTrack(
       id: 'sample',
       fileName: '示例歌手 - 示例曲目 [320kbps].mp3',
@@ -88,19 +164,27 @@ void main() {
       comment: '离线示例，仅用于界面验证',
       durationMs: 186000,
       lyrics: '离线示例歌词',
+      artworkPath: currentCover!.path,
     );
     final controller = LibraryController(
       store: MemoryStore(LibrarySnapshot(tracks: [track])),
       picker: FakePicker(),
       importer: FakeImporter(),
-      completion: CompletionService(sources: [_Source()]),
+      completion: CompletionService(
+        sources: [_Source(nextCover!.uri.toString())],
+      ),
       exporter: _Writer(),
     );
     addTearDown(controller.dispose);
     await controller.initialize();
     final key = GlobalKey();
     var page = 0;
-    Future<void> capture(Widget home, String name) async {
+    Future<void> capture(
+      Widget home,
+      String name, {
+      Finder? scrollTo,
+      double textScale = 1,
+    }) async {
       final theme = buildAppTheme(Brightness.light);
       await tester.pumpWidget(
         RepaintBoundary(
@@ -114,10 +198,24 @@ void main() {
             theme: theme.copyWith(
               textTheme: theme.textTheme.apply(fontFamily: 'Preview CJK'),
             ),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(textScale)),
+              child: child!,
+            ),
             home: home,
           ),
         ),
       );
+      await tester.pumpAndSettle();
+      if (scrollTo != null) {
+        await tester.scrollUntilVisible(
+          scrollTo,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await Scrollable.ensureVisible(tester.element(scrollTo), alignment: 0);
+      }
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       await tester.runAsync(() async {
@@ -137,12 +235,31 @@ void main() {
       'repair-detail',
     );
     await capture(
+      TrackDetailPage(track: track, controller: controller),
+      'repair-detail-large-text',
+      textScale: 2,
+    );
+    await capture(
       MetadataEditorPage(track: track, controller: controller),
       'repair-editor',
     );
     await capture(
       MetadataEditorPage(track: track, controller: controller, queryOnly: true),
       'repair-search',
+    );
+    await capture(
+      MetadataEditorPage(track: track, controller: controller, queryOnly: true),
+      'repair-search-fields',
+      scrollTo: find.text('要查询的项目'),
+    );
+    await controller.queryAutomaticRepair(track: track);
+    await capture(
+      CandidateReviewPage(
+        task: controller.tasks.single,
+        controller: controller,
+      ),
+      'repair-cover-review',
+      scrollTo: find.text('封面'),
     );
     final task = (await controller.createManualRepair(track.id, {
       AudioField.title: '示例曲目',

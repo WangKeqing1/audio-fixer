@@ -1,6 +1,13 @@
 import '../models/audio_track.dart';
 import '../models/completion_task.dart';
 
+/// A healthy source answered, but its candidates cannot be safely identified.
+/// Keep the explanation visible without reporting a network/provider failure.
+class SourceNoMatch implements Exception {
+  const SourceNoMatch(this.message);
+  final String message;
+}
+
 /// A source may verify independent fields before another endpoint fails.
 /// The caller still validates field scope and displays the partial failure.
 class PartialSourceException implements Exception {

@@ -86,6 +86,7 @@ LibraryController _controller(
   _PreviewBackend backend, {
   List<AudioTrack>? tracks,
   FakeDeviceLibrary? device,
+  CompletionService? completion,
 }) => LibraryController(
   store: MemoryStore(
     LibrarySnapshot(
@@ -96,7 +97,7 @@ LibraryController _controller(
   ),
   picker: FakePicker(),
   importer: FakeImporter(),
-  completion: CompletionService(),
+  completion: completion ?? CompletionService(),
   deviceLibrary: device,
   preview: AudioPreviewController(backend: backend),
 );
@@ -408,6 +409,7 @@ void main() {
       final controller = _controller(
         backend,
         tracks: [for (var i = 0; i < 40; i++) fixtureTrack(id: '$i')],
+        completion: CompletionService(sources: [NoResultMetadataSource()]),
       );
       await tester.pumpWidget(AudioFixerApp(controller: controller));
       await tester.pumpAndSettle();

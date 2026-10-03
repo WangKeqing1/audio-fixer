@@ -16,6 +16,7 @@ class MusicBrainzMatch {
     this.id,
     this.title,
     this.artist,
+    this.artistIdentities = const [],
     this.releaseId,
     this.releaseTitle,
     this.releaseGroupId,
@@ -27,6 +28,7 @@ class MusicBrainzMatch {
   final String? id;
   final String? title;
   final String? artist;
+  final List<String> artistIdentities;
   final String? releaseId;
   final String? releaseTitle;
   final String? releaseGroupId;
@@ -171,6 +173,7 @@ class MusicBrainzCatalog {
       id: candidate.id,
       title: candidate.title,
       artist: candidate.artist,
+      artistIdentities: candidate.artistCredits,
       releaseId: release?.id,
       releaseTitle: release?.title,
       releaseGroupId: release?.releaseGroupId,
@@ -241,7 +244,10 @@ class MusicBrainzCatalog {
   }
 
   bool _matches(TrackSearch search, _RecordingCandidate candidate) {
-    if (!search.matchesTitle(candidate.title)) return false;
+    if (!search.matchesTitle(candidate.title) ||
+        _hasConflictingVersion(search.title, candidate.disambiguation)) {
+      return false;
+    }
     if (!search.matchesArtist(candidate.artistCredits)) return false;
     if (!search.matchesDuration(
       candidate.durationMs == null ? null : candidate.durationMs! / 1000,
@@ -275,69 +281,31 @@ class MusicBrainzCatalog {
               .toList()
         : List<_ReleaseCandidate>.from(releases);
     if (candidates.isEmpty) return null;
-    candidates.sort(_compareReleases);
-    return candidates.first;
-  }
-
-  int _compareReleases(_ReleaseCandidate left, _ReleaseCandidate right) {
-    final official = _compareBool(
-      left.status?.toLowerCase() == 'official',
-      right.status?.toLowerCase() == 'official',
+    // A recording can occur on several editions with different dates and
+    // tracklists. Never use relevance, release date, or UUID order to select
+    // an edition. A shared album identity can still supply album/group data.
+    final identities = <String, _ReleaseCandidate>{};
+    for (final candidate in candidates) {
+      identities.putIfAbsent(candidate.id ?? candidate.title, () => candidate);
+    }
+    if (identities.length == 1) return identities.values.single;
+    final first = candidates.first;
+    if (!hasText(first.releaseGroupId) ||
+        !candidates.every(
+          (item) =>
+              item.releaseGroupId == first.releaseGroupId &&
+              normalizedIdentity(item.title) == normalizedIdentity(first.title),
+        )) {
+      return null;
+    }
+    return _ReleaseCandidate(
+      id: null,
+      title: first.title,
+      releaseGroupId: first.releaseGroupId,
+      status: null,
+      primaryType: null,
+      date: null,
     );
-    if (official != 0) return official;
-
-    final type = _comparePrimaryType(left.primaryType, right.primaryType);
-    if (type != 0) return type;
-
-    final date = _compareDates(left.date, right.date);
-    if (date != 0) return date;
-
-    final title = normalizedIdentity(left.title)
-        .compareTo(normalizedIdentity(right.title));
-    if (title != 0) return title;
-    return (left.id ?? '').compareTo(right.id ?? '');
-  }
-
-  int _compareBool(bool left, bool right) {
-    if (left == right) return 0;
-    return left ? -1 : 1;
-  }
-
-  int _comparePrimaryType(String? left, String? right) {
-    const rank = <String, int>{
-      'album': 0,
-      'ep': 1,
-      'single': 2,
-      'compilation': 3,
-      'soundtrack': 4,
-      'other': 5,
-    };
-    final leftRank = rank[left?.toLowerCase() ?? ''] ?? 6;
-    final rightRank = rank[right?.toLowerCase() ?? ''] ?? 6;
-    return leftRank.compareTo(rightRank);
-  }
-
-  int _compareDates(String? left, String? right) {
-    final leftDate = _releaseDate(left);
-    final rightDate = _releaseDate(right);
-    if (leftDate == null && rightDate == null) return 0;
-    if (leftDate == null) return 1;
-    if (rightDate == null) return -1;
-    return leftDate.compareTo(rightDate);
-  }
-
-  DateTime? _releaseDate(String? value) {
-    if (value == null) return null;
-    final match = RegExp(r'^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$')
-        .firstMatch(value);
-    if (match == null) return null;
-    final year = int.parse(match[1]!);
-    final month = int.parse(match[2] ?? '01');
-    final day = int.parse(match[3] ?? '01');
-    final date = DateTime.utc(year, month, day);
-    return date.year == year && date.month == month && date.day == day
-        ? date
-        : null;
   }
 
   String _describe(
@@ -411,6 +379,18 @@ class MusicBrainzMetadataSource
 
   final MusicBrainzCatalog catalog;
 
+  static const _releaseFields = {
+    AudioField.albumArtist,
+    AudioField.year,
+    AudioField.trackNumber,
+    AudioField.trackTotal,
+    AudioField.discNumber,
+    AudioField.discTotal,
+  };
+  // MusicBrainz may return fewer than the requested releases because a page
+  // includes at most 500 tracks. Never keep crawling a popular catalog.
+  static const _maxReleasePages = 3;
+
   @override
   String get name => 'MusicBrainz';
 
@@ -419,6 +399,14 @@ class MusicBrainzMetadataSource
     AudioField.title,
     AudioField.artist,
     AudioField.album,
+    AudioField.albumArtist,
+    AudioField.year,
+    AudioField.genre,
+    AudioField.trackNumber,
+    AudioField.trackTotal,
+    AudioField.discNumber,
+    AudioField.discTotal,
+    AudioField.composer,
   };
 
   @override
@@ -428,19 +416,23 @@ class MusicBrainzMetadataSource
   ) async {
     final fields = requestedFields.intersection(supportedFields);
     if (fields.isEmpty) return const [];
-    final match = await catalog.findMatch(track);
+    final budget = _LookupBudget(catalog._now);
+    final match = await budget.run(
+      () => catalog.findMatch(track),
+      initial: true,
+    );
     if (match == null) return const [];
 
     final suggestions = <FieldSuggestion>[];
-    void add(AudioField field, String? value) {
+    void add(AudioField field, String? value, {String? url, String? context}) {
       if (!fields.contains(field) || !hasText(value)) return;
       suggestions.add(
         FieldSuggestion(
           field: field,
           value: value!.trim(),
           source: name,
-          sourceUrl: match.sourceUrl,
-          matchDescription: match.matchDescription,
+          sourceUrl: url ?? match.sourceUrl,
+          matchDescription: context ?? match.matchDescription,
         ),
       );
     }
@@ -448,11 +440,396 @@ class MusicBrainzMetadataSource
     add(AudioField.title, match.title);
     add(AudioField.artist, match.artist);
     add(AudioField.album, match.releaseTitle);
+    if (!hasText(match.id)) return suggestions;
+
+    // Each independent endpoint may fail without discarding verified fields
+    // from another endpoint. The completion layer displays partial failures.
+    final failures = <String>[];
+    String? recordingGenre;
+    if (fields.contains(AudioField.genre) ||
+        fields.contains(AudioField.composer)) {
+      try {
+        final detail = await _recordingDetails(track, match, budget);
+        if (detail != null) {
+          recordingGenre = _genres(detail);
+          add(AudioField.genre, recordingGenre);
+          final composer = _composer(detail);
+          add(AudioField.composer, composer?.name, url: composer?.url);
+        }
+      } on TimeoutException {
+        failures.add('查询达到时限，已保留已核实资料');
+      } on Exception {
+        failures.add('录音流派或作曲资料查询失败');
+      }
+    }
+
+    if (fields.intersection(_releaseFields).isNotEmpty ||
+        (fields.contains(AudioField.genre) && recordingGenre == null)) {
+      try {
+        final releases = await _releaseDetails(track, match, budget);
+        if (releases != null && releases.isNotEmpty) {
+          final group = _asString(
+            _asMap(releases.first['release-group'])?['id'],
+          );
+          final url = releases.length == 1
+              ? 'https://musicbrainz.org/release/${releases.single['id']}'
+              : 'https://musicbrainz.org/release-group/$group';
+          final context =
+              '${match.matchDescription}；'
+              '${releases.length == 1 ? '已核对发行版本' : '${releases.length} 个同专辑版本资料一致'}';
+          final values = releases
+              .map((release) => _releaseValues(release, match.id!))
+              .toList();
+          for (final field in _releaseFields) {
+            add(
+              field,
+              _consensus(values.map((value) => value[field])),
+              url: url,
+              context: context,
+            );
+          }
+          if (recordingGenre == null) {
+            add(
+              AudioField.genre,
+              _consensus(releases.map(_genres)),
+              url: url,
+              context: context,
+            );
+          }
+        }
+      } on TimeoutException {
+        failures.add('查询达到时限，发行版本资料未确认');
+      } on _IncompleteReleaseBrowse {
+        failures.add('发行版本过多，未遍历的版本仍可能不同，发行资料暂不提供');
+      } on Exception {
+        failures.add('发行版本或音轨资料查询失败');
+      }
+    }
+    if (failures.isNotEmpty) {
+      throw PartialSourceException(
+        suggestions,
+        'MusicBrainz：${failures.join('；')}',
+      );
+    }
     return suggestions;
   }
 
   @override
   Future<void> checkConnection() => catalog.checkConnection();
+
+  Future<Map<String, Object?>?> _recordingDetails(
+    AudioTrack track,
+    MusicBrainzMatch match,
+    _LookupBudget budget,
+  ) async {
+    final response = await budget.run(
+      () => catalog.client.getJson(
+        Uri.https('musicbrainz.org', '/ws/2/recording/${match.id}', {
+          'fmt': 'json',
+          'inc': 'artist-credits genres work-rels work-level-rels artist-rels',
+        }),
+      ),
+    );
+    if (response == null) return null;
+    final detail = _asMap(response);
+    if (detail == null || detail['id'] != match.id) {
+      throw const FormatException('Unexpected MusicBrainz recording detail');
+    }
+    return _matchesRecording(detail, track, match) ? detail : null;
+  }
+
+  bool _matchesRecording(
+    Map<String, Object?> detail,
+    AudioTrack track,
+    MusicBrainzMatch match,
+  ) {
+    final candidate = _RecordingCandidate.fromJson(detail);
+    if (candidate == null || candidate.id != match.id) return false;
+    final search = TrackSearch.fromTrack(track);
+    if (!search.matchesTitle(candidate.title) ||
+        _hasConflictingVersion(search.title, candidate.disambiguation) ||
+        !search.matchesDuration(
+          candidate.durationMs == null ? null : candidate.durationMs! / 1000,
+          tolerance: MusicBrainzCatalog._durationToleranceMs / 1000,
+        )) {
+      return false;
+    }
+    // Preserve the exact primary credit/aliases already verified by search.
+    // A secondary or featured artist is never sufficient evidence.
+    return search.matchesArtist(candidate.artistCredits) ||
+        candidate.artistCredits.any(
+          (name) => match.artistIdentities.any(
+            (identity) =>
+                normalizedIdentity(identity) == normalizedIdentity(name),
+          ),
+        );
+  }
+
+  Future<List<Map<String, Object?>>?> _releaseDetails(
+    AudioTrack track,
+    MusicBrainzMatch match,
+    _LookupBudget budget,
+  ) async {
+    final releases = <Map<String, Object?>>[];
+    final ids = <String>{};
+    var offset = 0;
+    int? expectedCount;
+    var complete = false;
+    for (var page = 0; page < _maxReleasePages; page++) {
+      final response = await budget.run(
+        () => catalog.client.getJson(
+          Uri.https('musicbrainz.org', '/ws/2/release', {
+            'recording': match.id!,
+            'inc': 'recordings artist-credits release-groups genres',
+            'fmt': 'json',
+            'limit': '100',
+            'offset': '$offset',
+          }),
+        ),
+      );
+      if (response == null) return null;
+      final json = _asMap(response);
+      final batch = _asList(json?['releases']);
+      final count = _asInt(json?['release-count']);
+      final actualOffset = _asInt(json?['release-offset']);
+      if (json == null ||
+          batch == null ||
+          count == null ||
+          count < 0 ||
+          actualOffset != offset) {
+        throw const FormatException('Incomplete MusicBrainz release browse');
+      }
+      if (expectedCount != null && expectedCount != count) return null;
+      expectedCount = count;
+      for (final raw in batch) {
+        final release = _asMap(raw);
+        final id = _asString(release?['id']);
+        if (release == null || !hasText(id) || !ids.add(id!)) return null;
+        releases.add(release);
+      }
+      offset += batch.length;
+      if (offset == count) {
+        complete = true;
+        break;
+      }
+      if (batch.isEmpty || offset > count) return null;
+    }
+    // An unseen edition could disagree with every field already observed.
+    if (!complete) throw const _IncompleteReleaseBrowse();
+    final search = TrackSearch.fromTrack(track);
+    final selected = <Map<String, Object?>>[];
+    final albumIdentities = <String>{};
+    for (final release in releases) {
+      final title = _asString(release['title']);
+      if (!hasText(title)) return null;
+      if (hasText(search.album) &&
+          normalizedIdentity(title!) != normalizedIdentity(search.album!)) {
+        continue;
+      }
+      final groupId = _asString(_asMap(release['release-group'])?['id']);
+      final media = _asList(release['media']);
+      if (media == null || media.isEmpty) return null;
+      var containsRecording = false;
+      for (final rawMedium in media) {
+        final tracks = _asList(_asMap(rawMedium)?['tracks']);
+        if (tracks == null) return null;
+        for (final rawTrack in tracks) {
+          final releaseTrack = _asMap(rawTrack);
+          final recording = _asMap(releaseTrack?['recording']);
+          if (recording?['id'] != match.id) continue;
+          // Never borrow a different recording's sequence numbers or accept
+          // contradictory title/artist/duration data even under the same ID.
+          if (!_matchesRecording(recording!, track, match)) return null;
+          final trackTitle = _asString(releaseTrack?['title']);
+          final trackLength = _asInt(releaseTrack?['length']);
+          if ((hasText(trackTitle) && !search.matchesTitle(trackTitle!)) ||
+              (trackLength != null &&
+                  !search.matchesDuration(
+                    trackLength / 1000,
+                    tolerance: MusicBrainzCatalog._durationToleranceMs / 1000,
+                  ))) {
+            return null;
+          }
+          containsRecording = true;
+        }
+      }
+      if (!containsRecording) return null;
+      // Without group IDs, only one concrete release can identify the album.
+      albumIdentities.add(
+        '${groupId ?? release['id']}|${normalizedIdentity(title!)}',
+      );
+      selected.add(release);
+    }
+    if (albumIdentities.length != 1) return null;
+    return selected;
+  }
+
+  Map<AudioField, String?> _releaseValues(
+    Map<String, Object?> release,
+    String recordingId,
+  ) {
+    final credits = _RecordingCandidate._artistCreditNames(release);
+    final result = <AudioField, String?>{
+      AudioField.albumArtist: credits.isEmpty ? null : credits.last,
+      AudioField.year: _releaseYear(_asString(release['date'])),
+    };
+    final media = _asList(release['media']);
+    if (media == null || media.isEmpty) return result;
+    final mediaCount = _asInt(release['media-count']);
+    if (mediaCount != null && mediaCount != media.length) return result;
+    final mediumPositions = <int>{};
+    final occurrences = <Map<AudioField, String>>[];
+    for (final rawMedium in media) {
+      final medium = _asMap(rawMedium);
+      final disc = _positiveInt(medium?['position']);
+      final total = _positiveInt(medium?['track-count']);
+      final tracks = _asList(medium?['tracks']);
+      final trackOffset = _asInt(medium?['track-offset']) ?? 0;
+      if (disc == null ||
+          disc > media.length ||
+          !mediumPositions.add(disc) ||
+          total == null ||
+          tracks == null ||
+          tracks.length != total ||
+          trackOffset != 0) {
+        return result;
+      }
+      final positions = <int>{};
+      for (final rawTrack in tracks) {
+        final item = _asMap(rawTrack);
+        final position = _positiveInt(item?['position']);
+        if (position == null || position > total || !positions.add(position)) {
+          return result;
+        }
+        if (_asMap(item?['recording'])?['id'] != recordingId) continue;
+        occurrences.add({
+          AudioField.trackNumber: '$position',
+          AudioField.trackTotal: '$total',
+          AudioField.discNumber: '$disc',
+          AudioField.discTotal: '${media.length}',
+        });
+      }
+    }
+    // A recording repeated on a release has no uniquely known track position.
+    if (occurrences.length == 1) result.addAll(occurrences.single);
+    return result;
+  }
+
+  String? _genres(Map<String, Object?> json) {
+    final genres = <String, String>{};
+    for (final raw in _asList(json['genres']) ?? const []) {
+      final item = _asMap(raw);
+      final name = _asString(item?['name']);
+      final votes = _asInt(item?['count']);
+      if (!hasText(name) || votes == null || votes <= 0) continue;
+      genres.putIfAbsent(normalizedIdentity(name!), () => name.trim());
+    }
+    final keys = genres.keys.toList()..sort();
+    return keys.isEmpty ? null : keys.map((key) => genres[key]).join('; ');
+  }
+
+  ({String name, String url})? _composer(Map<String, Object?> recording) {
+    final works = <Map<String, Object?>>[];
+    for (final raw in _asList(recording['relations']) ?? const []) {
+      final relation = _asMap(raw);
+      if (relation?['target-type'] != 'work' ||
+          relation?['type'] != 'performance') {
+        continue;
+      }
+      final typeId = _asString(relation?['type-id']);
+      if (typeId != null && typeId != 'a3005666-a872-32c3-ad06-98af558e99b0') {
+        continue;
+      }
+      final work = _asMap(relation?['work']);
+      if (work != null) works.add(work);
+    }
+    if (works.isEmpty) return null;
+    final composers = <String, String>{};
+    for (final work in works) {
+      final workComposers = <String, String>{};
+      for (final raw in _asList(work['relations']) ?? const []) {
+        final relation = _asMap(raw);
+        if (relation?['target-type'] != 'artist' ||
+            relation?['type'] != 'composer' ||
+            relation?['direction'] != 'backward') {
+          continue;
+        }
+        final typeId = _asString(relation?['type-id']);
+        if (typeId != null &&
+            typeId != 'd59d99ea-23d4-4a80-b066-edca32ee158f') {
+          continue;
+        }
+        final artist = _asMap(relation?['artist']);
+        final credit = _asString(relation?['target-credit']);
+        final name = hasText(credit) ? credit : _asString(artist?['name']);
+        if (!hasText(name)) continue;
+        final key = _asString(artist?['id']) ?? normalizedIdentity(name!);
+        workComposers.putIfAbsent(key, () => name!.trim());
+      }
+      // A medley may have several works; missing credits for any one work
+      // must not silently turn an incomplete composer list into a full one.
+      if (workComposers.isEmpty) return null;
+      composers.addAll(workComposers);
+    }
+    final names = composers.values.toList()..sort();
+    final id = works.length == 1 ? _asString(works.single['id']) : null;
+    return (
+      name: names.join('; '),
+      url: id == null
+          ? 'https://musicbrainz.org/recording/${recording['id']}'
+          : 'https://musicbrainz.org/work/$id',
+    );
+  }
+}
+
+String? _consensus(Iterable<String?> values) {
+  final list = values.toList();
+  if (list.isEmpty || !hasText(list.first)) return null;
+  return list.every((value) => value == list.first) ? list.first : null;
+}
+
+class _IncompleteReleaseBrowse implements Exception {
+  const _IncompleteReleaseBrowse();
+}
+
+/// Finish before CompletionService's 45-second outer timeout, retaining any
+/// independently verified suggestions. Reserve a normal 12-second request
+/// plus the provider throttle before starting another endpoint or page.
+class _LookupBudget {
+  _LookupBudget(this.now) : startedAt = now();
+  final DateTime Function() now;
+  final DateTime startedAt;
+  static const _total = Duration(seconds: 40);
+  static const _requestReserve = Duration(seconds: 14);
+
+  Future<T> run<T>(Future<T> Function() request, {bool initial = false}) {
+    final remaining = _total - now().difference(startedAt);
+    if (remaining <= Duration.zero ||
+        (!initial && remaining < _requestReserve)) {
+      throw TimeoutException('MusicBrainz lookup budget exhausted');
+    }
+    // The client owns an already queued HTTP request. Timeout cannot cancel
+    // that request, but stops this adapter from initiating any further pages.
+    return request().timeout(remaining);
+  }
+}
+
+int? _positiveInt(Object? value) {
+  final number = _asInt(value);
+  return number != null && number > 0 ? number : null;
+}
+
+String? _releaseYear(String? value) {
+  final match = RegExp(r'^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$')
+      .firstMatch(value ?? '');
+  if (match == null) return null;
+  final year = int.parse(match[1]!);
+  final month = int.parse(match[2] ?? '01');
+  final day = int.parse(match[3] ?? '01');
+  final date = DateTime.utc(year, month, day);
+  return year > 0 && date.year == year && date.month == month && date.day == day
+      ? '$year'
+      : null;
 }
 
 class _RecordingCandidate {
@@ -461,6 +838,7 @@ class _RecordingCandidate {
     required this.title,
     required this.artist,
     required this.artistCredits,
+    required this.disambiguation,
     required this.durationMs,
     required this.releases,
   });
@@ -469,6 +847,7 @@ class _RecordingCandidate {
   final String title;
   final String? artist;
   final List<String> artistCredits;
+  final String? disambiguation;
   final int? durationMs;
   final List<_ReleaseCandidate> releases;
 
@@ -497,6 +876,7 @@ class _RecordingCandidate {
       title: title!,
       artist: artist,
       artistCredits: credits,
+      disambiguation: _asString(json['disambiguation']),
       durationMs: _asInt(json['length']),
       releases: releases,
     );
@@ -516,7 +896,16 @@ class _RecordingCandidate {
         if (!hasText(name)) continue;
         // A guest credit alone does not identify the primary recording artist.
         // Retain the first billed artist plus the complete credit phrase.
-        if (names.isEmpty) names.add(name!);
+        if (names.isEmpty) {
+          names.add(name!);
+          final artist = _asMap(credit['artist']);
+          final canonical = _asString(artist?['name']);
+          if (hasText(canonical)) names.add(canonical!);
+          for (final rawAlias in _asList(artist?['aliases']) ?? const []) {
+            final alias = _asString(_asMap(rawAlias)?['name']);
+            if (hasText(alias)) names.add(alias!);
+          }
+        }
         phrase.write(name);
         phrase.write(_asString(credit['joinphrase']) ?? '');
       }
@@ -585,4 +974,24 @@ int? _asInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.isFinite ? value.round() : null;
   return int.tryParse(value?.toString() ?? '');
+}
+
+// Distinguish variants even when MusicBrainz stores the qualifier only in its
+// disambiguation text instead of the recording title.
+bool _hasConflictingVersion(String title, String? disambiguation) {
+  if (!hasText(disambiguation)) return false;
+  for (final version in const [
+    'live',
+    'acoustic',
+    'instrumental',
+    'karaoke',
+    'remix',
+    'demo',
+  ]) {
+    final pattern = RegExp('\\b$version\\b', caseSensitive: false);
+    if (pattern.hasMatch(disambiguation!) && !pattern.hasMatch(title)) {
+      return true;
+    }
+  }
+  return false;
 }

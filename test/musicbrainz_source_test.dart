@@ -143,7 +143,7 @@ void main() {
   );
 
   test(
-    'year-only release dates sort chronologically before later complete dates',
+    'different albums remain ambiguous regardless of release date',
     () async {
       final client = _FakeJsonApiClient(
         (_) async => {
@@ -164,7 +164,8 @@ void main() {
         },
       );
       final match = await MusicBrainzCatalog(client).findMatch(_track());
-      expect(match?.releaseId, 'earlier');
+      expect(match?.releaseId, isNull);
+      expect(match?.releaseTitle, isNull);
     },
   );
 

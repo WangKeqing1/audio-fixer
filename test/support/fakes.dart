@@ -1,9 +1,24 @@
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/audio_importer.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/device_music_library.dart';
+import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:audio_fixer/features/library/library_controller.dart';
+
+/// Available offline provider for tests of query controls, without network I/O.
+class NoResultMetadataSource implements MetadataSource {
+  @override
+  String get name => 'Offline test source';
+  @override
+  Set<AudioField> get supportedFields => AudioField.coreFields;
+  @override
+  Future<List<FieldSuggestion>> lookup(
+    AudioTrack track,
+    Set<AudioField> requestedFields,
+  ) async => [];
+}
 
 AudioTrack fixtureTrack({
   String id = 'fixture',

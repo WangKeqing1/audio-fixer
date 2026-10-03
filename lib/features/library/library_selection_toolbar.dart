@@ -105,7 +105,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
                       onPressed:
                           controller.canOperate &&
                               selectedIds.isNotEmpty &&
-                              controller.settings.enabledFields.isNotEmpty
+                              controller.completion.availableFields.isNotEmpty
                           ? () => confirmBatchQuery(
                               context,
                               controller,
@@ -113,7 +113,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
                               onStart: onOpenTasks,
                             )
                           : null,
-                      child: const Text('查询所选', textAlign: TextAlign.center),
+                      child: const Text('自动检索所选', textAlign: TextAlign.center),
                     ),
                   ),
                   const SizedBox(width: 8),

@@ -249,12 +249,23 @@ void main() {
     expect(find.text('应用内音频副本无法读取，请检查文件。'), findsOneWidget);
     expect(
       tester
-          .widget<FilledButton>(
-            find.byKey(const ValueKey('edit-metadata')),
-          )
+          .widget<FilledButton>(find.byKey(const ValueKey('automatic-repair')))
           .onPressed,
       isNull,
     );
+    await tester.scrollUntilVisible(
+      find.text('其他修复方式'),
+      -300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('其他修复方式'));
+    await tester.pumpAndSettle();
+    for (final key in ['edit-metadata', 'query-metadata-repair']) {
+      expect(
+        tester.widget<OutlinedButton>(find.byKey(ValueKey(key))).onPressed,
+        isNull,
+      );
+    }
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

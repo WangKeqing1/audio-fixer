@@ -115,7 +115,7 @@ void main() {
       isEmpty,
     );
     expect(
-      await NeteaseLyricsSource(client).lookup(track(), {AudioField.year}),
+      await NeteaseLyricsSource(client).lookup(track(), {AudioField.composer}),
       isEmpty,
     );
     expect(client.calls, isEmpty);

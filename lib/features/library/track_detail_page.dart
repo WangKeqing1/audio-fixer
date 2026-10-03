@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
+import '../../core/models/completion_task.dart';
 import '../../shared/formatters.dart';
+import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/track_artwork.dart';
 import '../../shared/widgets/instrumental_control.dart';
 import 'library_controller.dart';
@@ -23,6 +25,17 @@ class TrackDetailPage extends StatefulWidget {
 
 class _TrackDetailPageState extends State<TrackDetailPage> {
   LibraryController get controller => widget.controller;
+  final _scrollController = ScrollController();
+  bool _querying = false;
+  String? _queryNotice;
+
+  bool _canRepair(AudioTrack track) =>
+      controller.canOperate &&
+      !_querying &&
+      track.detailsLoaded &&
+      !track.requiresTagRefresh &&
+      track.readError == null &&
+      !controller.isTrackExcluded(track);
 
   @override
   void initState() {
@@ -30,6 +43,82 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) controller.readDetails(widget.track.id);
     });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _query({bool missingOnly = false}) async {
+    final track = controller.trackById(widget.track.id);
+    if (track == null || !_canRepair(track)) return;
+    final route = ModalRoute.of(context);
+    final previous = controller.taskForTrack(track.id)?.createdAt;
+    final noticeRevision = controller.noticeRevision;
+    setState(() {
+      _querying = true;
+      _queryNotice = null;
+    });
+    try {
+      if (missingOnly) {
+        await controller.complete(track: track);
+      } else {
+        await controller.queryAutomaticRepair(track: track);
+      }
+      if (!mounted || route?.isCurrent != true) return;
+      final task = controller.taskForTrack(track.id);
+      final hasNewResult = task != null && task.createdAt != previous;
+      if (hasNewResult &&
+          task.suggestions.isNotEmpty &&
+          controller.isTaskCurrent(task)) {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                CandidateReviewPage(task: task, controller: controller),
+          ),
+        );
+      } else {
+        _showQueryNotice(
+          hasNewResult
+              ? task.message
+              : controller.noticeRevision != noticeRevision
+              ? controller.notice ?? '检索未完成，请稍后重试。'
+              : '检索未生成新候选，请稍后重试。',
+        );
+      }
+    } catch (_) {
+      if (mounted && route?.isCurrent == true) {
+        _showQueryNotice('检索未完成，请检查网络后重试，也可调整检索条件或手动编辑。');
+      }
+    } finally {
+      if (mounted) setState(() => _querying = false);
+    }
+  }
+
+  void _showQueryNotice(String message) {
+    setState(() => _queryNotice = message);
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _openEditor(AudioTrack track, {bool queryOnly = false}) {
+    if (!_canRepair(track)) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MetadataEditorPage(
+          track: track,
+          controller: controller,
+          queryOnly: queryOnly,
+        ),
+      ),
+    );
   }
 
   @override
@@ -49,6 +138,14 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
           ),
         );
       }
+      final canRepair = _canRepair(track);
+      final task = controller.taskForTrack(track.id);
+      final emptyResult =
+          task != null &&
+          task.suggestions.isEmpty &&
+          task.status != TaskStatus.outdated;
+      final resultMessage = _queryNotice ?? (emptyResult ? task.message : null);
+      final showFallback = resultMessage != null;
       return Scaffold(
         appBar: AppBar(title: const Text('歌曲资料')),
         body: SafeArea(
@@ -58,6 +155,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 720),
               child: ListView(
+                controller: _scrollController,
                 padding: const EdgeInsets.all(24),
                 children: [
                   Center(
@@ -78,50 +176,72 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  FilledButton.icon(
-                    key: const ValueKey('edit-metadata'),
-                    onPressed:
-                        controller.canOperate &&
-                            track.detailsLoaded &&
-                            !track.requiresTagRefresh &&
-                            track.readError == null
-                        ? () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => MetadataEditorPage(
-                                track: track,
-                                controller: controller,
-                              ),
-                            ),
-                          )
-                        : null,
-                    icon: const Icon(Icons.edit_note),
-                    label: const Text('编辑元数据与封面'),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    key: const ValueKey('query-metadata-repair'),
-                    onPressed:
-                        controller.canOperate &&
-                            track.detailsLoaded &&
-                            !track.requiresTagRefresh &&
-                            track.readError == null
-                        ? () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => MetadataEditorPage(
-                                track: track,
-                                controller: controller,
-                                queryOnly: true,
-                              ),
-                            ),
-                          )
-                        : null,
-                    icon: const Icon(Icons.manage_search),
-                    label: const Text('查询修复资料'),
-                  ),
-                  const SizedBox(height: 8),
                   const Text(
-                    '已有但不正确的资料也可以修复。支持常用标签（Tag）、歌词与封面，逐项确认后保存。',
+                    '自动匹配元数据、歌词与封面，已有资料也会重新检索。无需填写，找到候选后逐项确认再保存。',
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    controller.completion.sources.isEmpty
+                        ? '当前没有接入在线数据源。可在下方备选方式中手动编辑。'
+                        : '使用已有歌名、歌手、专辑与时长匹配；歌名缺失时使用文件名。仅检索数据源支持的字段，不上传音频。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (resultMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Semantics(
+                      liveRegion: true,
+                      child: NoticePanel(
+                        key: const ValueKey('automatic-repair-result'),
+                        icon: Icons.info_outline,
+                        title: '检索结果',
+                        message: resultMessage,
+                        isError: task?.status == TaskStatus.failed,
+                        action: TextButton.icon(
+                          key: const ValueKey('retry-automatic-repair'),
+                          onPressed: canRepair ? _query : null,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('重试自动检索'),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  ExpansionTile(
+                    key: ValueKey('repair-fallback-$showFallback'),
+                    initiallyExpanded: showFallback,
+                    tilePadding: EdgeInsets.zero,
+                    title: const Text('其他修复方式'),
+                    subtitle: const Text('按需调整检索条件或手动编辑'),
+                    children: [
+                      OutlinedButton.icon(
+                        key: const ValueKey('query-metadata-repair'),
+                        onPressed: canRepair
+                            ? () => _openEditor(track, queryOnly: true)
+                            : null,
+                        icon: const Icon(Icons.manage_search),
+                        label: const Text('调整检索条件'),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        key: const ValueKey('edit-metadata'),
+                        onPressed: canRepair ? () => _openEditor(track) : null,
+                        icon: const Icon(Icons.edit_note),
+                        label: const Text('手动编辑元数据与封面'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        key: const ValueKey('complete-missing-only'),
+                        onPressed: canRepair && controller.canQueryTrack(track)
+                            ? () => _query(missingOnly: true)
+                            : null,
+                        icon: const Icon(Icons.playlist_add),
+                        label: const Text('仅补全缺失项'),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                   ),
                   const SizedBox(height: 20),
                   if (!track.detailsLoaded || track.requiresTagRefresh) ...[
@@ -214,7 +334,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                     InstrumentalControl(track: track, controller: controller),
                   ],
                   const SizedBox(height: 24),
-                  if (controller.taskForTrack(track.id) case final task?)
+                  if (task != null)
                     if (task.suggestions.isNotEmpty)
                       OutlinedButton.icon(
                         onPressed: () => Navigator.of(context).push(
@@ -230,9 +350,7 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                       ),
                   const SizedBox(height: 32),
                   Text(
-                    controller.completion.sources.isEmpty
-                        ? '在线数据源尚未接入。可手动编辑资料并逐项确认。'
-                        : '快速补全仅查询缺失项；查询修复资料可重新匹配已有项。确认后默认保存到原文件，也可导出副本。',
+                    '自动检索只生成候选资料。逐项确认后可保存到原文件，也可导出副本。',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -245,44 +363,30 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
         bottomNavigationBar: SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-            child: controller.isCompleting
-                ? Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(controller.progress ?? '正在查询…'),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: controller.completionStopRequested
-                            ? null
-                            : controller.stopCompletion,
-                        icon: const Icon(Icons.stop_circle_outlined),
-                        label: const Text('停止查询'),
-                      ),
-                    ],
-                  )
-                : FilledButton.icon(
-                    onPressed:
-                        controller.canOperate && controller.canQueryTrack(track)
-                        ? () async {
-                            await controller.complete(track: track);
-                            final task = controller.taskForTrack(track.id);
-                            if (context.mounted &&
-                                task != null &&
-                                task.suggestions.isNotEmpty) {
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => CandidateReviewPage(
-                                    task: task,
-                                    controller: controller,
-                                  ),
-                                ),
-                              );
-                            }
-                          }
-                        : null,
-                    icon: const Icon(Icons.auto_fix_high_outlined),
-                    label: Text(controller.isBusy ? '正在处理…' : '补全缺失信息'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                FilledButton.icon(
+                  key: const ValueKey('automatic-repair'),
+                  onPressed: canRepair ? _query : null,
+                  icon: const Icon(Icons.auto_fix_high_outlined),
+                  label: Text(_querying ? '正在自动检索…' : '自动检索并修复'),
+                ),
+                if (controller.isCompleting) ...[
+                  const SizedBox(height: 8),
+                  Text(controller.progress ?? '正在查询…'),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: controller.completionStopRequested
+                        ? null
+                        : controller.stopCompletion,
+                    icon: const Icon(Icons.stop_circle_outlined),
+                    label: const Text('停止查询'),
                   ),
+                ],
+              ],
+            ),
           ),
         ),
       );

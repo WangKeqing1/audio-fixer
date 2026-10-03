@@ -10,30 +10,58 @@ Future<void> confirmBatchQuery(
   VoidCallback? onStart,
 }) async {
   if (!controller.canOperate || trackIds.isEmpty) return;
+  var missingOnly = false;
   final confirmed = await showDialog<bool>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text('查询 ${trackIds.length} 首歌曲？'),
-      content: const SingleChildScrollView(
-        child: Text(
-          '先检查文件标签，再查询缺失资料。只发送歌名、歌手、专辑和时长，不上传音频。\n\n查询不会修改文件，也不会自动勾选候选。重新查询会替换所选歌曲的旧候选并清除之前的确认，请逐首确认后再批量保存。可随时停止后续歌曲。',
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: Text('查询 ${trackIds.length} 首歌曲？'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '根据歌曲已有标签和文件名，自动检索元数据、封面与歌词；来源有资料且能可靠匹配时才提供候选。无需填写表单。',
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                key: const ValueKey('batch-query-missing-only'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('仅补全缺失信息'),
+                subtitle: Text(
+                  missingOnly ? '按设置中的补全项目查询缺失项' : '默认完整检索，也可修复已有错误资料',
+                ),
+                value: missingOnly,
+                onChanged: controller.settings.enabledFields.isEmpty
+                    ? null
+                    : (value) => setDialogState(() => missingOnly = value),
+              ),
+              const Text(
+                '只发送歌名、歌手、专辑和时长，不上传音频。\n\n查询不会修改文件，也不会自动勾选候选。重新查询会替换所选歌曲的旧候选并清除之前的确认，请逐首确认后再批量保存。可随时停止后续歌曲。',
+              ),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('开始查询'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('开始查询'),
-        ),
-      ],
     ),
   );
   if (confirmed != true || !context.mounted || !controller.canOperate) return;
   onStart?.call();
-  await controller.complete(trackIds: trackIds);
+  if (missingOnly) {
+    await controller.complete(trackIds: trackIds);
+  } else {
+    await controller.queryAutomaticRepair(trackIds: trackIds);
+  }
 }
 
 /// All write actions here consume already-confirmed candidates only.
@@ -97,7 +125,7 @@ class BulkActionPanel extends StatelessWidget {
                   key: const ValueKey('bulk-query-selected'),
                   onPressed:
                       controller.canOperate &&
-                          controller.settings.enabledFields.isNotEmpty
+                          controller.completion.availableFields.isNotEmpty
                       ? () => confirmBatchQuery(
                           context,
                           controller,
@@ -106,7 +134,7 @@ class BulkActionPanel extends StatelessWidget {
                         )
                       : null,
                   icon: const Icon(Icons.search),
-                  label: const Text('查询所选'),
+                  label: const Text('自动检索所选'),
                 ),
                 TextButton.icon(
                   key: const ValueKey('bulk-export-copies'),

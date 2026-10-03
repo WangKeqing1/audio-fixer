@@ -102,14 +102,23 @@ class _SearchName {
       fileLike = true;
       _removeSuffixes(album);
     }
-    if (fileLike) {
+    final recordingLike = fileLike && _looksLikeRecordingName(title);
+    var numberedFileName = false;
+    if (fileLike && !recordingLike) {
       final withoutNumber = title.replaceFirst(_trackPrefix, '').trim();
       if (withoutNumber != title) {
+        numberedFileName = true;
         title = withoutNumber;
         notes.add('检索时已忽略文件名开头的音轨序号');
       }
     }
-    _separateArtist(allowInference: fileLike);
+    _separateArtist(
+      allowInference: fileLike && !recordingLike,
+      allowCollectionPrefix: numberedFileName,
+    );
+    if (recordingLike && this.artist == null) {
+      _note('名称可能来自录音或带有时间戳，未推测歌手，请手动填写检索词');
+    }
     if (title.isEmpty || normalizedIdentity(title).isEmpty) {
       // An empty query is deliberately left empty: every source can decline it
       // instead of searching only for an artist or for arbitrary quality text.
@@ -192,7 +201,10 @@ class _SearchName {
     }
   }
 
-  void _separateArtist({required bool allowInference}) {
+  void _separateArtist({
+    required bool allowInference,
+    required bool allowCollectionPrefix,
+  }) {
     final separators = _nameSeparator
         .allMatches(title)
         .where((match) => !_insideBrackets(title, match.start))
@@ -214,8 +226,23 @@ class _SearchName {
       }
     } else if (allowInference && separators.length == 1) {
       final separator = separators.single;
-      final before = title.substring(0, separator.start).trim();
+      var before = title.substring(0, separator.start).trim();
       final after = title.substring(separator.end).trim();
+      var inferredCollection = false;
+      // Numbered compilation names sometimes use 【source】Artist - Title.
+      // Only this narrow, spaced shape permits a source-prefix guess. An
+      // unnumbered bracketed artist or a title/version bracket stays intact.
+      if (allowCollectionPrefix &&
+          RegExp(r'^\s+[-–—]\s+$').hasMatch(separator.group(0)!)) {
+        final collection = _leadingCollectionArtist.firstMatch(before);
+        if (collection != null &&
+            !_versionWords.hasMatch(collection.group(1)!) &&
+            !_isTechnicalMetadata(collection.group(1)!) &&
+            !_metadataLabel.hasMatch(collection.group(1)!)) {
+          before = collection.group(2)!.trim();
+          inferredCollection = true;
+        }
+      }
       if (normalizedIdentity(before).isNotEmpty &&
           normalizedIdentity(after).isNotEmpty &&
           !_ambiguousVersionPart(before) &&
@@ -223,6 +250,9 @@ class _SearchName {
           !_isTechnicalMetadata(before)) {
         artist = before;
         title = after;
+        if (inferredCollection) {
+          _note('按编号文件名推测开头的【括号内容】是来源，未作专辑使用，请核对歌手');
+        }
         _note('按“歌手 - 歌名”的文件名格式推测检索词，请核对歌手与歌名');
         return;
       }
@@ -258,8 +288,20 @@ final _versionWords = RegExp(
 );
 final _suffixBoundary = RegExp(r'\s*[-_｜|－–—]\s*|\s+');
 final _nameSeparator = RegExp(
-  r'\s+[-–—]\s+|[－｜]|(?<=[\u3400-\u9fff])[-_](?=[\u3400-\u9fff])',
+  r'\s+[-–—]\s+|[－｜]|(?<=[\u3040-\u30ff\u3400-\u9fff])[-_](?=[\u3040-\u30ff\u3400-\u9fff])',
 );
+final _leadingCollectionArtist = RegExp(r'^【([^【】]+)】\s*([^\s\[【(（].*)$');
+final _recordingPrefix = RegExp(
+  r'^(?:微信|wechat|qq|record(?:ing)?|call[ _-]?record(?:ing)?|电话录音|通话录音|标准录音|录音)(?:[\s_-]|$)',
+  caseSensitive: false,
+);
+final _recordingTimestamp = RegExp(
+  r'(?:^|[ _-])(?:\d{10,14}(?:[-_]\d{1,3})?|\d{2,4}[-_]\d{2}[-_]\d{2}[ _-]\d{2}[-_]\d{2}[-_]\d{2}(?:[-_]\d{1,3})?)$',
+);
+
+bool _looksLikeRecordingName(String text) =>
+    _recordingPrefix.hasMatch(text) || _recordingTimestamp.hasMatch(text);
+
 final _technicalMetadata = RegExp(
   r'^(?:(?:flac|mp3|m4a|aac|wav|ape|alac|ogg|opus|wma|aiff?|lossless|hi[ -]?res|hq|sq|'
   r'(?:64|96|128|160|192|224|256|320)\s*k|\d{2,4}\s*(?:kbps|kbit/s|kb/s)|'

@@ -37,7 +37,10 @@ class SettingsPage extends StatelessWidget {
           serviceFactory: inventoryServiceFactory,
         ),
         const SizedBox(height: 28),
-        const _SectionTitle('补全内容', description: '仅查找缺失的资料，保留已有信息。'),
+        const _SectionTitle(
+          '缺失项补全设置',
+          description: '用于“仅补全缺失信息”；默认自动检索会查询所有可用来源字段，再逐项确认。',
+        ),
         Card(
           child: Column(
             children: [
@@ -68,7 +71,7 @@ class SettingsPage extends StatelessWidget {
                 title: const Text('附加中文翻译'),
                 subtitle: const Text('候选页默认附加来源已有译文，可单独关闭。已确认的选择保持不变。'),
                 value: settings.includeChineseTranslation,
-                onChanged: controller.canOperate && settings.lyrics
+                onChanged: controller.canOperate
                     ? (value) => controller.updateSettings(
                         settings.copyWith(includeChineseTranslation: value),
                       )
@@ -95,7 +98,7 @@ class SettingsPage extends StatelessWidget {
           const NoticePanel(
             icon: Icons.info_outline,
             title: '补全项目已全部关闭',
-            message: '开启至少一项后，即可创建查询任务。',
+            message: '仅补全缺失信息已关闭；自动检索并修复仍可使用。',
           ),
         ],
         const SizedBox(height: 28),
@@ -171,7 +174,7 @@ class SettingsPage extends StatelessWidget {
         const NoticePanel(
           icon: Icons.privacy_tip_outlined,
           title: '不上传音频，确认后再保存',
-          message: '检索时仅发送歌名、歌手、专辑和时长。默认只补缺失资料；在歌曲详情可逐项编辑或查询修复已有字段，核对替换项后保存。未选资料保留，也可导出副本。原位保存可能需要系统授权。',
+          message: '检索时仅发送歌名、歌手、专辑和时长。默认自动查询元数据、封面与歌词，也可只补缺失项。来源返回的资料须逐项核对，已有值与候选值会对比显示；确认后保存原文件或导出副本。未选资料保留。原位保存可能需要系统授权。',
         ),
         const SizedBox(height: 28),
         const NoticePanel(
@@ -191,7 +194,7 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.4.0 · 元数据修复与音频清单',
+                  '0.4.1 · 自动检索元数据与封面',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),

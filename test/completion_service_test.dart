@@ -106,6 +106,21 @@ void main() {
     expect(source.called, isTrue);
     expect(result.status, TaskStatus.noMatch);
     expect(result.message, contains('数据源尚未接入'));
+    expect(result.message, contains('歌词未获得可靠候选'));
+  });
+
+  test('source capability and missing record data remain distinct', () async {
+    final source = _Source();
+    final service = CompletionService(sources: [source]);
+    expect(service.availableFields, AudioField.values.toSet());
+    final result = await service.preview(
+      fixtureTrack(),
+      const AppSettings(),
+      requestedFields: {AudioField.lyrics, AudioField.year, AudioField.artwork},
+    );
+    expect(result.suggestions.single.field, AudioField.lyrics);
+    expect(result.message, contains('年份、封面未获得可靠候选'));
+    expect(result.message, isNot(contains('数据源尚未接入')));
   });
 
   test(

@@ -38,6 +38,9 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
     AudioField.title,
     AudioField.artist,
     AudioField.album,
+    AudioField.albumArtist,
+    AudioField.year,
+    AudioField.trackNumber,
     AudioField.artwork,
     AudioField.lyrics,
   };
@@ -120,7 +123,18 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
         )
         .map((song) => song.id)
         .toSet();
-    if (ties.length > 1) return const [];
+    if (ties.length > 1) {
+      if (fields.any(
+        (field) => const {
+          AudioField.albumArtist,
+          AudioField.year,
+          AudioField.trackNumber,
+        }.contains(field),
+      )) {
+        throw const SourceNoMatch('候选录音或专辑存在歧义，未采用专辑资料。');
+      }
+      return const [];
+    }
     if (search.durationSeconds == null &&
         (!hasText(search.album) || albumRank(best) != 0)) {
       return const [];
@@ -152,7 +166,7 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
             !verified.sameRecordingAs(best)) {
           throw const ApiException('网易云歌曲详情与已匹配录音不一致，未采用资料。');
         }
-        void add(AudioField field, String value) {
+        void add(AudioField field, String value, {String? evidence}) {
           if (!fields.contains(field) || !hasText(value)) return;
           suggestions.add(
             FieldSuggestion(
@@ -160,7 +174,9 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
               value: value,
               source: name,
               sourceUrl: 'https://music.163.com/song?id=${verified.id}',
-              matchDescription: '${matching(verified)}；同一歌曲 ID 详情已复核',
+              matchDescription:
+                  '${matching(verified)}；同一歌曲 ID 详情已复核'
+                  '${evidence == null ? '' : '；$evidence'}',
             ),
           );
         }
@@ -168,6 +184,80 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
         add(AudioField.title, verified.title);
         add(AudioField.artist, verified.artists.join('/'));
         add(AudioField.album, verified.album);
+        final albumFields = fields.intersection(const {
+          AudioField.albumArtist,
+          AudioField.year,
+          AudioField.trackNumber,
+        });
+        if (albumFields.isNotEmpty) {
+          // These values describe this specific album's recording. A song
+          // credit is not an album credit, nor is album.size a per-disc total.
+          if (verified.albumId == null || !hasText(verified.album)) {
+            failures.add('专辑身份不明确，未采用专辑歌手、年份或音轨序号。');
+          } else {
+            final raw = songs.single as Map;
+            final album = raw['album'] as Map;
+            final context = '专辑 ID ${verified.albumId}';
+            if (albumFields.contains(AudioField.albumArtist)) {
+              final credits = album['artists'];
+              if (credits is List && credits.isNotEmpty) {
+                final names = _artistNames(credits);
+                if (names != null) {
+                  add(
+                    AudioField.albumArtist,
+                    names.join('/'),
+                    evidence: '$context 的完整专辑署名',
+                  );
+                } else {
+                  failures.add('专辑歌手署名不完整，未采用专辑歌手。');
+                }
+              } else if (credits != null && credits is! List) {
+                failures.add('专辑歌手格式异常，未采用专辑歌手。');
+              }
+            }
+            if (albumFields.contains(AudioField.year)) {
+              final timestamp = album['publishTime'];
+              if (timestamp != null) {
+                final date = _releaseDate(timestamp);
+                if (date == null) {
+                  failures.add('专辑发行时间缺失、为零或格式异常，未采用年份。');
+                } else if (date.subtract(const Duration(hours: 12)).year !=
+                        date.year ||
+                    date.add(const Duration(hours: 14)).year != date.year) {
+                  // The anonymous endpoint does not specify a release-date
+                  // timezone. Do not silently choose a year at its boundary.
+                  failures.add('专辑发行时间位于跨年时区边界，未推定年份。');
+                } else {
+                  add(
+                    AudioField.year,
+                    date.year.toString(),
+                    evidence: '$context 的发行年份（publishTime=$timestamp，UTC）',
+                  );
+                }
+              }
+            }
+            if (albumFields.contains(AudioField.trackNumber)) {
+              final number = raw['no'];
+              final albumSize = album['size'];
+              if (number != null) {
+                if (number is int &&
+                    number > 0 &&
+                    number <= 65535 &&
+                    !(albumSize is int &&
+                        albumSize > 0 &&
+                        number > albumSize)) {
+                  add(
+                    AudioField.trackNumber,
+                    number.toString(),
+                    evidence: '$context 中当前歌曲的明确音轨序号',
+                  );
+                } else {
+                  failures.add('当前歌曲的专辑音轨序号无效或冲突，未采用音轨序号。');
+                }
+              }
+            }
+          }
+        }
         if (fields.contains(AudioField.artwork) &&
             hasText(verified.artworkUrl)) {
           final artwork = Uri.tryParse(verified.artworkUrl!);
@@ -252,6 +342,28 @@ class NeteaseLyricsSource implements MetadataSource, SourceConnectionTester {
       matchDescription: '$matching；${content.status}',
     );
   }
+
+  static DateTime? _releaseDate(Object value) {
+    if (value is! int || value == 0) return null;
+    try {
+      final date = DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+      return date.year >= 1 && date.year <= 9999 ? date : null;
+    } on ArgumentError {
+      return null;
+    }
+  }
+}
+
+List<String>? _artistNames(Object? raw) {
+  if (raw is! List || raw.isEmpty) return null;
+  final names = <String>[];
+  for (final artist in raw) {
+    if (artist is! Map) return null;
+    final name = artist['name'];
+    if (name is! String || !hasText(name)) return null;
+    names.add(name);
+  }
+  return names;
 }
 
 class _Song {

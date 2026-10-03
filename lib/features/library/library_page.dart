@@ -352,8 +352,8 @@ class _LibraryPageState extends State<LibraryPage> {
                                     controller.canOperate &&
                                         visibleIds.isNotEmpty &&
                                         controller
-                                            .settings
-                                            .enabledFields
+                                            .completion
+                                            .availableFields
                                             .isNotEmpty
                                     ? () => confirmBatchQuery(
                                         context,
@@ -363,7 +363,7 @@ class _LibraryPageState extends State<LibraryPage> {
                                       )
                                     : null,
                                 icon: const Icon(Icons.manage_search),
-                                label: const Text('查询当前列表'),
+                                label: const Text('自动检索当前列表'),
                               ),
                             ],
                           ),

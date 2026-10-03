@@ -229,7 +229,7 @@ class _MetadataEditorPageState extends State<MetadataEditorPage> {
           (widget.queryOnly || controller.canExportTrack(widget.track));
       final count = widget.queryOnly ? _selected.length : _changes.length;
       return Scaffold(
-        appBar: AppBar(title: Text(widget.queryOnly ? '查询修复资料' : '编辑元数据与封面')),
+        appBar: AppBar(title: Text(widget.queryOnly ? '调整检索条件' : '编辑元数据与封面')),
         body: SafeArea(
           child: Align(
             alignment: Alignment.topCenter,
@@ -248,7 +248,7 @@ class _MetadataEditorPageState extends State<MetadataEditorPage> {
                     const SizedBox(height: 12),
                     Text(
                       widget.queryOnly
-                          ? '选择要查询的项目，已有资料也可以重新匹配。查询后逐项查看旧值与新值，再决定是否保存。'
+                          ? '自动检索没有匹配到合适资料时，可按需调整搜索词或查询范围。已有资料也可重新匹配，候选仍需逐项确认。'
                           : '修改需要修复的内容，再勾选对应项目进入确认页。未勾选的标签保留；留空不会删除已有内容。',
                     ),
                     const SizedBox(height: 12),
@@ -374,30 +374,45 @@ class _MetadataEditorPageState extends State<MetadataEditorPage> {
     const SizedBox(height: 24),
     Text('要查询的项目', style: Theme.of(context).textTheme.titleLarge),
     const SizedBox(height: 8),
-    for (final field in AudioField.values)
-      CheckboxListTile(
-        key: ValueKey('query-${field.name}'),
-        contentPadding: EdgeInsets.zero,
-        title: Text(field.label),
-        subtitle: Text(
-          _isInstrumentalLyrics(field)
-              ? '纯音乐 · 跳过歌词查询与翻译'
-              : !_onlineFields.contains(field)
-              ? '暂无在线来源，可在编辑页手动修复'
-              : hasText(widget.track.valueOf(field))
-              ? '已有资料 · 可查询替换候选'
-              : '缺失 · 查询补全候选',
-        ),
-        value: _selected.contains(field),
-        onChanged: enabled && _onlineFields.contains(field)
-            ? (checked) => setState(
-                () => checked == true
-                    ? _selected.add(field)
-                    : _selected.remove(field),
-              )
-            : null,
-        controlAffinity: ListTileControlAffinity.leading,
+    const Text('默认选择所有可查询项目；也会检索已有标签的替换候选。'),
+    const SizedBox(height: 8),
+    Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        for (final field in AudioField.values)
+          if (_onlineFields.contains(field))
+            FilterChip(
+              key: ValueKey('query-${field.name}'),
+              label: Text(field.label),
+              selected: _selected.contains(field),
+              onSelected: enabled
+                  ? (checked) => setState(
+                      () => checked
+                          ? _selected.add(field)
+                          : _selected.remove(field),
+                    )
+                  : null,
+            ),
+      ],
+    ),
+    if (widget.track.isInstrumental) ...[
+      const SizedBox(height: 12),
+      const Text('纯音乐 · 跳过歌词查询与翻译'),
+    ],
+    if (AudioField.values.any(
+      (field) =>
+          !_onlineFields.contains(field) && !_isInstrumentalLyrics(field),
+    )) ...[
+      const SizedBox(height: 12),
+      Text(
+        '当前数据源不支持：${AudioField.values.where((field) => !_onlineFields.contains(field) && !_isInstrumentalLyrics(field)).map((field) => field.label).join('、')}。需要时可返回手动编辑。',
+        key: const ValueKey('unsupported-query-fields'),
+        style: Theme.of(context).textTheme.bodySmall,
       ),
+    ],
+    const SizedBox(height: 12),
+    const Text('检索会发送搜索歌名、歌手、专辑与时长，不上传音频。'),
   ];
 
   Widget _textEditor(AudioField field, bool enabled) {

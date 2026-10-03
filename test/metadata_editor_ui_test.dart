@@ -159,26 +159,34 @@ Future<void> _change(
 }
 
 void main() {
-  testWidgets('fully tagged track exposes edit and query repair entry points', (
-    tester,
-  ) async {
-    final controller = _Controller(track: _track(), writer: _Writer());
-    addTearDown(controller.dispose);
-    await controller.initialize();
-    await _open(
-      tester,
-      TrackDetailPage(track: controller.tracks.single, controller: controller),
-    );
-    final edit = find.byKey(const ValueKey('edit-metadata'));
-    await _show(tester, edit);
-    expect(tester.widget<FilledButton>(edit).onPressed, isNotNull);
-    final query = find.byKey(const ValueKey('query-metadata-repair'));
-    expect(tester.widget<OutlinedButton>(query).onPressed, isNotNull);
-    await tester.tap(edit);
-    await tester.pumpAndSettle();
-    expect(find.byType(MetadataEditorPage), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'fully tagged track keeps manual edit and custom query as fallback',
+    (tester) async {
+      final controller = _Controller(track: _track(), writer: _Writer());
+      addTearDown(controller.dispose);
+      await controller.initialize();
+      await _open(
+        tester,
+        TrackDetailPage(
+          track: controller.tracks.single,
+          controller: controller,
+        ),
+      );
+      expect(find.byKey(const ValueKey('edit-metadata')), findsNothing);
+      await _show(tester, find.text('其他修复方式'));
+      await tester.tap(find.text('其他修复方式'));
+      await tester.pumpAndSettle();
+      final edit = find.byKey(const ValueKey('edit-metadata'));
+      await _show(tester, edit);
+      expect(tester.widget<OutlinedButton>(edit).onPressed, isNotNull);
+      final query = find.byKey(const ValueKey('query-metadata-repair'));
+      expect(tester.widget<OutlinedButton>(query).onPressed, isNotNull);
+      await tester.tap(edit);
+      await tester.pumpAndSettle();
+      expect(find.byType(MetadataEditorPage), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'only checked changed values become unapproved replacements; save remains explicit',

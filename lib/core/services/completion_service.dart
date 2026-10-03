@@ -12,6 +12,10 @@ class CompletionService {
   final List<MetadataSource> sources;
   final LyricsTranslator? translator;
 
+  /// Source capability, not a promise that a particular recording has a value.
+  Set<AudioField> get availableFields =>
+      Set.unmodifiable(sources.expand((source) => source.supportedFields));
+
   Future<CompletionTask> preview(
     AudioTrack track,
     AppSettings settings, {
@@ -58,9 +62,7 @@ class CompletionService {
             : '选定的补全项目没有缺失信息。',
       );
     }
-    final available = sources
-        .expand((source) => source.supportedFields)
-        .toSet();
+    final available = availableFields;
     final unavailable = requested.difference(available);
     if (requested.intersection(available).isEmpty) {
       return result(
@@ -72,6 +74,7 @@ class CompletionService {
     // A preview is deliberately separate from a future approved file write.
     final suggestions = <FieldSuggestion>[];
     final failedSources = <String>[];
+    final sourceNotices = <String>[];
     for (final source in sources) {
       final fields = requested.intersection(source.supportedFields);
       if (fields.isEmpty) continue;
@@ -94,6 +97,10 @@ class CompletionService {
               ),
         );
       } catch (error) {
+        if (error is SourceNoMatch) {
+          sourceNotices.add('${source.name}：${error.message}');
+          continue;
+        }
         if (error is PartialSourceException) {
           suggestions.addAll(
             error.suggestions
@@ -157,7 +164,16 @@ class CompletionService {
       if (unavailable.isNotEmpty)
         '${unavailable.map((field) => field.label).join('、')}的数据源尚未接入。',
       ...failedSources,
+      ...sourceNotices,
     ];
+    final withoutCandidate = requested
+        .intersection(available)
+        .difference(suggestions.map((candidate) => candidate.field).toSet());
+    if (withoutCandidate.isNotEmpty) {
+      warnings.add(
+        '${withoutCandidate.map((field) => field.label).join('、')}未获得可靠候选；可能是来源未提供、版本无法确认或查询未完成。保留原资料。',
+      );
+    }
     final warning = warnings.isEmpty ? '' : ' ${warnings.join('；')}';
     if (suggestions.isEmpty) {
       return failedSources.isEmpty
