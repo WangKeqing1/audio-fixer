@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/audio_track.dart';
 import '../../core/models/completion_task.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/instrumental_control.dart';
 import '../../shared/widgets/translation_privacy.dart';
 import '../library/library_controller.dart';
 
@@ -118,9 +119,14 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
         !controller.canOperate ||
         translator == null ||
         track == null ||
+        track.isInstrumental ||
         !controller.isTaskCurrent(widget.task)) {
       return;
     }
+    bool stillNeedsTranslation() =>
+        controller.canOperate &&
+        controller.isTaskCurrent(widget.task) &&
+        controller.trackById(track.id)?.isInstrumental == false;
     setState(() {
       _translationWorking = true;
       _exportNotice = null;
@@ -135,12 +141,16 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
           throw StateError('本机翻译设置未保存，请重试。');
         }
       }
-      if (!mounted || route?.isCurrent != true) return;
+      if (!mounted || route?.isCurrent != true || !stillNeedsTranslation()) {
+        return;
+      }
       setState(() => _translationProcessing = true);
       final status = await translator.inspect(
         candidate.lyricsContent!.original,
       );
-      if (!mounted || route?.isCurrent != true) return;
+      if (!mounted || route?.isCurrent != true || !stillNeedsTranslation()) {
+        return;
+      }
       setState(() => _translationProcessing = false);
       if (!status.canTranslate) {
         setState(() => _exportNotice = status.message ?? '无法确认可翻译的原文语言，保留原歌词。');
@@ -175,14 +185,16 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
               ),
             ) ??
             false;
-        if (!approved || !mounted || route?.isCurrent != true) return;
+        if (!approved ||
+            !mounted ||
+            route?.isCurrent != true ||
+            !stillNeedsTranslation()) {
+          return;
+        }
         setState(() => _translationProcessing = true);
         await translator.downloadModels(status.sourceLanguage);
       }
-      if (!mounted ||
-          route?.isCurrent != true ||
-          !controller.canOperate ||
-          !controller.isTaskCurrent(widget.task)) {
+      if (!mounted || route?.isCurrent != true || !stillNeedsTranslation()) {
         return;
       }
       // Re-query uses the source cache and produces a new reviewable candidate;
@@ -219,7 +231,12 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
           : widget.task;
       final theme = Theme.of(context);
       final selected = _selected.values
-          .where((candidate) => !hasText(track?.valueOf(candidate.field)))
+          .where(
+            (candidate) =>
+                !hasText(track?.valueOf(candidate.field)) &&
+                !(track?.isInstrumental == true &&
+                    candidate.field == AudioField.lyrics),
+          )
           .map(
             (candidate) => candidate.withChineseTranslation(
               _translationChoices[candidate] ??
@@ -414,6 +431,23 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (track != null &&
+                        (track.isInstrumental ||
+                            (canReview &&
+                                !hasText(track.lyrics) &&
+                                result.queriedFields.contains(
+                                  AudioField.lyrics,
+                                ) &&
+                                !result.suggestions.any(
+                                  (item) => item.field == AudioField.lyrics,
+                                )))) ...[
+                      const SizedBox(height: 16),
+                      InstrumentalControl(
+                        track: track,
+                        controller: controller,
+                        enabled: !_exporting && !_translationWorking,
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     if (widget.task.suggestions.isEmpty)
                       const NoticePanel(
@@ -430,12 +464,17 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                             CheckboxListTile(
                               value:
                                   !hasText(track?.valueOf(candidate.field)) &&
+                                  !(track?.isInstrumental == true &&
+                                      candidate.field == AudioField.lyrics) &&
                                   _selected[candidate.field] == candidate,
                               onChanged:
                                   controller.canOperate &&
                                       !_exporting &&
                                       !_translationWorking &&
                                       canReview &&
+                                      !(track?.isInstrumental == true &&
+                                          candidate.field ==
+                                              AudioField.lyrics) &&
                                       hasText(candidate.value) &&
                                       !hasText(track?.valueOf(candidate.field))
                                   ? (checked) => setState(() {
@@ -480,6 +519,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                               !_exporting &&
                                               !_translationWorking &&
                                               canReview &&
+                                              track?.isInstrumental != true &&
                                               controller
                                                       .completion
                                                       .translator !=
@@ -499,6 +539,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                                           controller.canOperate &&
                                               !_exporting &&
                                               !_translationWorking &&
+                                              track?.isInstrumental != true &&
                                               canReview
                                           ? (value) => setState(() {
                                               _translationChoices[candidate] =

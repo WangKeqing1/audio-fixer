@@ -1,4 +1,4 @@
-# Original-save, bulk and library-filter Android acceptance (0.3.1)
+# Original-save, library-artwork and instrumental Android acceptance (0.3.2)
 
 ## Synthetic-only runtime
 
@@ -26,6 +26,13 @@ security settings to work around a missing acceleration capability.
 
 - Real permission denial, retry/grant and MediaStore query/read through content URIs
 - Unicode existing metadata and embedded cover; no mock native MethodChannels
+- Initial rows show decoded, per-file embedded thumbnails before a full detail
+  read; missing-artwork rows keep a placeholder. Fresh controller reload still
+  loads the correct thumbnail without falsely marking tags inspected
+- A no-match lyric query stays unclassified until the visible instrumental
+  button is pressed. The local annotation survives store reload and MediaStore
+  refresh, skips repeated lyric requests, and leaves actual lyrics/cover intact.
+  Removing it permits lyrics to be queried and explicitly reviewed again
 - Selection toolbar stays in the same on-screen rectangle after long scrolling,
   with hit-testable select-all/query controls and a cancelled query retaining selection
 - Actual settings controls exclude strictly sub-60-second audio and parent-folder

@@ -45,7 +45,9 @@ void main() {
       });
       final library = AndroidMusicLibrary(() async => temporary);
       expect(await library.permissionStatus(), AudioLibraryPermission.granted);
+      expect(library.artworkRevision, 0);
       final track = (await library.querySongs()).single;
+      expect(library.artworkRevision, 1);
       expect(track.title, '系统歌曲');
       expect(track.detailsLoaded, isFalse);
       expect(track.localPath, isEmpty);
@@ -95,4 +97,22 @@ void main() {
       ),
     );
   });
+
+  test(
+    'initial thumbnails use the exact media URI without copying audio',
+    () async {
+      final calls = <String>[];
+      final bytes = Uint8List.fromList([1, 2, 3]);
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        expect(call.method, 'readArtworkThumbnail');
+        expect((call.arguments as Map)['uri'], fixtureDeviceTrack().contentUri);
+        return bytes;
+      });
+      final library = AndroidMusicLibrary(() async => temporary);
+      expect(await library.readArtworkThumbnail(fixtureDeviceTrack()), bytes);
+      expect(await library.readArtworkThumbnail(fixtureTrack()), isNull);
+      expect(calls, ['readArtworkThumbnail']);
+    },
+  );
 }

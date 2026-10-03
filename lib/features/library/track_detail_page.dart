@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/models/audio_track.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/track_artwork.dart';
+import '../../shared/widgets/instrumental_control.dart';
 import 'library_controller.dart';
 import '../tasks/candidate_review_page.dart';
 
@@ -105,7 +106,9 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                               size: 18,
                             ),
                             label: Text(
-                              '${field.label}${track.missingFields.contains(field) ? '缺失' : '已有'}',
+                              field == AudioField.lyrics && track.isInstrumental
+                                  ? '纯音乐 · 免补歌词'
+                                  : '${field.label}${track.missingFields.contains(field) ? '缺失' : '已有'}',
                             ),
                           ),
                       ],
@@ -137,8 +140,17 @@ class _TrackDetailPageState extends State<TrackDetailPage> {
                         ? track.lyrics!
                         : track.readError != null || !track.detailsLoaded
                         ? '歌词读取状态未知。'
+                        : track.isInstrumental
+                        ? '已设为纯音乐，无需补全歌词。'
                         : '音频中尚未发现内嵌歌词。',
                   ),
+                  if (track.isInstrumental ||
+                      (track.detailsLoaded &&
+                          track.readError == null &&
+                          !hasText(track.lyrics))) ...[
+                    const SizedBox(height: 16),
+                    InstrumentalControl(track: track, controller: controller),
+                  ],
                   const SizedBox(height: 24),
                   if (controller.taskForTrack(track.id) case final task?)
                     if (task.suggestions.isNotEmpty)

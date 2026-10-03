@@ -265,6 +265,13 @@ jobs:
           PY
           sha256sum "$apk" | tee build/ci/apk-sha256.txt
 
+      - name: Prepare integrity-checked APK delivery parts
+        run: |
+          python3 tool/package_qa_delivery_test.py
+          python3 tool/package_qa_delivery.py
+          cp build/ci/apk-signature.txt build/ci/apk-badging.txt \
+            build/ci/apk-sha256.txt build/ci/apk-delivery/part-1/
+
       - name: Retain only the verified QA APK and its identity evidence for delivery
         if: ${{ success() && steps.apk.outcome == 'success' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -276,6 +283,26 @@ jobs:
             build/ci/apk-sha256.txt
             build/ci/apk-signature.txt
             build/ci/apk-badging.txt
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Retain APK delivery part one below the transfer size limit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-qa-part-1-${{ github.event.pull_request.head.sha || github.sha }}
+          path: build/ci/apk-delivery/part-1/*
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Retain APK delivery part two below the transfer size limit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-qa-part-2-${{ github.event.pull_request.head.sha || github.sha }}
+          path: build/ci/apk-delivery/part-2/*
           retention-days: 1
           if-no-files-found: error
           include-hidden-files: false

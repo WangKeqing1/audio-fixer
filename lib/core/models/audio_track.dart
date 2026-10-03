@@ -25,6 +25,7 @@ class AudioTrack {
     this.durationMs,
     this.indexedDurationMs,
     this.lyrics,
+    this.isInstrumental = false,
     this.artworkPath,
     this.readError,
     this.contentUri,
@@ -48,6 +49,9 @@ class AudioTrack {
   // Compare index to index on refresh, without discarding exact parsed duration.
   final int? indexedDurationMs;
   final String? lyrics;
+  // Explicit user choice stored in the app catalog, never inferred from a
+  // missing lyric or written as placeholder lyrics into an audio file.
+  final bool isInstrumental;
   final String? artworkPath;
   final String? readError;
   final String? contentUri;
@@ -82,7 +86,13 @@ class AudioTrack {
 
   // A failed read is unknown, not evidence that every tag is absent.
   Set<AudioField> get missingFields => readError == null && detailsLoaded
-      ? AudioField.values.where((field) => !hasText(valueOf(field))).toSet()
+      ? AudioField.values
+            .where(
+              (field) =>
+                  !(field == AudioField.lyrics && isInstrumental) &&
+                  !hasText(valueOf(field)),
+            )
+            .toSet()
       : <AudioField>{};
 
   bool get needsCompletion =>
@@ -114,6 +124,7 @@ class AudioTrack {
     durationMs: durationMs,
     indexedDurationMs: indexedDurationMs,
     lyrics: lyrics,
+    isInstrumental: isInstrumental,
     artworkPath: artworkPath,
     readError: readError,
     detailsLoaded: true,
@@ -130,6 +141,29 @@ class AudioTrack {
     readError: error,
   );
 
+  AudioTrack withInstrumental(bool value) => AudioTrack(
+    id: id,
+    fileName: fileName,
+    localPath: localPath,
+    sizeBytes: sizeBytes,
+    importedAt: importedAt,
+    title: title,
+    artist: artist,
+    album: album,
+    year: year,
+    durationMs: durationMs,
+    indexedDurationMs: indexedDurationMs,
+    lyrics: lyrics,
+    isInstrumental: value,
+    artworkPath: artworkPath,
+    readError: readError,
+    contentUri: contentUri,
+    dateModifiedMs: dateModifiedMs,
+    detailsLoaded: detailsLoaded,
+    volumeName: volumeName,
+    relativePath: relativePath,
+  );
+
   Map<String, Object?> toJson() => {
     'id': id,
     'fileName': fileName,
@@ -143,6 +177,7 @@ class AudioTrack {
     'durationMs': durationMs,
     'indexedDurationMs': indexedDurationMs,
     'lyrics': lyrics,
+    'isInstrumental': isInstrumental,
     'artworkPath': artworkPath,
     'readError': readError,
     'contentUri': contentUri,
@@ -167,6 +202,7 @@ class AudioTrack {
         ? json['indexedDurationMs'] as int?
         : json['durationMs'] as int?,
     lyrics: json['lyrics'] as String?,
+    isInstrumental: json['isInstrumental'] as bool? ?? false,
     artworkPath: json['artworkPath'] as String?,
     readError: json['readError'] as String?,
     contentUri: json['contentUri'] as String?,

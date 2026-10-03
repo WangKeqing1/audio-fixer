@@ -78,6 +78,18 @@ music, private inputs, signing keys, credentials, broad logs or build directorie
 are included. The final APK can be delivered separately through the requested
 file destination after exact-head checks pass.
 
+For clients with a 32 MiB artifact download limit, the same verified APK also
+has two delivery artifacts. `tool/package_qa_delivery.py` partitions the exact
+signed bytes into two parts, each at most 31 MiB, and includes the same JSON
+manifest in both artifacts. Before assembly, require matching manifests, the
+expected head/checkout and run IDs, each part's byte length and SHA-256, and the
+final APK's full byte length and SHA-256. Then verify APK identity and signature
+normally. This does not rebuild, re-sign, or alter the application. The full APK
+artifact remains available; all three artifacts expire after one day. Current
+two-part packaging explicitly rejects APKs above 62 MiB instead of silently
+producing an undeliverable part. The five host tests cover exact reconstruction,
+stale identity/parts, oversize inputs and symlink rejection.
+
 The CI debug TEST signing key is ephemeral and may differ between runs or from
 previous local QA builds. Compare the certificate before claiming update
 compatibility. A different signature cannot replace an installed package with
@@ -118,6 +130,16 @@ matching receive unit coverage. Process kill is not claimed for filter persisten
 hash at cancellation checkpoints and the unapproved song's final exact hash.
 Both the optional exported file and the updated original undergo independent
 FFmpeg decoded-sample and encoded-packet checks and existing tag/cover checks.
+
+The initial-artwork acceptance extension checks decoded native thumbnail pixels
+before a full tag read, missing-artwork placeholders, and fresh controller reload.
+The instrumental extension first queries an explicit no-match fixture, verifies
+that classification is not automatic, operates the visible mark/remove buttons,
+checks the real JSON store and MediaStore refresh, and proves marked songs make
+no repeated lyric request. Reading the real file again must show unchanged
+lyrics and cover. It then removes the annotation and runs the existing approved
+original-save/export flows. These additions must pass in the current run before
+being reported as accepted; host tests alone do not establish runtime behavior.
 
 A second native integration test launches a fresh Activity after the host seeds
 an interrupted production-format journal, valid original backup and a distinct

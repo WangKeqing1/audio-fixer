@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models/completion_task.dart';
+import '../../core/models/audio_track.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
+import '../../shared/widgets/instrumental_control.dart';
 import '../library/library_controller.dart';
 import 'candidate_review_page.dart';
 import '../library/library_selection_toolbar.dart';
@@ -201,6 +203,24 @@ class TasksPage extends StatelessWidget {
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
+                            if (controller.trackById(task.trackId)
+                                case final track?)
+                              if (track.isInstrumental ||
+                                  (controller.isTaskCurrent(task) &&
+                                      task.queriedFields.contains(
+                                        AudioField.lyrics,
+                                      ) &&
+                                      !hasText(track.lyrics) &&
+                                      !task.suggestions.any(
+                                        (item) =>
+                                            item.field == AudioField.lyrics,
+                                      ))) ...[
+                                const SizedBox(height: 12),
+                                InstrumentalControl(
+                                  track: track,
+                                  controller: controller,
+                                ),
+                              ],
                             if (task.writeError case final error?) ...[
                               const SizedBox(height: 8),
                               Text(

@@ -40,7 +40,12 @@ class CompletionService {
     }
     final requested = track.missingFields.intersection(settings.enabledFields);
     if (requested.isEmpty) {
-      return result(TaskStatus.skipped, '选定的补全项目没有缺失信息。');
+      return result(
+        TaskStatus.skipped,
+        track.isInstrumental && settings.lyrics
+            ? '已在本应用设为纯音乐，跳过歌词查询与翻译。其余选定项目没有缺失信息。'
+            : '选定的补全项目没有缺失信息。',
+      );
     }
     final available = sources
         .expand((source) => source.supportedFields)

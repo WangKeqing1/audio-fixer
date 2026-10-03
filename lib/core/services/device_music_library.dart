@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/audio_track.dart';
 import '../storage/library_store.dart';
 import 'audio_tag_reader.dart';
+import 'device_artwork_cache.dart';
 
 enum AudioLibraryPermission { notRequested, denied, blocked, granted }
 
@@ -15,7 +16,7 @@ abstract interface class DeviceMusicLibrary {
   Future<AudioTrack> readDetails(AudioTrack track);
 }
 
-class AndroidMusicLibrary implements DeviceMusicLibrary {
+class AndroidMusicLibrary implements DeviceMusicLibrary, DeviceArtworkSource {
   AndroidMusicLibrary(
     this.directoryProvider, {
     this.channel = const MethodChannel('audio_fixer/device_library'),
@@ -23,6 +24,18 @@ class AndroidMusicLibrary implements DeviceMusicLibrary {
 
   final DirectoryProvider directoryProvider;
   final MethodChannel channel;
+  int _artworkRevision = 0;
+
+  @override
+  int get artworkRevision => _artworkRevision;
+
+  @override
+  Future<Uint8List?> readArtworkThumbnail(AudioTrack track) async {
+    if (!track.isDeviceTrack) return null;
+    return channel.invokeMethod<Uint8List>('readArtworkThumbnail', {
+      'uri': track.contentUri,
+    });
+  }
 
   Future<AudioLibraryPermission> _permission(String method) async =>
       AudioLibraryPermission.values.byName(
@@ -42,7 +55,7 @@ class AndroidMusicLibrary implements DeviceMusicLibrary {
   Future<List<AudioTrack>> querySongs() async {
     final rows = await channel.invokeListMethod<dynamic>('querySongs');
     if (rows == null) throw const FormatException('系统音乐库没有返回有效数据');
-    return rows.map((row) {
+    final tracks = rows.map((row) {
       final data = Map<String, dynamic>.from(row as Map);
       final uri = Uri.parse(data['contentUri'] as String);
       if (uri.scheme != 'content' || uri.authority != 'media') {
@@ -68,6 +81,10 @@ class AndroidMusicLibrary implements DeviceMusicLibrary {
         detailsLoaded: false,
       );
     }).toList();
+    // Refresh also retries absent/unsupported thumbnails, even if Android's
+    // coarse modification timestamp has not advanced yet.
+    _artworkRevision++;
+    return tracks;
   }
 
   @override

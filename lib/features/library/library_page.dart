@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
+import '../../core/services/device_artwork_cache.dart';
 import '../../core/services/device_music_library.dart';
 import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
 import '../../shared/widgets/notice_panel.dart';
-import '../../shared/widgets/track_artwork.dart';
+import '../../shared/widgets/library_track_artwork.dart';
 import 'library_controller.dart';
 import 'track_detail_page.dart';
 import '../tasks/bulk_action_panel.dart';
@@ -42,10 +43,12 @@ class _LibraryPageState extends State<LibraryPage> {
   final _search = TextEditingController();
   _LibraryFilter _filter = _LibraryFilter.all;
   bool _selectionMode = false;
+  DeviceArtworkCache? _artworkCache;
 
   @override
   void dispose() {
     _search.dispose();
+    _artworkCache?.dispose();
     super.dispose();
   }
 
@@ -72,6 +75,17 @@ class _LibraryPageState extends State<LibraryPage> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
+    final library = controller.deviceLibrary;
+    final DeviceArtworkSource? artworkSource =
+        controller.canReadDeviceLibrary && library is DeviceArtworkSource
+        ? library as DeviceArtworkSource
+        : null;
+    if (_artworkCache?.source != artworkSource) {
+      _artworkCache?.dispose();
+      _artworkCache = artworkSource == null
+          ? null
+          : DeviceArtworkCache(artworkSource);
+    }
     final theme = Theme.of(context);
     if (!controller.canReadDeviceLibrary) {
       final blocked =
@@ -332,6 +346,7 @@ class _LibraryPageState extends State<LibraryPage> {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _TrackTile(
                             track: track,
+                            artworkCache: _artworkCache,
                             selectionMode: selectionMode,
                             selected: controller.selectedTrackIds.contains(
                               track.id,
@@ -467,9 +482,11 @@ class _TrackTile extends StatelessWidget {
     required this.onTap,
     required this.selectionMode,
     required this.selected,
+    this.artworkCache,
     this.onSelectionChanged,
   });
   final AudioTrack track;
+  final DeviceArtworkCache? artworkCache;
   final VoidCallback? onTap;
   final bool selectionMode;
   final bool selected;
@@ -511,7 +528,11 @@ class _TrackTile extends StatelessWidget {
                         : (_) => onSelectionChanged!(),
                   ),
                 ExcludeSemantics(
-                  child: TrackArtwork(path: track.artworkPath, size: 52),
+                  child: LibraryTrackArtwork(
+                    key: ValueKey('library-artwork-${track.id}'),
+                    track: track,
+                    cache: artworkCache,
+                  ),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -528,7 +549,7 @@ class _TrackTile extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${hasText(track.artist) ? track.artist : '歌手未知'} · ${track.extension} · ${formatDuration(track.durationMs)}',
+                        '${hasText(track.artist) ? track.artist : '歌手未知'} · ${track.extension} · ${formatDuration(track.durationMs)}${track.isInstrumental ? ' · 纯音乐' : ''}',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(

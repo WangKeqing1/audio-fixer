@@ -15,6 +15,7 @@ import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:audio_fixer/features/library/track_detail_page.dart';
 import 'package:audio_fixer/features/settings/settings_page.dart';
 import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
+import 'package:audio_fixer/shared/widgets/track_artwork.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -32,6 +33,7 @@ const _lyrics =
 
 class _OfflineFixtureSource implements MetadataSource {
   int calls = 0;
+  bool returnNoMatch = false;
 
   @override
   String get name => 'Offline synthetic fixture';
@@ -48,6 +50,7 @@ class _OfflineFixtureSource implements MetadataSource {
     expect({_fileName, _unapprovedFileName}, contains(track.fileName));
     expect(track.detailsLoaded, isTrue);
     expect(requestedFields, {AudioField.lyrics});
+    if (returnNoMatch) return [];
     return [
       FieldSuggestion(
         field: AudioField.lyrics,
@@ -57,6 +60,87 @@ class _OfflineFixtureSource implements MetadataSource {
       ),
     ];
   }
+}
+
+Future<void> _verifyInitialCover(
+  WidgetTester tester,
+  LibraryController controller,
+  AndroidMusicLibrary library,
+  Future<void> Function(String) checkpoint,
+  String checkpointName,
+) async {
+  final track = controller.tracks.singleWhere(
+    (item) => item.fileName == _fileName,
+  );
+  expect(track.detailsLoaded, isFalse);
+  expect(track.artworkPath, isNull);
+  final list = find.byKey(const PageStorageKey('library-scroll-view'));
+  final search = find.byType(TextField).first;
+  await tester.enterText(search, _fileName);
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+  final cover = find.byKey(ValueKey('library-artwork-${track.id}'));
+  await tester.scrollUntilVisible(
+    cover,
+    220,
+    scrollable: find
+        .descendant(of: list, matching: find.byType(Scrollable))
+        .first,
+  );
+  final artwork = find.descendant(
+    of: cover,
+    matching: find.byType(TrackArtwork),
+  );
+  await _waitFor(
+    tester,
+    () =>
+        artwork.evaluate().isNotEmpty &&
+        tester.widget<TrackArtwork>(artwork).bytes != null,
+    'initial embedded cover thumbnail without a detail read',
+  );
+  final displayed = tester.widget<TrackArtwork>(artwork).bytes!;
+  expect(displayed.length, inInclusiveRange(1, 256 * 1024));
+  expect(
+    find.descendant(of: cover, matching: find.byType(Image)),
+    findsOneWidget,
+  );
+  final pixels = find.descendant(of: cover, matching: find.byType(RawImage));
+  await _waitFor(
+    tester,
+    () =>
+        pixels.evaluate().isNotEmpty &&
+        tester.widget<RawImage>(pixels).image != null,
+    'decoded thumbnail pixels in the initial list',
+  );
+  expect(controller.trackById(track.id)!.detailsLoaded, isFalse);
+  expect(controller.trackById(track.id)!.artworkPath, isNull);
+  expect(await library.readArtworkThumbnail(track), orderedEquals(displayed));
+  await checkpoint(checkpointName);
+
+  final noCover = controller.tracks.singleWhere(
+    (item) => item.fileName == 'native_duration_60000.wav',
+  );
+  expect(await library.readArtworkThumbnail(noCover), isNull);
+  await tester.enterText(search, noCover.fileName);
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
+  final emptyCover = find.byKey(ValueKey('library-artwork-${noCover.id}'));
+  await tester.scrollUntilVisible(
+    emptyCover,
+    180,
+    scrollable: find
+        .descendant(of: list, matching: find.byType(Scrollable))
+        .first,
+  );
+  await tester.pumpAndSettle();
+  expect(
+    find.descendant(of: emptyCover, matching: find.byType(Image)),
+    findsNothing,
+  );
+  expect(controller.trackById(noCover.id)!.detailsLoaded, isFalse);
+  await tester.enterText(search, '');
+  FocusManager.instance.primaryFocus?.unfocus();
+  await tester.pumpAndSettle();
 }
 
 Future<void> _waitFor(
@@ -414,11 +498,25 @@ void main() {
       );
       expect(await library.permissionStatus(), AudioLibraryPermission.granted);
       expect(controller.libraryError, isNull);
+      await _verifyInitialCover(
+        tester,
+        controller,
+        library,
+        checkpoint,
+        'initial_cover_ready',
+      );
       controller = await _verifyLibraryFilters(
         tester,
         controller,
         createController,
         checkpoint,
+      );
+      await _verifyInitialCover(
+        tester,
+        controller,
+        library,
+        checkpoint,
+        'initial_cover_reloaded',
       );
       final track = controller.tracks.singleWhere(
         (item) => item.fileName == _fileName,
@@ -457,6 +555,124 @@ void main() {
           .toString();
       await checkpoint('details_ready');
 
+      // Missing search results do not imply instrumental music. The user must
+      // explicitly mark it, and only the app catalog should change.
+      source.returnNoMatch = true;
+      await tester.tap(find.text('补全缺失信息'));
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            controller.taskForTrack(track.id)?.status == TaskStatus.noMatch,
+        'an explicit no-match lyric result',
+      );
+      expect(controller.trackById(track.id)!.isInstrumental, isFalse);
+      final instrumental = find.byKey(ValueKey('instrumental-${track.id}'));
+      await tester.scrollUntilVisible(
+        instrumental,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await Scrollable.ensureVisible(
+        tester.element(instrumental),
+        alignment: 0.5,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(instrumental.hitTestable());
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            controller.trackById(track.id)!.isInstrumental,
+        'explicit app-local instrumental setting',
+      );
+      expect(controller.trackById(track.id)!.missingFields, isEmpty);
+      final callsBeforeSkippedQuery = source.calls;
+      await controller.complete(track: controller.trackById(track.id)!);
+      expect(
+        source.calls,
+        callsBeforeSkippedQuery,
+        reason: 'An instrumental annotation must stop repeated lyric requests.',
+      );
+      final unchanged = await library.readDetails(
+        controller.trackById(track.id)!,
+      );
+      expect(unchanged.lyrics, isNull);
+      expect(
+        sha256
+            .convert(await File(unchanged.artworkPath!).readAsBytes())
+            .toString(),
+        coverHash,
+      );
+      final annotatedStore = await JsonLibraryStore(
+        getApplicationSupportDirectory,
+      ).load();
+      expect(
+        annotatedStore.tracks
+            .singleWhere((item) => item.id == track.id)
+            .isInstrumental,
+        isTrue,
+      );
+      await checkpoint('instrumental_marked_ready');
+
+      // Fresh app/controller initialization uses the real persistent JSON store.
+      // This proves reload behavior without claiming a timed process-kill test.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      controller = createController();
+      await tester.pumpWidget(AudioFixerApp(controller: controller));
+      await _waitFor(
+        tester,
+        () => !controller.isLoading && !controller.isBusy,
+        'instrumental annotation reload',
+      );
+      expect(controller.trackById(track.id)!.isInstrumental, isTrue);
+      await controller.refreshLibrary();
+      expect(controller.trackById(track.id)!.isInstrumental, isTrue);
+      await tester.enterText(find.byType(TextField).first, _fileName);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      final restoredTitle = find.text(track.displayTitle);
+      await tester.scrollUntilVisible(
+        restoredTitle,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(restoredTitle);
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            find.byType(TrackDetailPage).evaluate().isNotEmpty,
+        'reloaded detail page',
+      );
+      await tester.scrollUntilVisible(
+        instrumental,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await Scrollable.ensureVisible(
+        tester.element(instrumental),
+        alignment: 0.5,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('取消纯音乐标记'), findsOneWidget);
+      await tester.tap(instrumental.hitTestable());
+      await _waitFor(
+        tester,
+        () =>
+            !controller.isBusy &&
+            !controller.trackById(track.id)!.isInstrumental,
+        'explicit instrumental annotation removal',
+      );
+      expect(controller.trackById(track.id)!.missingFields, {
+        AudioField.lyrics,
+      });
+      await checkpoint('instrumental_unmarked_ready');
+      source.returnNoMatch = false;
+
       await tester.tap(find.text('补全缺失信息'));
       await _waitFor(
         tester,
@@ -465,7 +681,7 @@ void main() {
             find.byType(CandidateReviewPage).evaluate().isNotEmpty,
         'offline candidate review',
       );
-      expect(source.calls, 1);
+      expect(source.calls, 2);
       expect(controller.taskForTrack(track.id)!.status, TaskStatus.needsReview);
       await tester.scrollUntilVisible(
         find.byType(Checkbox),
@@ -748,6 +964,22 @@ void main() {
           'mocked_native_channels': false,
           'online_provider_calls': 0,
           'offline_source_calls': source.calls,
+          'initial_artwork': {
+            'before_detail_read': true,
+            'real_native_embedded_thumbnail': true,
+            'no_artwork_placeholder': true,
+            'fresh_controller_reload': true,
+            'online_requests': 0,
+          },
+          'instrumental_annotation': {
+            'explicit_after_no_match': true,
+            'catalog_only': true,
+            'lyric_requests_skipped': true,
+            'fresh_controller_reload': true,
+            'refresh_preserved': true,
+            'removal_restores_lyric_search': true,
+            'existing_lyrics_and_cover_unchanged': true,
+          },
           'library_filters': {
             'native_boundary_duration_ms': [59999, 60000, 60001],
             'seeded_media_rows': 36,
@@ -771,6 +1003,14 @@ void main() {
             'real_permission_deny_and_retry_grant',
             'mediastore_query_and_content_uri_read',
             'real_widgets_and_native_bridge',
+            'initial_cover_loaded_before_any_detail_read',
+            'native_cover_survives_scroll_and_fresh_controller_reload',
+            'missing_cover_uses_placeholder_without_marking_details_read',
+            'lyric_no_match_never_auto_marks_instrumental',
+            'explicit_instrumental_mark_persists_and_skips_lyric_requests',
+            'instrumental_mark_does_not_change_audio_lyrics_or_cover',
+            'instrumental_mark_survives_reload_and_refresh',
+            'removing_instrumental_mark_restores_lyric_query',
             'fixed_library_selection_toolbar_after_long_scroll',
             'fixed_toolbar_query_dialog_cancel_keeps_selection',
             'native_duration_59999_60000_60001_boundary',

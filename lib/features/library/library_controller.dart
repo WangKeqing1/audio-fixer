@@ -479,7 +479,10 @@ class LibraryController extends ChangeNotifier {
       final discovered = await library.querySongs();
       final cached = {for (final track in _snapshot.tracks) track.id: track};
       final changedIds = <String>{};
-      final refreshed = discovered.map((track) {
+      final refreshed = discovered.map((discoveredTrack) {
+        final track = discoveredTrack.withInstrumental(
+          cached[discoveredTrack.id]?.isInstrumental ?? false,
+        );
         final old = cached[track.id];
         if (old != null &&
             (old.dateModifiedMs != track.dateModifiedMs ||
@@ -544,7 +547,8 @@ class LibraryController extends ChangeNotifier {
         progress = '正在读取歌曲资料…';
         _notify();
         try {
-          final updated = await deviceLibrary!.readDetails(track);
+          final updated = (await deviceLibrary!.readDetails(track))
+              .withInstrumental(track.isInstrumental);
           final changed =
               track.title != updated.title ||
               track.artist != updated.artist ||
@@ -565,6 +569,94 @@ class LibraryController extends ChangeNotifier {
           _announce('音乐和音频访问权限已关闭，请重新授权。');
         }
       });
+
+  /// This local annotation does not write tags or imply approval of candidates.
+  /// The normal operation lock serializes it with lookup, refresh and saving.
+  Future<bool> setTrackInstrumental(String id, bool value) async {
+    var saved = false;
+    await _operate(() async {
+      final track = trackById(id);
+      if (track == null ||
+          (value && (!track.detailsLoaded || track.readError != null))) {
+        return;
+      }
+      if (track.isInstrumental == value) {
+        saved = true;
+        return;
+      }
+      final updated = track.withInstrumental(value);
+      final revisedTasks = tasks.map((task) {
+        if (task.trackId != id ||
+            task.status == TaskStatus.savedOriginal ||
+            task.status == TaskStatus.outdated) {
+          return task;
+        }
+        final suggestions = task.suggestions
+            .where((item) => item.field != AudioField.lyrics)
+            .toList();
+        final approved = task.approvedSuggestions
+            .where((item) => item.field != AudioField.lyrics)
+            .toList();
+        final remaining = updated.missingFields.intersection(
+          settings.enabledFields,
+        );
+        final status = task.status == TaskStatus.exported
+            ? TaskStatus.exported
+            : approved.isNotEmpty
+            ? TaskStatus.readyToSave
+            : suggestions.isNotEmpty
+            ? TaskStatus.needsReview
+            : remaining.isEmpty
+            ? TaskStatus.skipped
+            : task.status == TaskStatus.failed
+            ? TaskStatus.failed
+            : TaskStatus.noMatch;
+        final now = DateTime.now();
+        final reviewNotice = approved.isNotEmpty
+            ? '其余已确认资料保留，可继续保存；未确认候选仍需逐项审核。'
+            : suggestions.isNotEmpty
+            ? '其余候选仍需逐项确认后保存。'
+            : '';
+        return CompletionTask(
+          trackId: task.trackId,
+          trackTitle: task.trackTitle,
+          // Open review/translation flows must not apply an older lyric
+          // selection after this explicit change, including after undo.
+          createdAt: now.isAfter(task.createdAt)
+              ? now
+              : task.createdAt.add(const Duration(microseconds: 1)),
+          status: status,
+          message: !value
+              ? '已取消纯音乐标记，缺失歌词可以重新查询。${task.status == TaskStatus.exported ? '原先导出的副本不受影响。' : reviewNotice}'
+              : task.status == TaskStatus.exported
+              ? '已导出过副本。现已在本应用设为纯音乐，跳过歌词；原先导出的副本不受影响。'
+              : suggestions.isNotEmpty
+              ? '已在本应用设为纯音乐，跳过歌词。$reviewNotice'
+              : remaining.isEmpty
+              ? '已在本应用设为纯音乐，本次查询无需补全歌词。'
+              : '已在本应用设为纯音乐，跳过歌词。${remaining.map((field) => field.label).join('、')}仍待补全，可重新查询。',
+          suggestions: suggestions,
+          approvedSuggestions: approved,
+          queriedFields: task.queriedFields.difference({AudioField.lyrics}),
+          exportedCopyUri: task.exportedCopyUri,
+          writeError: task.writeError,
+        );
+      }).toList();
+      await _commit(
+        tracks: _snapshot.tracks
+            .map((item) => item.id == id ? updated : item)
+            .toList(),
+        tasks: revisedTasks,
+      );
+      saved = true;
+      _announce(
+        value
+            ? '已在本应用设为纯音乐，将跳过歌词查询与翻译。音频文件和已有歌词不变。'
+            : '已取消纯音乐标记，缺失歌词可以重新查询。音频文件不变。',
+      );
+    });
+    return saved;
+  }
 
   Future<void> _pruneUnusedFiles() async {
     if (_snapshot.recoveredFromBackup) return;
@@ -729,7 +821,8 @@ class LibraryController extends ChangeNotifier {
           if (item.isDeviceTrack &&
               (!item.detailsLoaded || item.readError != null) &&
               completion.sources.isNotEmpty) {
-            item = await deviceLibrary!.readDetails(item);
+            item = (await deviceLibrary!.readDetails(item))
+                .withInstrumental(item.isInstrumental);
           }
           if (isTrackExcluded(item)) {
             _setBatchItem(item.id, BatchItemStatus.skipped, '读取后符合排除条件，未查询。');
@@ -771,7 +864,7 @@ class LibraryController extends ChangeNotifier {
           status: task.status,
           message: task.message,
           suggestions: task.suggestions,
-          queriedFields: settings.enabledFields,
+          queriedFields: _enabledFieldsFor(item),
         );
         _setBatchItem(
           item.id,
@@ -837,11 +930,15 @@ class LibraryController extends ChangeNotifier {
     return task != null &&
         isTaskCurrent(task) &&
         task.suggestions.isNotEmpty &&
-        task.queriedFields.containsAll(settings.enabledFields) &&
+        task.queriedFields.containsAll(_enabledFieldsFor(track)) &&
         (task.status == TaskStatus.needsReview ||
             task.status == TaskStatus.readyToSave ||
             task.status == TaskStatus.exported);
   }
+
+  Set<AudioField> _enabledFieldsFor(AudioTrack track) => settings.enabledFields
+      .where((field) => !(track.isInstrumental && field == AudioField.lyrics))
+      .toSet();
 
   bool canQueryTrack(AudioTrack track) =>
       !isTrackExcluded(track) &&
@@ -877,6 +974,8 @@ class LibraryController extends ChangeNotifier {
       selected.every(
         (item) =>
             hasText(item.value) &&
+            !(item.field == AudioField.lyrics &&
+                trackById(task.trackId)?.isInstrumental == true) &&
             task.suggestions.any((candidate) => candidate.permits(item)),
       );
 
@@ -1135,7 +1234,8 @@ class LibraryController extends ChangeNotifier {
         candidateTrack.isDeviceTrack &&
         deviceLibrary != null) {
       try {
-        final updated = await deviceLibrary!.readDetails(candidateTrack);
+        final updated = (await deviceLibrary!.readDetails(candidateTrack))
+            .withInstrumental(candidateTrack.isInstrumental);
         final changed =
             candidateTrack.title != updated.title ||
             candidateTrack.artist != updated.artist ||
@@ -1226,7 +1326,8 @@ class LibraryController extends ChangeNotifier {
         );
         try {
           if (track.isDeviceTrack && deviceLibrary != null) {
-            updated = await deviceLibrary!.readDetails(track);
+            updated = (await deviceLibrary!.readDetails(track))
+                .withInstrumental(track.isInstrumental);
           } else if (importer is LocalAudioImporter) {
             final root = await (importer as LocalAudioImporter)
                 .directoryProvider();

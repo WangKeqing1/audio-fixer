@@ -30,7 +30,9 @@ UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
 PHASES = ("permission_deny", "permission_grant", "save_cancel", "save_confirm",
           "original_cancel", "original_confirm")
-CHECKPOINTS = ("permission_denied_ready", "selection_toolbar_top",
+CHECKPOINTS = ("permission_denied_ready", "initial_cover_ready",
+               "initial_cover_reloaded", "instrumental_marked_ready",
+               "instrumental_unmarked_ready", "selection_toolbar_top",
                "selection_toolbar_scrolled", "library_filters_ready",
                "library_filters_reloaded", "details_ready", "review_ready",
                "cancelled_ready", "exported_ready", "original_cancelled_ready",
@@ -491,6 +493,8 @@ class AndroidRuntime:
                    "original_flow_passed": True, "synthetic_only": True,
                    "native_checks": len(result["checks"]),
                    "library_filter_checks": result["library_filters"],
+                   "initial_artwork_checks": result["initial_artwork"],
+                   "instrumental_annotation_checks": result["instrumental_annotation"],
                    "library_fixture_source_hashes_unchanged": len(expected_hashes),
                    "real_system_dialogs": len(PHASES),
                    "independent_audio_checks": len(checked["checks"]),

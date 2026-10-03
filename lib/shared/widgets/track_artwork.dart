@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 class TrackArtwork extends StatelessWidget {
-  const TrackArtwork({super.key, this.path, this.size = 56});
+  const TrackArtwork({super.key, this.path, this.bytes, this.size = 56});
   final String? path;
+  final Uint8List? bytes;
   final double size;
 
   @override
@@ -29,16 +31,25 @@ class TrackArtwork extends StatelessWidget {
       borderRadius: BorderRadius.circular(size >= 160 ? 24 : 12),
       child: SizedBox.square(
         dimension: size,
-        child: !hasArtwork
-            ? fallback
-            : Image.file(
+        child: hasArtwork
+            ? Image.file(
                 File(path!),
                 fit: BoxFit.cover,
                 semanticLabel: '音频内嵌封面',
                 cacheWidth: (size * MediaQuery.devicePixelRatioOf(context))
                     .round(),
                 errorBuilder: (_, _, _) => fallback,
-              ),
+              )
+            : bytes != null
+            ? Image.memory(
+                bytes!,
+                fit: BoxFit.cover,
+                semanticLabel: '音频内嵌封面',
+                cacheWidth: (size * MediaQuery.devicePixelRatioOf(context))
+                    .round(),
+                errorBuilder: (_, _, _) => fallback,
+              )
+            : fallback,
       ),
     );
   }

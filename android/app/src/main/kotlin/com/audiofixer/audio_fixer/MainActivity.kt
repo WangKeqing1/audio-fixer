@@ -10,6 +10,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        disposeDeviceLibraryBridge()
         deviceLibraryBridge = DeviceLibraryBridge(
             activity = this,
             messenger = flutterEngine.dartExecutor.binaryMessenger,
@@ -23,6 +24,7 @@ class MainActivity : FlutterActivity() {
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         disposeLyricsTranslationBridge()
+        disposeDeviceLibraryBridge()
         super.cleanUpFlutterEngine(flutterEngine)
     }
 
@@ -42,13 +44,17 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         disposeLyricsTranslationBridge()
-        deviceLibraryBridge?.dispose()
-        deviceLibraryBridge = null
+        disposeDeviceLibraryBridge()
         super.onDestroy()
     }
 
     private fun disposeLyricsTranslationBridge() {
         lyricsTranslationBridge?.dispose()
         lyricsTranslationBridge = null
+    }
+
+    private fun disposeDeviceLibraryBridge() {
+        deviceLibraryBridge?.dispose()
+        deviceLibraryBridge = null
     }
 }

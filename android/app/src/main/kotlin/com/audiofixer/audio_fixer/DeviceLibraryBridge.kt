@@ -34,6 +34,10 @@ class DeviceLibraryBridge(
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "device-library-io").apply { isDaemon = true }
     }
+    // Slow artwork decoders must not delay indexing, tag reads or safe writes.
+    private val artworkExecutor: ExecutorService = Executors.newFixedThreadPool(2) { runnable ->
+        Thread(runnable, "device-artwork-io").apply { isDaemon = true }
+    }
     private val preferences = activity.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val channel = MethodChannel(messenger, CHANNEL_NAME)
     private val exportJournal = ExportRecoveryJournal(activity)
@@ -73,6 +77,7 @@ class DeviceLibraryBridge(
         pendingPermissionResult = null
         channel.setMethodCallHandler(null)
         ioExecutor.shutdownNow()
+        artworkExecutor.shutdownNow()
     }
 
     private fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -88,6 +93,7 @@ class DeviceLibraryBridge(
             "openSettings" -> openSettings(result)
             "querySongs" -> querySongs(result)
             "copyForRead" -> copyForRead(call, result)
+            "readArtworkThumbnail" -> readArtworkThumbnail(call, result)
             "releaseReadCopy" -> releaseReadCopy(call, result)
             "exportAudioCopy" -> exportAudioCopy(call, result)
             "recoverExport" -> executeIo(OneShotResult(result), "export_recovery_failed") {
@@ -192,6 +198,27 @@ class DeviceLibraryBridge(
                 )
             }
             querySongsOnWorker()
+        }
+    }
+
+    private fun readArtworkThumbnail(call: MethodCall, result: MethodChannel.Result) {
+        val reply = OneShotResult(result)
+        val uriText = (call.arguments as? Map<*, *>)?.get("uri") as? String
+        val uri = uriText?.let(::parseAllowedMediaUri)
+        if (uri == null) {
+            reply.error("invalid_argument", "A valid MediaStore audio URI is required.", null)
+            return
+        }
+        if (!hasLibraryPermission()) {
+            reply.error("permission_denied", "Audio library permission is required.", null)
+            return
+        }
+        executeIo(reply, "artwork_failed", artworkExecutor) {
+            if (disposed || Thread.currentThread().isInterrupted) return@executeIo null
+            if (!hasLibraryPermission()) {
+                throw BridgeException("permission_denied", "Audio library permission is no longer granted.")
+            }
+            EmbeddedArtworkThumbnail.read(activity.contentResolver, uri)
         }
     }
 
@@ -382,10 +409,11 @@ class DeviceLibraryBridge(
     private fun <T> executeIo(
         reply: OneShotResult,
         defaultErrorCode: String,
+        executor: ExecutorService = ioExecutor,
         block: () -> T,
     ) {
         try {
-            ioExecutor.execute {
+            executor.execute {
                 try {
                     reply.success(block())
                 } catch (error: BridgeException) {
