@@ -335,6 +335,7 @@ String _failureLabel(SourceFailureKind? kind) => switch (kind) {
   SourceFailureKind.timeout => '连接超时',
   SourceFailureKind.network => '网络连接失败',
   SourceFailureKind.invalidResponse => '返回内容异常',
+  SourceFailureKind.identityConflict => '录音信息不一致',
   SourceFailureKind.accessDenied => '来源拒绝访问',
   SourceFailureKind.httpError => '请求失败',
   SourceFailureKind.unknown || null => '查询未完成',

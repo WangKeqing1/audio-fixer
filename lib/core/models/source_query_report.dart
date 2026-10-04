@@ -2,13 +2,14 @@ import 'audio_track.dart';
 
 enum SourceQueryOutcome { success, noMatch, unsupported, failed, partial }
 
-/// A cause reported by the transport, never inferred from translated text.
+/// A typed transport or identity-verification cause, never inferred from text.
 enum SourceFailureKind {
   rateLimited,
   serverError,
   timeout,
   network,
   invalidResponse,
+  identityConflict,
   accessDenied,
   httpError,
   unknown;

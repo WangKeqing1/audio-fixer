@@ -26,6 +26,7 @@ AudioTrack _track({String? artist, String? title, String? album}) => AudioTrack(
 class _Source implements RecordingDiscoverySource {
   final lookups = <TrackSearch>[];
   final discoveries = <TrackSearch>[];
+  final confirmedQueries = <TrackSearch>[];
   bool unavailable = false;
   bool primaryMatch = false;
   @override
@@ -80,14 +81,24 @@ class _Source implements RecordingDiscoverySource {
     AudioTrack track,
     RecordingCandidate candidate,
     Set<AudioField> fields,
-  ) async => [
-    FieldSuggestion(
-      field: AudioField.album,
-      value: candidate.album,
-      source: name,
-      sourceUrl: candidate.sourceUrl,
-    ),
-  ];
+  ) async {
+    final query = TrackSearch.fromTrack(track);
+    confirmedQueries.add(query);
+    if (!query.matchesTitle(candidate.title) ||
+        !query.matchesArtist([candidate.artist])) {
+      throw const SourceNoMatch(
+        'The confirmed query differs from the discovered recording.',
+      );
+    }
+    return [
+      FieldSuggestion(
+        field: AudioField.album,
+        value: candidate.album,
+        source: name,
+        sourceUrl: candidate.sourceUrl,
+      ),
+    ];
+  }
 }
 
 void main() {
@@ -174,6 +185,16 @@ void main() {
       expect(task.needsRecordingChoice, isTrue);
       expect(task.message, contains('按文件名推测'));
       expect(task.message, contains('不是已确认'));
+      expect(task.searchMetadata, {
+        'title': 'Great Circle Song',
+        'artist': 'Al Jarreau',
+        'album': '',
+        'filenameHint': 'true',
+      });
+      expect(
+        CompletionTask.fromJson(task.toJson()).searchMetadata,
+        task.searchMetadata,
+      );
       expect(task.suggestions, isEmpty);
       expect(task.approvedSuggestions, isEmpty);
       expect(controller.tracks.single.toJson(), track.toJson());
@@ -182,8 +203,47 @@ void main() {
         task.recordingCandidates.single,
       );
       expect(reviewed!.suggestions.single.value, 'Fixture album');
+      expect(source.confirmedQueries.single.artist, 'Al Jarreau');
+      expect(source.confirmedQueries.single.album, isNull);
       expect(reviewed.approvedSuggestions, isEmpty);
       expect(controller.tracks.single.artist, track.artist);
+    },
+  );
+
+  test(
+    'unconfirmed filename query persists across retry without gaining trust',
+    () async {
+      final track = _track(
+        title: 'Great Circle Song',
+        artist: 'Unrelated Artist',
+      );
+      final source = _Source();
+      final controller = LibraryController(
+        store: MemoryStore(LibrarySnapshot(tracks: [track])),
+        picker: FakePicker(),
+        importer: FakeImporter(),
+        completion: CompletionService(sources: [source]),
+      );
+      addTearDown(controller.dispose);
+      await controller.initialize();
+      await controller.queryAutomaticRepair(track: track);
+      final first = controller.tasks.single;
+      expect(first.searchMetadata['filenameHint'], 'true');
+      final lookupCount = source.lookups.length;
+      await controller.retryTaskQuery(first);
+      final retried = controller.tasks.single;
+      expect(retried.needsRecordingChoice, isTrue);
+      expect(retried.suggestions, isEmpty);
+      expect(retried.approvedSuggestions, isEmpty);
+      expect(retried.searchMetadata, first.searchMetadata);
+      expect(source.lookups.length, lookupCount);
+      expect(controller.tracks.single.artist, 'Unrelated Artist');
+      await controller.confirmRecordingChoice(
+        retried,
+        retried.recordingCandidates.single,
+      );
+      expect(source.confirmedQueries.single.artist, 'Al Jarreau');
+      expect(controller.tasks.single.suggestions.single.value, 'Fixture album');
     },
   );
 

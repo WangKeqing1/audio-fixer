@@ -40,25 +40,20 @@ class TasksPage extends StatelessWidget {
           ),
         ),
       );
-    } else if (task.confirmedRecording != null) {
-      controller.retryTaskQuery(task);
-    } else if (task.isRepair) {
-      controller.queryRepair(
-        track.id,
-        fields: task.queriedFields,
-        searchTitle: task.searchMetadata['title'],
-        searchArtist: task.searchMetadata['artist'],
-        searchAlbum: task.searchMetadata['album'],
-      );
     } else {
-      controller.complete(track: track);
+      controller.retryTaskQuery(task);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final reviewCount = controller.tasks
+    final tasks = controller.tasks;
+    final taskIndexes = {
+      for (var index = 0; index < tasks.length; index++)
+        'task-${tasks[index].trackId}': index,
+    };
+    final reviewCount = tasks
         .where(
           (task) =>
               task.status == TaskStatus.needsReview &&
@@ -74,389 +69,436 @@ class TasksPage extends StatelessWidget {
       builder: (context, constraints) => Column(
         children: [
           Expanded(
-            child: ListView(
+            child: CustomScrollView(
               key: const PageStorageKey('tasks'),
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-              children: [
-                Text(
-                  reviewCount > 0 ? '$reviewCount 首歌曲待确认' : '每一次整理，都有记录',
-                  style: theme.textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '看一眼修复结果，应用建议。已有资料默认保留。',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                if (controller.tasks.isNotEmpty && selectedIds.isEmpty) ...[
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      TextButton.icon(
-                        key: const ValueKey('select-all-task-tracks'),
-                        onPressed: controller.canOperate
-                            ? () => controller.selectTracks(
-                                controller.tasks
-                                    .where(
-                                      (task) =>
-                                          controller.trackById(task.trackId) !=
-                                          null,
-                                    )
-                                    .map((task) => task.trackId),
-                              )
-                            : null,
-                        icon: const Icon(Icons.select_all),
-                        label: const Text('全选任务歌曲'),
-                      ),
-                    ],
-                  ),
-                ],
-                if (controller.batchOperation != null) ...[
-                  BatchProgressPanel(controller: controller),
-                  const SizedBox(height: 12),
-                ],
-                if (controller.settings.enabledFields.isEmpty) ...[
-                  NoticePanel(
-                    icon: Icons.tune_outlined,
-                    title: '尚未选择补全内容',
-                    message: '仅补全缺失信息已关闭；仍可从音乐库自动检索并修复，已有结果也可查看。',
-                    action: TextButton(
-                      onPressed: onOpenSettings,
-                      child: const Text('选择补全内容'),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (controller.completion.sources.isEmpty)
-                  Card(
-                    color: theme.colorScheme.secondaryContainer,
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('等待接入在线数据源', style: theme.textTheme.titleMedium),
-                          const SizedBox(height: 8),
-                          const Text('当前可检查本地标签；接入数据源后再查询候选资料。'),
-                          TextButton(
-                            onPressed: onOpenSettings,
-                            child: const Text('查看数据源状态'),
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                  sliver: SliverToBoxAdapter(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          reviewCount > 0
+                              ? '$reviewCount 首歌曲待确认'
+                              : '每一次整理，都有记录',
+                          style: theme.textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '看一眼修复结果，应用建议。已有资料默认保留。',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        if (controller.tasks.isNotEmpty &&
+                            selectedIds.isEmpty) ...[
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              TextButton.icon(
+                                key: const ValueKey('select-all-task-tracks'),
+                                onPressed: controller.canOperate
+                                    ? () => controller.selectTracks(
+                                        controller.tasks
+                                            .where(
+                                              (task) =>
+                                                  controller.trackById(
+                                                    task.trackId,
+                                                  ) !=
+                                                  null,
+                                            )
+                                            .map((task) => task.trackId),
+                                      )
+                                    : null,
+                                icon: const Icon(Icons.select_all),
+                                label: const Text('全选任务歌曲'),
+                              ),
+                            ],
                           ),
                         ],
-                      ),
+                        if (controller.batchOperation != null) ...[
+                          BatchProgressPanel(controller: controller),
+                          const SizedBox(height: 12),
+                        ],
+                        if (controller.settings.enabledFields.isEmpty) ...[
+                          NoticePanel(
+                            icon: Icons.tune_outlined,
+                            title: '尚未选择补全内容',
+                            message: '仅补全缺失信息已关闭；仍可从音乐库自动检索并修复，已有结果也可查看。',
+                            action: TextButton(
+                              onPressed: onOpenSettings,
+                              child: const Text('选择补全内容'),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (controller.completion.sources.isEmpty)
+                          Card(
+                            color: theme.colorScheme.secondaryContainer,
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '等待接入在线数据源',
+                                    style: theme.textTheme.titleMedium,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text('当前可检查本地标签；接入数据源后再查询候选资料。'),
+                                  TextButton(
+                                    onPressed: onOpenSettings,
+                                    child: const Text('查看数据源状态'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (controller.tasks.isEmpty)
+                          const EmptyState(
+                            icon: Icons.playlist_add_check_outlined,
+                            title: '还没有补全任务',
+                            description: '从音乐库选择歌曲，找到结果后即可预览并应用。',
+                          ),
+                      ],
                     ),
                   ),
-                if (controller.tasks.isEmpty)
-                  const EmptyState(
-                    icon: Icons.playlist_add_check_outlined,
-                    title: '还没有补全任务',
-                    description: '从音乐库选择歌曲，找到结果后即可预览并应用。',
-                  )
-                else
-                  for (final task in controller.tasks)
-                    Card(
-                      key: ValueKey('task-${task.trackId}'),
-                      margin: const EdgeInsets.only(bottom: 12),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Checkbox(
-                                  key: ValueKey('select-task-${task.trackId}'),
-                                  value: controller.selectedTrackIds.contains(
-                                    task.trackId,
-                                  ),
-                                  semanticLabel: '选择 ${task.trackTitle}',
-                                  onChanged:
-                                      controller.canOperate &&
-                                          controller.trackById(task.trackId) !=
-                                              null
-                                      ? (_) => controller.toggleTrackSelection(
-                                          task.trackId,
-                                        )
-                                      : null,
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 12),
-                                  child: Icon(
-                                    switch (task.status) {
-                                      TaskStatus.waitingForSource =>
-                                        Icons.hourglass_empty,
-                                      TaskStatus.needsReview =>
-                                        Icons.fact_check_outlined,
-                                      TaskStatus.readyToSave =>
-                                        Icons.playlist_add_check,
-                                      TaskStatus.savedOriginal =>
-                                        Icons.save_outlined,
-                                      TaskStatus.exported =>
-                                        Icons.download_done_outlined,
-                                      TaskStatus.noMatch => Icons.search_off,
-                                      TaskStatus.skipped =>
-                                        Icons.check_circle_outline,
-                                      TaskStatus.failed => Icons.error_outline,
-                                      TaskStatus.outdated =>
-                                        Icons.update_outlined,
-                                    },
-                                    color: task.status == TaskStatus.failed
-                                        ? theme.colorScheme.error
-                                        : theme.colorScheme.primary,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        task.trackTitle,
-                                        style: theme.textTheme.titleMedium,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '${task.status == TaskStatus.waitingForSource && controller.completion.sources.isNotEmpty ? '可重新查询' : task.status.label} · ${formatTaskTime(task.createdAt)}',
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            if (task.sourceReports.isNotEmpty)
-                              ExpansionTile(
-                                key: PageStorageKey(
-                                  'task-source-details-${task.trackId}',
-                                ),
-                                tilePadding: EdgeInsets.zero,
-                                title: Text(
-                                  controller
-                                          .recommendedSuggestionsFor(task)
-                                          .isNotEmpty
-                                      ? '${controller.recommendedSuggestionsFor(task).length} 项建议补全 · 查看查询详情'
-                                      : '查看查询详情',
-                                ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  sliver: SliverList.builder(
+                    itemCount: tasks.length,
+                    findChildIndexCallback: (key) =>
+                        key is ValueKey<String> ? taskIndexes[key.value] : null,
+                    itemBuilder: (context, index) {
+                      final task = tasks[index];
+                      return Card(
+                        key: ValueKey('task-${task.trackId}'),
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  SourceQueryStatusPanel(
-                                    reports: task.sourceReports,
-                                    hasCandidates:
-                                        task.suggestions.isNotEmpty ||
-                                        task.recordingCandidates.isNotEmpty,
-                                  ),
-                                ],
-                              )
-                            else
-                              Text(
-                                task.message,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            if (controller.trackById(task.trackId)
-                                case final track?)
-                              if (!(task.recordingCandidates.isNotEmpty &&
-                                      task.confirmedRecording == null &&
-                                      task.suggestions.isEmpty) &&
-                                  (track.isInstrumental ||
-                                      (controller.isTaskCurrent(task) &&
-                                          task.queriedFields.contains(
-                                            AudioField.lyrics,
-                                          ) &&
-                                          !hasText(track.lyrics) &&
-                                          !task.suggestions.any(
-                                            (item) =>
-                                                item.field == AudioField.lyrics,
-                                          )))) ...[
-                                const SizedBox(height: 12),
-                                InstrumentalControl(
-                                  track: track,
-                                  controller: controller,
-                                ),
-                              ],
-                            if (task.writeError case final error?) ...[
-                              const SizedBox(height: 8),
-                              Text(
-                                error,
-                                style: TextStyle(
-                                  color: theme.colorScheme.error,
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 8),
-                            if (controller.trackById(task.trackId) == null) ...[
-                              const Text('原歌曲当前不可访问。请返回音乐库刷新或重新授权；历史结果仍可查看。'),
-                              const SizedBox(height: 8),
-                            ] else if (task.suggestions.isNotEmpty &&
-                                !controller.canExportTrack(
-                                  controller.trackById(task.trackId)!,
-                                ) &&
-                                !controller.canSaveOriginalTrack(
-                                  controller.trackById(task.trackId)!,
-                                )) ...[
-                              Text(
-                                controller.exporter == null
-                                    ? '当前可预览并确认资料，此设备暂不支持写入或导出。'
-                                    : '${controller.trackById(task.trackId)!.extension} 可预览并确认；保存支持 MP3、FLAC 和 M4A/MP4。',
-                              ),
-                              const SizedBox(height: 8),
-                            ],
-                            if (task.exportedCopyUri case final uri?) ...[
-                              ExpansionTile(
-                                key: PageStorageKey(
-                                  'export-location-${task.trackId}',
-                                ),
-                                tilePadding: EdgeInsets.zero,
-                                title: const Text('查看副本保存位置'),
-                                childrenPadding: const EdgeInsets.only(
-                                  bottom: 12,
-                                ),
-                                expandedCrossAxisAlignment:
-                                    CrossAxisAlignment.start,
-                                children: [
-                                  const Text('系统文档位置；副本是否出现在音乐库取决于保存位置与系统索引。'),
-                                  const SizedBox(height: 8),
-                                  SelectableText(
-                                    uri,
-                                    key: PageStorageKey(
-                                      'export-uri-${task.trackId}',
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                            ],
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                if (task.suggestions.isEmpty &&
-                                    task.recordingCandidates.isNotEmpty &&
-                                    task.confirmedRecording == null)
-                                  FilledButton.tonalIcon(
+                                  Checkbox(
                                     key: ValueKey(
-                                      'review-recordings-${task.trackId}',
+                                      'select-task-${task.trackId}',
                                     ),
-                                    onPressed:
+                                    value: controller.selectedTrackIds.contains(
+                                      task.trackId,
+                                    ),
+                                    semanticLabel: '选择 ${task.trackTitle}',
+                                    onChanged:
                                         controller.canOperate &&
-                                            controller.isTaskCurrent(task)
-                                        ? () => Navigator.of(context).push(
+                                            controller.trackById(
+                                                  task.trackId,
+                                                ) !=
+                                                null
+                                        ? (_) =>
+                                              controller.toggleTrackSelection(
+                                                task.trackId,
+                                              )
+                                        : null,
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 12),
+                                    child: Icon(
+                                      switch (task.status) {
+                                        TaskStatus.waitingForSource =>
+                                          Icons.hourglass_empty,
+                                        TaskStatus.needsReview =>
+                                          Icons.fact_check_outlined,
+                                        TaskStatus.readyToSave =>
+                                          Icons.playlist_add_check,
+                                        TaskStatus.savedOriginal =>
+                                          Icons.save_outlined,
+                                        TaskStatus.exported =>
+                                          Icons.download_done_outlined,
+                                        TaskStatus.noMatch => Icons.search_off,
+                                        TaskStatus.skipped =>
+                                          Icons.check_circle_outline,
+                                        TaskStatus.failed =>
+                                          Icons.error_outline,
+                                        TaskStatus.outdated =>
+                                          Icons.update_outlined,
+                                      },
+                                      color: task.status == TaskStatus.failed
+                                          ? theme.colorScheme.error
+                                          : theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          task.trackTitle,
+                                          style: theme.textTheme.titleMedium,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${task.status == TaskStatus.waitingForSource && controller.completion.sources.isNotEmpty ? '可重新查询' : task.status.label} · ${formatTaskTime(task.createdAt)}',
+                                          style: theme.textTheme.bodySmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              if (task.sourceReports.isNotEmpty)
+                                ExpansionTile(
+                                  key: PageStorageKey(
+                                    'task-source-details-${task.trackId}',
+                                  ),
+                                  tilePadding: EdgeInsets.zero,
+                                  title: Text(
+                                    controller
+                                            .recommendedSuggestionsFor(task)
+                                            .isNotEmpty
+                                        ? '${controller.recommendedSuggestionsFor(task).length} 项建议补全 · 查看查询详情'
+                                        : '查看查询详情',
+                                  ),
+                                  children: [
+                                    SourceQueryStatusPanel(
+                                      reports: task.sourceReports,
+                                      hasCandidates:
+                                          task.suggestions.isNotEmpty ||
+                                          task.recordingCandidates.isNotEmpty,
+                                    ),
+                                  ],
+                                )
+                              else
+                                Text(
+                                  task.message,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              if (controller.trackById(task.trackId)
+                                  case final track?)
+                                if (!(task.recordingCandidates.isNotEmpty &&
+                                        task.confirmedRecording == null &&
+                                        task.suggestions.isEmpty) &&
+                                    (track.isInstrumental ||
+                                        (controller.isTaskCurrent(task) &&
+                                            task.queriedFields.contains(
+                                              AudioField.lyrics,
+                                            ) &&
+                                            !hasText(track.lyrics) &&
+                                            !task.suggestions.any(
+                                              (item) =>
+                                                  item.field ==
+                                                  AudioField.lyrics,
+                                            )))) ...[
+                                  const SizedBox(height: 12),
+                                  InstrumentalControl(
+                                    track: track,
+                                    controller: controller,
+                                  ),
+                                ],
+                              if (task.writeError case final error?) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  error,
+                                  style: TextStyle(
+                                    color: theme.colorScheme.error,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 8),
+                              if (controller.trackById(task.trackId) ==
+                                  null) ...[
+                                const Text('原歌曲当前不可访问。请返回音乐库刷新或重新授权；历史结果仍可查看。'),
+                                const SizedBox(height: 8),
+                              ] else if (task.suggestions.isNotEmpty &&
+                                  !controller.canExportTrack(
+                                    controller.trackById(task.trackId)!,
+                                  ) &&
+                                  !controller.canSaveOriginalTrack(
+                                    controller.trackById(task.trackId)!,
+                                  )) ...[
+                                Text(
+                                  controller.exporter == null
+                                      ? '当前可预览并确认资料，此设备暂不支持写入或导出。'
+                                      : '${controller.trackById(task.trackId)!.extension} 可预览并确认；保存支持 MP3、FLAC 和 M4A/MP4。',
+                                ),
+                                const SizedBox(height: 8),
+                              ],
+                              if (task.exportedCopyUri case final uri?) ...[
+                                ExpansionTile(
+                                  key: PageStorageKey(
+                                    'export-location-${task.trackId}',
+                                  ),
+                                  tilePadding: EdgeInsets.zero,
+                                  title: const Text('查看副本保存位置'),
+                                  childrenPadding: const EdgeInsets.only(
+                                    bottom: 12,
+                                  ),
+                                  expandedCrossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      '系统文档位置；副本是否出现在音乐库取决于保存位置与系统索引。',
+                                    ),
+                                    const SizedBox(height: 8),
+                                    SelectableText(
+                                      uri,
+                                      key: PageStorageKey(
+                                        'export-uri-${task.trackId}',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                              ],
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  if (task.suggestions.isEmpty &&
+                                      task.recordingCandidates.isNotEmpty &&
+                                      task.confirmedRecording == null)
+                                    FilledButton.tonalIcon(
+                                      key: ValueKey(
+                                        'review-recordings-${task.trackId}',
+                                      ),
+                                      onPressed:
+                                          controller.canOperate &&
+                                              controller.isTaskCurrent(task)
+                                          ? () => Navigator.of(context).push(
+                                              MaterialPageRoute<void>(
+                                                builder: (_) =>
+                                                    RecordingChoicePage(
+                                                      task: task,
+                                                      controller: controller,
+                                                    ),
+                                              ),
+                                            )
+                                          : null,
+                                      icon: const Icon(
+                                        Icons.library_music_outlined,
+                                      ),
+                                      label: Text(
+                                        '确认 ${task.recordingCandidates.length} 个歌曲版本',
+                                      ),
+                                    ),
+                                  if (task.suggestions.isNotEmpty)
+                                    FilledButton.tonalIcon(
+                                      onPressed: () =>
+                                          Navigator.of(context).push(
                                             MaterialPageRoute<void>(
                                               builder: (_) =>
-                                                  RecordingChoicePage(
+                                                  CandidateReviewPage(
                                                     task: task,
                                                     controller: controller,
                                                   ),
                                             ),
-                                          )
-                                        : null,
-                                    icon: const Icon(
-                                      Icons.library_music_outlined,
-                                    ),
-                                    label: Text(
-                                      '确认 ${task.recordingCandidates.length} 个歌曲版本',
-                                    ),
-                                  ),
-                                if (task.suggestions.isNotEmpty)
-                                  FilledButton.tonalIcon(
-                                    onPressed: () => Navigator.of(context).push(
-                                      MaterialPageRoute<void>(
-                                        builder: (_) => CandidateReviewPage(
-                                          task: task,
-                                          controller: controller,
-                                        ),
+                                          ),
+                                      icon: const Icon(
+                                        Icons.fact_check_outlined,
+                                      ),
+                                      label: Text(
+                                        !controller.isTaskCurrent(task)
+                                            ? '查看历史候选'
+                                            : task.status == TaskStatus.exported
+                                            ? '查看候选资料'
+                                            : task.status ==
+                                                  TaskStatus.readyToSave
+                                            ? '修改已确认资料'
+                                            : task.status ==
+                                                  TaskStatus.savedOriginal
+                                            ? '查看已保存资料'
+                                            : '确认 ${task.suggestions.length} 项候选',
                                       ),
                                     ),
-                                    icon: const Icon(Icons.fact_check_outlined),
-                                    label: Text(
-                                      !controller.isTaskCurrent(task)
-                                          ? '查看历史候选'
-                                          : task.status == TaskStatus.exported
-                                          ? '查看候选资料'
-                                          : task.status ==
-                                                TaskStatus.readyToSave
-                                          ? '修改已确认资料'
-                                          : task.status ==
-                                                TaskStatus.savedOriginal
-                                          ? '查看已保存资料'
-                                          : '确认 ${task.suggestions.length} 项候选',
+                                  if (controller.trackById(task.trackId)
+                                      case final track?)
+                                    SourceRetryBuilder(
+                                      reports: _isManual(task)
+                                          ? const []
+                                          : task.sourceReports,
+                                      requestedSources:
+                                          task.confirmedRecording != null
+                                          ? {
+                                              task
+                                                  .confirmedRecording!
+                                                  .sourceName,
+                                            }
+                                          : controller.completion.sources
+                                                .where(
+                                                  (source) => source
+                                                      .supportedFields
+                                                      .intersection(
+                                                        task.isRepair
+                                                            ? task.queriedFields
+                                                            : controller
+                                                                  .settings
+                                                                  .enabledFields,
+                                                      )
+                                                      .isNotEmpty,
+                                                )
+                                                .map((source) => source.name)
+                                                .toSet(),
+                                      builder: (context, retry) =>
+                                          TextButton.icon(
+                                            key: ValueKey(
+                                              'retry-task-${task.trackId}',
+                                            ),
+                                            onPressed:
+                                                controller.canOperate &&
+                                                    !retry.allSourcesCooling &&
+                                                    (_isManual(task)
+                                                        ? track.detailsLoaded &&
+                                                              track.readError ==
+                                                                  null
+                                                        : task.isRepair
+                                                        ? task
+                                                              .queriedFields
+                                                              .isNotEmpty
+                                                        : controller
+                                                              .settings
+                                                              .enabledFields
+                                                              .isNotEmpty)
+                                                ? () => _retry(
+                                                    context,
+                                                    task,
+                                                    track,
+                                                  )
+                                                : null,
+                                            icon: Icon(
+                                              _isManual(task)
+                                                  ? Icons.edit_note
+                                                  : Icons.refresh,
+                                            ),
+                                            label: Text(
+                                              _isManual(task)
+                                                  ? '继续编辑草稿'
+                                                  : retry.label('重新查询'),
+                                            ),
+                                          ),
                                     ),
-                                  ),
-                                if (controller.trackById(task.trackId)
-                                    case final track?)
-                                  SourceRetryBuilder(
-                                    reports: _isManual(task)
-                                        ? const []
-                                        : task.sourceReports,
-                                    requestedSources:
-                                        task.confirmedRecording != null
-                                        ? {task.confirmedRecording!.sourceName}
-                                        : controller.completion.sources
-                                              .where(
-                                                (source) => source
-                                                    .supportedFields
-                                                    .intersection(
-                                                      task.isRepair
-                                                          ? task.queriedFields
-                                                          : controller
-                                                                .settings
-                                                                .enabledFields,
-                                                    )
-                                                    .isNotEmpty,
-                                              )
-                                              .map((source) => source.name)
-                                              .toSet(),
-                                    builder: (context, retry) =>
-                                        TextButton.icon(
-                                          key: ValueKey(
-                                            'retry-task-${task.trackId}',
-                                          ),
-                                          onPressed:
-                                              controller.canOperate &&
-                                                  !retry.allSourcesCooling &&
-                                                  (_isManual(task)
-                                                      ? track.detailsLoaded &&
-                                                            track.readError ==
-                                                                null
-                                                      : task.isRepair
-                                                      ? task
-                                                            .queriedFields
-                                                            .isNotEmpty
-                                                      : controller
-                                                            .settings
-                                                            .enabledFields
-                                                            .isNotEmpty)
-                                              ? () =>
-                                                    _retry(context, task, track)
-                                              : null,
-                                          icon: Icon(
-                                            _isManual(task)
-                                                ? Icons.edit_note
-                                                : Icons.refresh,
-                                          ),
-                                          label: Text(
-                                            _isManual(task)
-                                                ? '继续编辑草稿'
-                                                : retry.label('重新查询'),
-                                          ),
-                                        ),
-                                  ),
-                              ],
-                            ),
-                          ],
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
+                  ),
+                ),
               ],
             ),
           ),

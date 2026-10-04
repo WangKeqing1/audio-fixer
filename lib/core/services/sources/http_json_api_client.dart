@@ -654,6 +654,7 @@ class _Cooldown {
       SourceFailureKind.timeout => '连接超时，请检查网络后重试。',
       SourceFailureKind.network => '无法连接数据源或连接中断，请检查网络。',
       SourceFailureKind.invalidResponse => '数据源响应格式异常，未获得可用 JSON。',
+      SourceFailureKind.identityConflict => '录音身份核对不一致，请重新查找并确认版本。',
       SourceFailureKind.accessDenied => '数据源当前不允许匿名访问，已停止请求。',
       SourceFailureKind.httpError => '数据源请求失败（状态 $statusCode）。',
       SourceFailureKind.unknown => '此前查询未完成，数据源暂处于本机重试等待期。',

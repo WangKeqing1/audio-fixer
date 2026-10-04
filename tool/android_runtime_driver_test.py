@@ -465,8 +465,21 @@ class IntegrationSourceContractTest(unittest.TestCase):
                 self.assertNotIn('find.byTooltip("Back")', source)
         main = (root / 'integration_test/native_flow_test.dart').read_text()
         guarded_navigation = """expect(find.byType(TrackDetailPage), findsOneWidget);
+      await showNativeTarget(
+        tester,
+        find.byKey(const ValueKey('close-selected-song')),
+        scrollable: find
+            .descendant(
+              of: find.byType(TrackDetailPage),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+        delta: -180,
+      );
       expect(find.byKey(const ValueKey('close-selected-song')), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('close-selected-song')));
+      await tester.tap(
+        find.byKey(const ValueKey('close-selected-song')).hitTestable(),
+      );
       await tester.pumpAndSettle();
       expect(find.byType(TrackDetailPage), findsNothing);"""
         self.assertIn(guarded_navigation, main)

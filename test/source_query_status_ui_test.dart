@@ -52,6 +52,29 @@ Widget _app(
 
 void main() {
   testWidgets(
+    'selected recording conflict is never presented as catalog absence',
+    (tester) async {
+      await tester.pumpWidget(
+        _app(
+          const SourceQueryStatusPanel(
+            reports: [
+              SourceQueryReport(
+                sourceName: '网易云音乐',
+                outcome: SourceQueryOutcome.failed,
+                failureKind: SourceFailureKind.identityConflict,
+                message: '已选录音详情与候选中的完整歌手不一致。',
+              ),
+            ],
+          ),
+        ),
+      );
+      expect(find.text('网易云音乐 · 录音信息不一致'), findsOneWidget);
+      expect(find.textContaining('未找到匹配'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'absolute countdown expires without retry and allows one manual action',
     (tester) async {
       var now = DateTime(2026, 10, 3);

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
@@ -26,6 +27,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
+import '../test/support/expanded_review_scenario.dart';
 
 // Run on an actual Windows desktop runner:
 // flutter test integration_test/windows_runtime_test.dart -d windows
@@ -75,7 +78,7 @@ Future<void> _waitFor(
 }
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
     'Windows Unicode library, UI, safe writes and persisted conflict recovery',
@@ -397,6 +400,48 @@ void main() {
     },
     skip: !Platform.isWindows,
     timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  testWidgets(
+    'Windows expanded LRCLIB lyrics keeps source layout and fixed action usable',
+    (tester) async {
+      expect(Platform.isWindows, isTrue);
+      final screenshot = File('build/ci/windows/expanded-review.png');
+      final evidence = await runExpandedReviewWindowsScenario(
+        tester,
+        capture: (boundary) async {
+          // Capture the actual Windows engine's painted frame directly. This
+          // does not depend on integration_test's mobile screenshot plugin.
+          final image = await boundary.toImage(pixelRatio: 1);
+          try {
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            expect(bytes, isNotNull);
+            await screenshot.parent.create(recursive: true);
+            await screenshot.writeAsBytes(
+              bytes!.buffer.asUint8List(),
+              flush: true,
+            );
+            expect(await screenshot.length(), greaterThan(0));
+            expect(image.width, 2048);
+            expect(image.height, 1376);
+          } finally {
+            image.dispose();
+          }
+        },
+      );
+      evidence['screenshot'] = screenshot.path;
+      binding.reportData = {
+        ...?binding.reportData,
+        'expanded_review': evidence,
+      };
+      // Retained by the existing Windows job's runtime.txt artifact.
+      // ignore: avoid_print
+      print('WINDOWS_EXPANDED_REVIEW ${jsonEncode(evidence)}');
+    },
+    skip: !Platform.isWindows,
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 
   testWidgets(

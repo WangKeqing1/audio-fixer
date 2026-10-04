@@ -367,6 +367,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxHeight: 140),
                   child: SingleChildScrollView(
+                    key: PageStorageKey(
+                      'current-value-scroll-${candidate.field.name}-${candidate.source}-${old.hashCode}',
+                    ),
                     primary: false,
                     child: SelectableText(
                       old!,
@@ -387,6 +390,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
             if (hasText(candidate.sourceUrl))
               SelectableText(
                 candidate.sourceUrl!,
+                key: PageStorageKey(
+                  'candidate-source-scroll-${candidate.field.name}-${candidate.sourceUrl}',
+                ),
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.primary,
                 ),
@@ -989,14 +995,15 @@ class _LyricsPreview extends StatelessWidget {
     final content = candidate.lyricsContent!;
     Widget preview(String value) => ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: 220),
-      child: Scrollbar(
-        child: SingleChildScrollView(
-          key: PageStorageKey('lyrics-scroll-${value.hashCode}'),
-          primary: false,
-          child: SelectableText(
-            value,
-            key: PageStorageKey('lyrics-text-${value.hashCode}'),
-          ),
+      // Desktop ScrollBehavior supplies a scrollbar attached to this view's
+      // own controller. An extra controller-less Scrollbar would incorrectly
+      // use the page's PrimaryScrollController when this view is primary:false.
+      child: SingleChildScrollView(
+        key: PageStorageKey('lyrics-scroll-${value.hashCode}'),
+        primary: false,
+        child: SelectableText(
+          value,
+          key: PageStorageKey('lyrics-text-${value.hashCode}'),
         ),
       ),
     );

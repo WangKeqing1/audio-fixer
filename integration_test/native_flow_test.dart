@@ -1039,10 +1039,15 @@ void main() {
       );
       expect(source.calls, 2);
       expect(controller.taskForTrack(track.id)!.status, TaskStatus.needsReview);
-      await tester.scrollUntilVisible(
+      await showNativeTarget(
+        tester,
         find.byType(Checkbox),
-        160,
-        scrollable: find.byType(Scrollable).first,
+        scrollable: find
+            .descendant(
+              of: find.byType(CandidateReviewPage),
+              matching: find.byType(Scrollable),
+            )
+            .first,
       );
       expect(
         tester.widget<Checkbox>(find.byType(Checkbox).first).value,
@@ -1055,8 +1060,12 @@ void main() {
         isNull,
         reason: 'Newly fetched candidates require explicit review.',
       );
-      await tester.tap(find.byType(Checkbox).first);
+      await tester.tap(find.byType(Checkbox).first.hitTestable());
       await tester.pumpAndSettle();
+      expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).first).value,
+        isTrue,
+      );
       expect(find.text('应用建议（1 项）'), findsOneWidget);
       expect(find.text('导出副本'), findsOneWidget);
       await checkpoint('review_ready');
@@ -1116,17 +1125,26 @@ void main() {
             find.byType(CandidateReviewPage).evaluate().isNotEmpty,
         'new original-save candidate review',
       );
-      await tester.scrollUntilVisible(
+      await showNativeTarget(
+        tester,
         find.byType(Checkbox),
-        160,
-        scrollable: find.byType(Scrollable).first,
+        scrollable: find
+            .descendant(
+              of: find.byType(CandidateReviewPage),
+              matching: find.byType(Scrollable),
+            )
+            .first,
       );
       expect(
         tester.widget<Checkbox>(find.byType(Checkbox).first).value,
         isFalse,
       );
-      await tester.tap(find.byType(Checkbox).first);
+      await tester.tap(find.byType(Checkbox).first.hitTestable());
       await tester.pumpAndSettle();
+      expect(
+        tester.widget<Checkbox>(find.byType(Checkbox).first).value,
+        isTrue,
+      );
       final previewSource = controller.tracks.singleWhere(
         (item) => item.fileName == 'native_duration_60000.wav',
       );
@@ -1138,7 +1156,11 @@ void main() {
             state['status'] == 'playing',
         'preview before original-save release barrier',
       );
-      await tester.ensureVisible(find.byKey(const ValueKey('save-original')));
+      await showNativeTarget(
+        tester,
+        find.byKey(const ValueKey('save-original')),
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.byKey(const ValueKey('save-original')));
       await _waitFor(
         tester,
@@ -1171,8 +1193,10 @@ void main() {
       await checkpoint('original_cancelled_ready');
 
       // Persist one explicit approval; the other selected song stays unreviewed.
-      await tester.ensureVisible(
+      await showNativeTarget(
+        tester,
         find.byKey(const ValueKey('approve-for-batch')),
+        scrollable: find.byType(Scrollable).first,
       );
       await tester.tap(find.byKey(const ValueKey('approve-for-batch')));
       await _waitFor(
@@ -1193,15 +1217,28 @@ void main() {
       // evidence also shows reviewed counts and the final batch result panel.
       // pageBack() matches the English 'Back' tooltip, not this Chinese UI.
       expect(find.byType(TrackDetailPage), findsOneWidget);
+      await showNativeTarget(
+        tester,
+        find.byKey(const ValueKey('close-selected-song')),
+        scrollable: find
+            .descendant(
+              of: find.byType(TrackDetailPage),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+        delta: -180,
+      );
       expect(find.byKey(const ValueKey('close-selected-song')), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('close-selected-song')));
+      await tester.tap(
+        find.byKey(const ValueKey('close-selected-song')).hitTestable(),
+      );
       await tester.pumpAndSettle();
       expect(find.byType(TrackDetailPage), findsNothing);
       await tester.tap(find.text('补全任务'));
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
+      await showNativeTarget(
+        tester,
         find.byKey(const ValueKey('select-all-task-tracks')),
-        160,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();

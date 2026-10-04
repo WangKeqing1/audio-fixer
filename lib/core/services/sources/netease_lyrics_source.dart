@@ -222,12 +222,18 @@ class NeteaseLyricsSource
         recording.sourceName != name ||
         id == null ||
         recording.sourceUrl != 'https://music.163.com/song?id=$id') {
-      throw const SourceNoMatch('已选录音的网易云身份无效，请重新查找并选择。');
+      throw const ApiException(
+        '已选录音的网易云 ID 或来源地址无效，请重新查找并选择。',
+        kind: SourceFailureKind.identityConflict,
+      );
     }
     final search = TrackSearch.fromTrack(track);
     if (!hasText(search.title) ||
         !search.matchesDuration(recording.durationMs / 1000, tolerance: 3)) {
-      throw const SourceNoMatch('当前检索歌名或时长已变化，请重新查找并选择录音。');
+      throw const ApiException(
+        '当前检索歌名或本地时长已变化，无法继续核对已选录音；请重新查找并选择。',
+        kind: SourceFailureKind.identityConflict,
+      );
     }
     // Confirmation is an ID lookup, never another search or best-hit fallback.
     // Even a lyrics-only request must first verify the complete chosen record.
@@ -237,31 +243,59 @@ class NeteaseLyricsSource
       ),
     );
     final songs = detail['songs'];
-    final verified = songs is List && songs.length == 1
-        ? _Song.parse(songs.single)
-        : null;
+    if (songs is List && songs.isEmpty) {
+      throw SourceNoMatch('网易云未返回已选录音 ID $id 的详情，可能已下架；请重新查找版本。');
+    }
+    if (songs is! List || songs.length != 1) {
+      throw const ApiException(
+        '网易云已选录音详情缺失或格式异常，无法完成核对；未查询歌词或采用资料。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
+    final verified = _Song.parse(songs.single);
     if (verified == null ||
-        verified.id != id ||
-        verified.title != recording.title ||
-        verified.artists.join('/') != recording.artist ||
-        verified.album != recording.album ||
-        (verified.duration * 1000).round() != recording.durationMs ||
-        !verified.matchesArtist(search) ||
+        (hasText(recording.album) && !hasText(verified.album))) {
+      throw const ApiException(
+        '网易云已选录音详情不完整，缺少有效的 ID、歌名、完整歌手、专辑或时长；未查询歌词或采用资料。',
+        kind: SourceFailureKind.invalidResponse,
+      );
+    }
+    final conflicts = <String>[
+      if (verified.id != id) 'ID',
+      if (verified.title != recording.title) '歌名',
+      if (verified.artists.join('/') != recording.artist) '完整歌手',
+      // A search result may omit an album. The same ID's authoritative detail
+      // may fill that gap only after every other chosen identity field agrees.
+      if (hasText(recording.album) && verified.album != recording.album) '专辑',
+      if ((verified.duration * 1000).round() != recording.durationMs) '时长',
+    ];
+    if (conflicts.isNotEmpty) {
+      throw ApiException(
+        '网易云已选录音 ID $id 的详情与候选中的${conflicts.join('、')}不一致，'
+        '未查询歌词或采用资料；请重新查找并核对版本。',
+        kind: SourceFailureKind.identityConflict,
+      );
+    }
+    if (!verified.matchesArtist(search) ||
         !search.matchesDuration(verified.duration, tolerance: 3)) {
-      throw const SourceNoMatch(
-        '歌曲详情与已选录音的 ID、歌名、完整歌手、专辑或时长不一致，未采用任何资料；请重新查找。',
+      throw const ApiException(
+        '已选录音详情一致，但当前检索歌手或本地时长与所选版本不符；'
+        '请核对检索条件后重新选择，未查询歌词或采用资料。',
+        kind: SourceFailureKind.identityConflict,
       );
     }
     if (verified.discoveryTitleEvidence(search) == null) {
-      throw const SourceNoMatch(
+      throw const ApiException(
         '已选录音详情未提供与原检索歌名一致的名称或来源别名，无法复核歌名证据；未查询歌词，请重新查找。',
+        kind: SourceFailureKind.identityConflict,
       );
     }
     return _lookupSelected(
       search,
       verified,
       fields,
-      '${recording.matchDescription}；用户已选择录音，ID、歌名、完整歌手、专辑和时长已复核',
+      '${recording.matchDescription}；用户已选择录音，ID、歌名、完整歌手和时长已复核；'
+      '${hasText(recording.album) ? '所选专辑已复核' : '搜索候选未提供专辑，仅按同一 ID 详情补充专辑资料'}',
       confirmedDetail: detail,
     );
   }

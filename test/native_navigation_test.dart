@@ -3,9 +3,12 @@ import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
 import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
+import 'package:audio_fixer/core/services/export/audio_copy_exporter.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
+import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:audio_fixer/features/library/track_detail_page.dart';
+import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -14,6 +17,7 @@ import 'support/fakes.dart';
 
 class _LyricsSource implements MetadataSource {
   int calls = 0;
+  bool suggest = false;
   @override
   String get name => 'Offline native navigation fixture';
   @override
@@ -25,11 +29,142 @@ class _LyricsSource implements MetadataSource {
   ) async {
     expect(fields, {AudioField.lyrics});
     calls++;
-    return [];
+    return suggest
+        ? [
+            FieldSuggestion(
+              field: AudioField.lyrics,
+              value:
+                  '[00:00.00]Synthetic Android runtime fixture only\n'
+                  '[00:00.60]Native save cancellation and retry',
+              source: name,
+            ),
+          ]
+        : [];
+  }
+}
+
+class _CancelledWriter implements AudioCopyExporter, AudioOriginalSaver {
+  int originals = 0;
+  int copies = 0;
+  @override
+  bool supports(AudioTrack track) => true;
+  @override
+  bool supportsOriginal(AudioTrack track) => true;
+  @override
+  Future<String?> export(AudioTrack track, List<FieldSuggestion> values) async {
+    copies++;
+    return null;
+  }
+
+  @override
+  Future<String?> saveOriginal(
+    AudioTrack track,
+    List<FieldSuggestion> values,
+  ) async {
+    originals++;
+    return null;
   }
 }
 
 void main() {
+  testWidgets(
+    'native review checkbox clears fixed footer before explicit approval',
+    (tester) async {
+      tester.view.physicalSize = const Size(1080, 1920);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final track = fixtureTrack();
+      final source = _LyricsSource()..suggest = true;
+      final writer = _CancelledWriter();
+      final controller = LibraryController(
+        store: MemoryStore(
+          LibrarySnapshot(
+            tracks: [track],
+            settings: const AppSettings(
+              metadata: false,
+              artwork: false,
+              lyrics: true,
+            ),
+          ),
+        ),
+        picker: FakePicker(),
+        importer: FakeImporter(),
+        completion: CompletionService(sources: [source]),
+        exporter: writer,
+      );
+      await tester.pumpWidget(AudioFixerApp(controller: controller));
+      await tester.pumpAndSettle();
+      final library = find.byKey(const PageStorageKey('library-scroll-view'));
+      await showNativeTarget(
+        tester,
+        find.text(track.displayTitle),
+        scrollable: find
+            .descendant(of: library, matching: find.byType(Scrollable))
+            .first,
+      );
+      await tester.tap(find.text(track.displayTitle).hitTestable());
+      await tester.pumpAndSettle();
+      await tapNativeMissingOnly(tester);
+      await tester.pumpAndSettle();
+      final review = find.byType(CandidateReviewPage);
+      expect(review, findsOneWidget);
+      final checkbox = find.descendant(
+        of: review,
+        matching: find.byType(Checkbox),
+      );
+      final scroll = find
+          .descendant(of: review, matching: find.byType(Scrollable))
+          .first;
+      final save = find.byKey(const ValueKey('save-original'));
+      expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+      expect(tester.widget<FilledButton>(save).onPressed, isNull);
+      expect(writer.originals, 0);
+      expect(writer.copies, 0);
+      await showNativeTarget(tester, checkbox, scrollable: scroll);
+      await tester.tap(checkbox.hitTestable());
+      await tester.pumpAndSettle();
+      expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+      expect(find.text('应用建议（1 项）'), findsOneWidget);
+      expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
+      expect(writer.originals, 0);
+      expect(writer.copies, 0);
+      final export = find.byKey(const ValueKey('export-copy'));
+      expect(export.hitTestable(), findsOneWidget);
+      await tester.tap(export.hitTestable());
+      await tester.pumpAndSettle();
+      expect(writer.copies, 1);
+      expect(writer.originals, 0);
+      expect(review, findsOneWidget);
+      await showNativeTarget(tester, checkbox, scrollable: scroll);
+      expect(tester.widget<Checkbox>(checkbox).value, isTrue);
+      final approve = find.byKey(const ValueKey('approve-for-batch'));
+      await showNativeTarget(tester, approve, scrollable: scroll);
+      await tester.tap(approve.hitTestable());
+      await tester.pumpAndSettle();
+      expect(review, findsNothing);
+      expect(
+        controller.approvedSuggestionsFor(controller.taskForTrack(track.id)!),
+        hasLength(1),
+      );
+      final detail = find.byType(TrackDetailPage);
+      final close = find.byKey(const ValueKey('close-selected-song'));
+      await showNativeTarget(
+        tester,
+        close,
+        delta: -180,
+        scrollable: find
+            .descendant(of: detail, matching: find.byType(Scrollable))
+            .first,
+      );
+      await tester.tap(close.hitTestable());
+      await tester.pumpAndSettle();
+      expect(detail, findsNothing);
+      expect(writer.originals, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final expanded in [false, true]) {
     testWidgets(
       'native missing-only action with ${expanded ? 'expanded' : 'collapsed'} disclosure and pinned navigation',

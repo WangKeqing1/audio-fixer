@@ -30,6 +30,7 @@ class RecordingChoicePage extends StatefulWidget {
 class _RecordingChoicePageState extends State<RecordingChoicePage> {
   final _scrollController = ScrollController();
   bool _querying = false;
+  RecordingCandidate? _pendingChoice;
   String? _notice;
   bool _noticeIsSeparate = false;
 
@@ -69,13 +70,6 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
       _notice = message;
       _noticeIsSeparate = separate;
     });
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    }
   }
 
   Future<void> _choose(RecordingCandidate candidate) async {
@@ -85,12 +79,19 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
             .taskForTrack(widget.task.trackId)!
             .recordingCandidates
             .any(candidate.sameAs)) {
+      if (mounted && !_querying && ModalRoute.of(context)?.isCurrent == true) {
+        _showNotice(
+          controller.isBusy ? '正在完成上一项操作，请稍候。' : '版本列表已更新，请重新查找后选择。',
+          separate: true,
+        );
+      }
       return;
     }
     final route = ModalRoute.of(context);
     final revision = controller.noticeRevision;
     setState(() {
       _querying = true;
+      _pendingChoice = candidate;
       _notice = null;
     });
     try {
@@ -146,6 +147,7 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
     final selected = task.confirmedRecording;
     setState(() {
       _querying = true;
+      _pendingChoice = selected;
       _notice = null;
     });
     try {
@@ -187,20 +189,15 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
     final revision = controller.noticeRevision;
     setState(() {
       _querying = true;
+      _pendingChoice = null;
       _notice = null;
     });
     try {
-      if (widget.task.isRepair) {
-        await controller.queryRepair(
-          track.id,
-          fields: widget.task.queriedFields,
-          searchTitle: widget.task.searchMetadata['title'],
-          searchArtist: widget.task.searchMetadata['artist'],
-          searchAlbum: widget.task.searchMetadata['album'],
-        );
-      } else {
-        await controller.complete(track: track);
-      }
+      await controller.complete(
+        track: track,
+        repairFields: widget.task.isRepair ? widget.task.queriedFields : null,
+        searchMetadata: widget.task.searchMetadata,
+      );
       if (!mounted || route?.isCurrent != true) return;
       final current = controller.taskForTrack(track.id);
       if (current != null &&
@@ -266,12 +263,68 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
           current?.suggestions.isEmpty == true;
       return Scaffold(
         appBar: AppBar(title: const Text('确认歌曲版本')),
+        bottomNavigationBar:
+            (_querying ||
+                _notice != null ||
+                !currentChoice ||
+                controller.isBusy)
+            ? Material(
+                color: theme.colorScheme.surfaceContainer,
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (_querying || controller.isBusy) ...[
+                          const LinearProgressIndicator(),
+                          const SizedBox(height: 8),
+                        ],
+                        Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            _querying
+                                ? _pendingChoice == null
+                                      ? '正在查找歌曲版本…'
+                                      : '正在获取“${_pendingChoice!.title}”的资料…'
+                                : _notice ??
+                                      (controller.isBusy
+                                          ? controller.progress ?? '正在处理…'
+                                          : '版本列表已更新，请重新查找后选择。'),
+                            key: const ValueKey('recording-fixed-status'),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (!_querying &&
+                            !controller.isBusy &&
+                            !currentChoice &&
+                            track != null)
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              key: const ValueKey('recording-fixed-rediscover'),
+                              onPressed: _canQuery(track)
+                                  ? () => _rediscover(track)
+                                  : null,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('重新查找版本'),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            : null,
         body: SafeArea(
           top: false,
           child: Align(
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 720),
+              constraints: const BoxConstraints(maxWidth: 1120),
               child: ListView(
                 controller: _scrollController,
                 padding: const EdgeInsets.all(20),
@@ -387,6 +440,9 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                               const SizedBox(height: 4),
                               SelectableText(
                                 candidate.sourceUrl,
+                                key: PageStorageKey(
+                                  'recording-source-${candidate.sourceId}',
+                                ),
                                 style: theme.textTheme.bodySmall,
                               ),
                             ],
@@ -402,8 +458,25 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                               onPressed: _canChoose
                                   ? () => _choose(candidate)
                                   : null,
-                              icon: const Icon(Icons.manage_search),
-                              label: const Text('使用此版本检索资料'),
+                              icon:
+                                  _querying &&
+                                      _pendingChoice?.sameAs(candidate) == true
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.manage_search),
+                              label: Text(
+                                _querying &&
+                                        _pendingChoice?.sameAs(candidate) ==
+                                            true
+                                    ? '正在获取这个版本…'
+                                    : _querying
+                                    ? '请等待当前版本完成'
+                                    : '使用此版本检索资料',
+                              ),
                             ),
                           ],
                         ),

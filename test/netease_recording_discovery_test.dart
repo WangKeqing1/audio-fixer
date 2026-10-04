@@ -276,7 +276,7 @@ void main() {
       await expectLater(
         NeteaseLyricsSource(client)
             .lookupConfirmed(_track(), _candidate(), {AudioField.lyrics}),
-        throwsA(isA<SourceNoMatch>()),
+        throwsA(isA<ApiException>()),
       );
       expect(client.calls.single.path, '/api/song/detail');
     }
@@ -299,7 +299,7 @@ void main() {
             _candidate(changes: changes),
             {AudioField.lyrics},
           ),
-          throwsA(isA<SourceNoMatch>()),
+          throwsA(isA<ApiException>()),
         );
         expect(client.calls, isEmpty);
       }
@@ -316,7 +316,7 @@ void main() {
       await expectLater(
         NeteaseLyricsSource(client)
             .lookupConfirmed(local, _candidate(), {AudioField.lyrics}),
-        throwsA(isA<SourceNoMatch>()),
+        throwsA(isA<ApiException>()),
       );
       expect(client.calls.any((u) => u.path == '/api/song/lyric'), isFalse);
     }
@@ -334,7 +334,7 @@ void main() {
           {AudioField.lyrics},
         ),
         throwsA(
-          isA<SourceNoMatch>().having(
+          isA<ApiException>().having(
             (e) => e.message,
             'notice',
             contains('别名'),

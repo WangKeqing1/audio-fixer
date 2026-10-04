@@ -201,10 +201,17 @@ class LibraryController extends ChangeNotifier {
   bool completionStopRequested = false;
   final Map<String, String> sourceConnections = {};
   final Set<String> _selectedTrackIds = {};
-  Set<String> get selectedTrackIds => Set.unmodifiable(
-    _selectedTrackIds.intersection(tracks.map((track) => track.id).toSet()),
-  );
-  int get selectedCount => selectedTrackIds.length;
+  Set<String>? _selectedTrackIdsView;
+  Set<String> get selectedTrackIds {
+    _ensureTrackIndex();
+    return _selectedTrackIdsView ??= Set.unmodifiable(_selectedTrackIds);
+  }
+
+  int get selectedCount {
+    _ensureTrackIndex();
+    return _selectedTrackIds.length;
+  }
+
   BatchOperation? batchOperation;
   bool _batchStopRequested = false;
   bool _writeRecordUncertain = false;
@@ -355,13 +362,67 @@ class LibraryController extends ChangeNotifier {
   bool get usesDeviceLibrary => deviceLibrary != null;
   bool get canReadDeviceLibrary =>
       !usesDeviceLibrary || libraryPermission == AudioLibraryPermission.granted;
-  List<AudioTrack> get allTracks => List.unmodifiable(
-    _snapshot.tracks.where(
-      (track) => !track.isDeviceTrack || canReadDeviceLibrary,
-    ),
-  );
-  List<AudioTrack> get tracks =>
-      List.unmodifiable(allTracks.where((track) => !isTrackExcluded(track)));
+  // Catalog snapshots are replaced atomically. Reuse derived immutable lists
+  // and indexes until their inputs change; selection/progress notifications
+  // must not copy and refilter the entire music library for every row.
+  List<AudioTrack>? _indexedTracksSource;
+  AppSettings? _indexedSettings;
+  bool? _indexedCanReadDeviceLibrary;
+  List<AudioTrack> _allTracksView = const [];
+  List<AudioTrack> _tracksView = const [];
+  Map<String, AudioTrack> _tracksById = const {};
+  List<CompletionTask>? _indexedTasksSource;
+  List<CompletionTask> _tasksView = const [];
+  Map<String, CompletionTask> _tasksByTrackId = const {};
+
+  void _ensureTrackIndex() {
+    final canRead = canReadDeviceLibrary;
+    if (identical(_indexedTracksSource, _snapshot.tracks) &&
+        identical(_indexedSettings, settings) &&
+        _indexedCanReadDeviceLibrary == canRead) {
+      return;
+    }
+    _indexedTracksSource = _snapshot.tracks;
+    _indexedSettings = settings;
+    _indexedCanReadDeviceLibrary = canRead;
+    _allTracksView = List.unmodifiable(
+      _snapshot.tracks.where((track) => !track.isDeviceTrack || canRead),
+    );
+    _tracksView = List.unmodifiable(
+      _allTracksView.where((track) => !isTrackExcluded(track)),
+    );
+    _tracksById = {};
+    for (final track in _tracksView) {
+      _tracksById.putIfAbsent(track.id, () => track);
+    }
+    final selectedBefore = _selectedTrackIds.length;
+    _selectedTrackIds.removeWhere((id) => !_tracksById.containsKey(id));
+    if (selectedBefore != _selectedTrackIds.length) {
+      _selectedTrackIdsView = null;
+    }
+  }
+
+  void _ensureTaskIndex() {
+    if (identical(_indexedTasksSource, _snapshot.tasks)) return;
+    _indexedTasksSource = _snapshot.tasks;
+    _tasksView = List.unmodifiable(_snapshot.tasks);
+    _tasksByTrackId = {};
+    for (final task in _tasksView) {
+      // Preserve the existing first-match semantics for historical snapshots.
+      _tasksByTrackId.putIfAbsent(task.trackId, () => task);
+    }
+  }
+
+  List<AudioTrack> get allTracks {
+    _ensureTrackIndex();
+    return _allTracksView;
+  }
+
+  List<AudioTrack> get tracks {
+    _ensureTrackIndex();
+    return _tracksView;
+  }
+
   bool isTrackExcluded(AudioTrack track) => settings.excludes(track);
   int get excludedTrackCount => allTracks.where(isTrackExcluded).length;
   int get unknownDurationCount =>
@@ -386,18 +447,22 @@ class LibraryController extends ChangeNotifier {
     return List.unmodifiable(sorted);
   }
 
-  List<CompletionTask> get tasks => List.unmodifiable(_snapshot.tasks);
+  List<CompletionTask> get tasks {
+    _ensureTaskIndex();
+    return _tasksView;
+  }
+
   AppSettings get settings => _snapshot.settings;
   int get incompleteCount =>
       tracks.where((track) => track.needsCompletion).length;
   bool get canOperate => !isLoading && !isBusy && loadError == null;
 
   void _pruneSelection() {
-    final eligibleIds = tracks.map((track) => track.id).toSet();
-    _selectedTrackIds.removeWhere((id) => !eligibleIds.contains(id));
+    _ensureTrackIndex();
   }
 
   void _notify() {
+    _selectedTrackIdsView = null;
     _pruneSelection();
     if (!_disposed) notifyListeners();
   }
@@ -448,10 +513,8 @@ class LibraryController extends ChangeNotifier {
   }
 
   AudioTrack? trackById(String id) {
-    for (final track in tracks) {
-      if (track.id == id) return track;
-    }
-    return null;
+    _ensureTrackIndex();
+    return _tracksById[id];
   }
 
   Future<void> refreshLibrary() => _operate(() async {
@@ -1121,16 +1184,12 @@ class LibraryController extends ChangeNotifier {
         confirmedRecording: current.confirmedRecording,
         recordingTask: current,
       );
-    } else if (current.isRepair) {
-      await queryRepair(
-        track.id,
-        fields: current.queriedFields,
-        searchTitle: current.searchMetadata['title'],
-        searchArtist: current.searchMetadata['artist'],
-        searchAlbum: current.searchMetadata['album'],
-      );
     } else {
-      await complete(track: track);
+      await complete(
+        track: track,
+        repairFields: current.isRepair ? current.queriedFields : null,
+        searchMetadata: current.searchMetadata,
+      );
     }
   }
 
@@ -1205,6 +1264,7 @@ class LibraryController extends ChangeNotifier {
         _setBatchItem(item.id, BatchItemStatus.running, '正在检查和查询');
         await _commit();
         CompletionTask task;
+        var effectiveSearchMetadata = Map<String, String>.of(searchMetadata);
         try {
           if ((!item.detailsLoaded ||
                   item.readError != null ||
@@ -1260,9 +1320,12 @@ class LibraryController extends ChangeNotifier {
                   .difference(item.isInstrumental ? {AudioField.lyrics} : {});
           final queryTrack = searchTrack ?? item;
           final querySearch = TrackSearch.fromTrack(queryTrack);
+          final inferredQuery =
+              querySearch.artistIsInferred ||
+              searchMetadata['filenameHint'] == 'true';
           if (confirmedRecording == null &&
               requested.isNotEmpty &&
-              (!hasText(querySearch.artist) || querySearch.artistIsInferred) &&
+              (!hasText(querySearch.artist) || inferredQuery) &&
               completion.sources.any(
                 (source) => source is RecordingDiscoverySource,
               )) {
@@ -1278,12 +1341,12 @@ class LibraryController extends ChangeNotifier {
                   : TaskStatus.noMatch,
               message: [
                 discovered.candidates.isNotEmpty
-                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。${querySearch.artistIsInferred
+                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。${inferredQuery
                           ? '歌手与歌名来自文件名推测，尚未确认，'
                           : hasText(item.artist) && searchMetadata.containsKey('artist')
                           ? '本次未用原歌手标签筛选，'
                           : '缺少歌手标签，'}请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
-                    : querySearch.artistIsInferred
+                    : inferredQuery
                     ? '按文件名推测的歌手、歌名与时长检索，尚未找到可供确认的歌曲版本。原标签保持不变，可以调整检索条件后重试。'
                     : '仅按歌名与时长检索，尚未找到可供确认的歌曲版本。可以调整检索条件后重试。',
                 ...discovered.diagnostics,
@@ -1379,6 +1442,14 @@ class LibraryController extends ChangeNotifier {
                 .map((report) => report.sourceName)
                 .toSet();
             if (unmatchedNames.isNotEmpty) {
+              // Keep the query that produced these choices. Confirmation and
+              // retries must not silently fall back to polluted original tags.
+              effectiveSearchMetadata = {
+                'title': filenameHint.title,
+                'artist': filenameHint.artist ?? '',
+                'album': '',
+                'filenameHint': 'true',
+              };
               final hintTrack = AudioTrack.fromJson({
                 ...item.toJson(),
                 'title': filenameHint.title,
@@ -1486,7 +1557,7 @@ class LibraryController extends ChangeNotifier {
                   item.isInstrumental ? {AudioField.lyrics} : {},
                 ),
           isRepair: repairFields != null,
-          searchMetadata: Map.unmodifiable(searchMetadata),
+          searchMetadata: Map.unmodifiable(effectiveSearchMetadata),
         );
         _setBatchItem(
           item.id,
@@ -1583,10 +1654,8 @@ class LibraryController extends ChangeNotifier {
       !isTrackExcluded(track) && (exporter?.supports(track) ?? false);
 
   CompletionTask? taskForTrack(String id) {
-    for (final task in tasks) {
-      if (task.trackId == id) return task;
-    }
-    return null;
+    _ensureTaskIndex();
+    return _tasksByTrackId[id];
   }
 
   bool canSaveOriginalTrack(AudioTrack track) {

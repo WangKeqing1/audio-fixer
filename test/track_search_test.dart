@@ -20,6 +20,55 @@ AudioTrack _file(
 );
 
 void main() {
+  test('numbered artist and promotional album are query hints only', () {
+    final original = _file(
+      '006.凤凰传奇 - 我从草原来.flac',
+      title: '我从草原来',
+      artist: '006.凤凰传奇',
+      album: '60音盘[60yp.com]更多音乐全集下载',
+      durationMs: 220115,
+    );
+    final before = original.toJson();
+    final query = TrackSearch.fromTrack(original);
+    expect(query.title, '我从草原来');
+    expect(query.artist, '凤凰传奇');
+    expect(query.album, isNull);
+    expect(query.artistIsInferred, isTrue);
+    expect(query.normalizationNotes.join(), contains('原标签保留'));
+    expect(original.toJson(), before);
+    expect(TrackSearch.filenameFallback(original), isNull);
+  });
+
+  test('numeric artist cleanup requires corroborating filename and title', () {
+    for (final original in [
+      _file('Other Artist - 我从草原来.flac', title: '我从草原来', artist: '006.凤凰传奇'),
+      _file('006.凤凰传奇 - Other Song.flac', title: '我从草原来', artist: '006.凤凰传奇'),
+      _file(
+        '10.000 Maniacs - Song.flac',
+        title: 'Song',
+        artist: '10.000 Maniacs',
+      ),
+      _file('2Pac - Song.flac', title: 'Song', artist: '2Pac'),
+      _file('01.23 - Song.flac', title: 'Song', artist: '01.23'),
+    ]) {
+      final query = TrackSearch.fromTrack(original);
+      expect(query.artist, original.artist);
+      expect(query.artistIsInferred, isFalse);
+    }
+    for (final album in [
+      '60音盘[60yp.com]',
+      '更多音乐全集下载',
+      'Album [Deluxe]',
+      'Album [unknown.example]',
+      '下載',
+    ]) {
+      expect(
+        TrackSearch.fromTrack(_file('Song.flac', album: album)).album,
+        album,
+      );
+    }
+  });
+
   test(
     'Chinese filename separators recover artist without title-only matching',
     () {

@@ -1,6 +1,6 @@
 # Audio Fixer
 
-使用 Flutter 构建的 Android 与 Windows 音频资料整理工具。用于检查音频标签、自动检索元数据、封面与歌词，聚合为建议后安全保存回原音频，也可导出带有新标签的副本。当前版本 0.6.0。原文件保存先取得 Android 授权，写入前制作恢复备份，再写入并回读校验。
+面向个人使用的 Android 与 Windows 音乐修复应用，使用 Flutter 构建。选好音乐，看一眼歌曲资料、封面与歌词的补全建议，再安全应用；也可导出修复后的副本。当前版本 0.6.1。原文件保存先取得 Android 授权，写入前制作恢复备份，再写入并回读校验。
 
 ## Windows 便携版
 
@@ -93,7 +93,7 @@ flutter build apk --debug
 ORG_GRADLE_PROJECT_audioFixerQa=true flutter build apk --release --split-per-abi --target-platform android-arm64
 ```
 
-产物为 `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。QA 开关适用于所有构建模式，使用独立包名 `com.audiofixer.audio_fixer.qa.v030`、显示名 `Audio Fixer QA 0.6` 和 `-qa` 版本后缀，可与正常应用及旧版 QA 并存。0.3 QA 使用独立应用数据，旧 QA 的私有副本与任务记录不会迁移或删除；系统音乐库仍需重新授权。无需卸载旧 QA。未设置开关时保留原包名与名称。
+产物为 `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。QA 开关适用于所有构建模式，使用独立包名 `com.audiofixer.audio_fixer.qa.v030`、显示名 `Audio Fixer QA 0.6` 和 `-qa` 版本后缀，可与正式包名的应用并存。相同 QA 包名之间只有签名证书一致才可覆盖更新；CI 临时签名不保证与先前本地构建兼容。安装前核对包名和证书，不要为安装新构建而卸载保有数据的旧版。未设置开关时保留原包名与名称。
 
 这是 AOT 优化、测试签名的 QA 包，不是正式发布签名。签名不同的 APK 无法覆盖更新旧版；不要为绕过签名冲突而直接卸载旧应用，以免丢失本地目录/私有副本。自动质量流程见 [CI 说明](docs/CI.md)。
 

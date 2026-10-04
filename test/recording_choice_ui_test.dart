@@ -439,6 +439,43 @@ void main() {
     },
   );
 
+  for (final width in [390.0, 1440.0]) {
+    testWidgets(
+      'choosing a visible version shows immediate local and fixed feedback $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final source = _Source()..pending = Completer<void>();
+        final controller = _controller(source);
+        await _openChoice(tester, controller);
+        await _show(tester, _choose(1));
+        await tester.tap(_choose(1));
+        await tester.pump();
+        expect(source.confirmed.length, 1);
+        expect(find.text('正在获取这个版本…').hitTestable(), findsOneWidget);
+        final status = find.byKey(const ValueKey('recording-fixed-status'));
+        expect(status.hitTestable(), findsOneWidget);
+        expect(tester.getRect(status).bottom, lessThanOrEqualTo(900));
+        expect(tester.widget<Text>(status).data, contains('正在获取'));
+        expect(tester.widget<FilledButton>(_choose(1)).onPressed, isNull);
+        await tester.tap(_choose(1));
+        await tester.pump();
+        expect(source.confirmed.length, 1);
+        source.pending!.complete();
+        await tester.pumpAndSettle();
+        expect(find.byType(CandidateReviewPage), findsOneWidget);
+        expect(
+          controller.tasks.single.confirmedRecording!.sameAs(_recordings[1]),
+          isTrue,
+        );
+        expect(controller.tasks.single.approvedSuggestions, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('leaving pending choice does not navigate when lookup finishes', (
     tester,
   ) async {
@@ -471,13 +508,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(source.discoveries, 2);
     expect(source.confirmed, isEmpty);
+    await _show(tester, _choose(0));
     expect(tester.widget<FilledButton>(_choose(0)).onPressed, isNull);
-    await _show(
-      tester,
-      find.byKey(const ValueKey('recording-choice-stale')),
-      delta: -200,
+    final fixedStatus = find.byKey(const ValueKey('recording-fixed-status'));
+    expect(fixedStatus.hitTestable(), findsOneWidget);
+    expect(tester.widget<Text>(fixedStatus).data, contains('版本列表已更新'));
+    expect(
+      find.byKey(const ValueKey('recording-fixed-rediscover')).hitTestable(),
+      findsOneWidget,
     );
-    expect(find.text('此版本列表已失效'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -499,19 +538,23 @@ void main() {
           controller.tasks.single.status,
           failed ? TaskStatus.failed : TaskStatus.noMatch,
         );
+        // The outcome stays visible at the clicked row; the detailed source
+        // report is allowed to remain above the lazy viewport.
+        final status = find.byKey(const ValueKey('recording-fixed-status'));
+        expect(status.hitTestable(), findsOneWidget);
         expect(
-          find.text('离线录音源 · ${failed ? '查询未完成' : '未找到匹配'}'),
-          findsOneWidget,
+          tester.widget<Text>(status).data,
+          controller.tasks.single.message,
         );
         expect(controller.tasks.single.approvedSuggestions, isEmpty);
-        await _show(
-          tester,
-          find.byKey(const ValueKey('rediscover-recordings')),
+        final rediscover = find.byKey(
+          const ValueKey('recording-fixed-rediscover'),
         );
+        expect(rediscover.hitTestable(), findsOneWidget);
         source
           ..empty = false
           ..fail = false;
-        await tester.tap(find.byKey(const ValueKey('rediscover-recordings')));
+        await tester.tap(rediscover);
         await tester.pumpAndSettle();
         expect(source.discoveries, 2);
         await _show(tester, _choose(1));

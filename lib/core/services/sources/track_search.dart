@@ -24,7 +24,30 @@ class TrackSearch {
     final embeddedTitle = track.title?.trim() ?? '';
     final fileTitle = p.basenameWithoutExtension(track.fileName).trim();
     final notes = <String>[];
-    final artist = _cleanQueryTag(track.artist, '歌手', notes);
+    var artist = _cleanQueryTag(track.artist, '歌手', notes);
+    var numberedArtist = false;
+    if (artist != null && _paddedTrackPrefix.hasMatch(artist)) {
+      // A zero-padded filename index is a query hint only when the complete
+      // filename independently agrees with both the remaining credit/title.
+      // Never strip ordinary numeric artists such as 10,000 Maniacs or 2Pac.
+      final withoutNumber = artist.replaceFirst(_paddedTrackPrefix, '').trim();
+      final filename = _SearchName(
+        fileTitle,
+        artist: null,
+        album: null,
+        fromFileName: true,
+      );
+      if (hasText(withoutNumber) &&
+          filename.artistIsInferred &&
+          hasText(filename.artist) &&
+          _sameIdentity(withoutNumber, filename.artist!) &&
+          (embeddedTitle.isEmpty ||
+              _sameIdentity(embeddedTitle, filename.title))) {
+        artist = withoutNumber;
+        numberedArtist = true;
+        notes.add('歌手标签与编号文件名一致，检索时已忽略开头的音轨序号；请确认录音，原标签保留');
+      }
+    }
     final album = _cleanQueryTag(track.album, '专辑', notes);
     var name = _SearchName(
       embeddedTitle.isEmpty ? fileTitle : embeddedTitle,
@@ -56,7 +79,7 @@ class TrackSearch {
           ? track.durationMs! / 1000
           : null,
       normalizationNotes: List.unmodifiable(notes.toSet()),
-      artistIsInferred: name.artistIsInferred,
+      artistIsInferred: name.artistIsInferred || numberedArtist,
     );
   }
 
@@ -360,6 +383,7 @@ final _audioExtension = RegExp(
   r'\.(?:mp3|flac|m4a|aac|wav|ape|alac|ogg|opus|wma|aiff?)$',
   caseSensitive: false,
 );
+final _paddedTrackPrefix = RegExp(r'^0\d{1,2}\s*[._-]\s*(?=[^\s0-9])');
 final _trackPrefix = RegExp(r'^(?:\d{1,3}\s*[._-]\s*|[（(]\d{1,3}[）)]\s+)');
 final _numberedBracketArtist = RegExp(r'^\[([^\[\]]+)\]\s+([^\[【(（].*)$');
 final _trailingBracket = RegExp(
@@ -434,9 +458,22 @@ bool _isTechnicalMetadata(String text) {
   return source != null && _technicalMetadata.hasMatch(source.group(1)!.trim());
 }
 
+// Require both an explicit domain and an unambiguous download call to action.
+// A website name alone or an ordinary album with brackets is not promotional.
+final _downloadPromotion = RegExp(
+  r'^[^\r\n\[\]【】()（）]{0,80}[\[【(（]\s*'
+  r'(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}'
+  r'/?\s*[\]】)）]\s*更多(?:无损)?(?:音乐|歌曲)(?:全集|合辑)?下载[！!。\s]*$',
+  caseSensitive: false,
+);
+
 String? _cleanQueryTag(String? raw, String label, List<String> notes) {
   if (!hasText(raw)) return null;
   var value = raw!.trim();
+  if (label == '专辑' && _downloadPromotion.hasMatch(value)) {
+    notes.add('专辑标签是带网址的音乐下载推广语，检索时已忽略，原标签保留');
+    return null;
+  }
   // Only recognized technical/download markers are removed. Names of unknown
   // websites and ordinary bracketed artist credits are not guessed away.
   if (_isTechnicalMetadata(value) &&

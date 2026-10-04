@@ -43,13 +43,17 @@ void _phone(WidgetTester tester) {
   addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
 }
 
-Future<void> _showControl(WidgetTester tester, String id) async {
+Future<void> _showControl(
+  WidgetTester tester,
+  String id, {
+  Finder? scrollView,
+}) async {
   await tester.scrollUntilVisible(
     find.byKey(ValueKey('instrumental-$id')),
     250,
     scrollable: find
         .descendant(
-          of: find.byType(ListView).first,
+          of: scrollView ?? find.byType(ListView).first,
           matching: find.byType(Scrollable),
         )
         .first,
@@ -207,12 +211,20 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('补全任务'));
     await tester.pumpAndSettle();
-    await _showControl(tester, track.id);
+    await _showControl(
+      tester,
+      track.id,
+      scrollView: find.byKey(const PageStorageKey('tasks')),
+    );
     expect(controller.tracks.single.isInstrumental, isFalse);
     await tester.tap(find.text('设为纯音乐'));
     await tester.pumpAndSettle();
     expect(controller.tracks.single.isInstrumental, isTrue);
     expect(find.text('取消纯音乐标记'), findsOneWidget);
+    await tester.tap(find.text('取消纯音乐标记'));
+    await tester.pumpAndSettle();
+    expect(controller.tracks.single.isInstrumental, isFalse);
+    expect(controller.tasks.single.approvedSuggestions, isEmpty);
     expect(tester.takeException(), isNull);
   });
 
