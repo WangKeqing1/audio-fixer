@@ -86,8 +86,15 @@ and `git diff --check` also passed. Full-bundle validation is separate.
 The added CI step runs:
 
 ```powershell
-flutter test integration_test/windows_library_performance_test.dart -d windows --profile --reporter expanded
+flutter drive --profile --no-pub --driver=test_driver/windows_library_performance.dart --target=integration_test/windows_library_performance_test.dart -d windows
 ```
+
+Flutter 3.47.2's `flutter test` command does not support `--profile`; the
+supported profile runner is `flutter drive` with the official `integrationDriver`.
+The driver propagates test failures and validates profile mode, complete scenario
+metrics and frame evidence before writing the report on the host. The target
+also asserts `kProfileMode`, so a silent debug fallback fails rather than being
+reported as a profile measurement.
 
 It runs the same UI workload on the Windows Flutter engine and records frame
 count plus p50/p90/max build, raster and total timing distributions. CI retains

@@ -2,13 +2,15 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import '../test/support/large_library_scenario.dart';
 
-// Run on Windows: flutter test integration_test/windows_library_performance_test.dart
-//   -d windows --profile --reporter expanded
+// Run on Windows: flutter drive --profile -d windows
+//   --driver=test_driver/windows_library_performance.dart
+//   --target=integration_test/windows_library_performance_test.dart
 // This renders the real Windows Flutter engine. Media and playback events are
 // synthetic; it does not benchmark disk scanning, codecs or physical window drag.
 void main() {
@@ -17,6 +19,11 @@ void main() {
     tester,
   ) async {
     expect(Platform.isWindows, isTrue);
+    expect(
+      kProfileMode,
+      isTrue,
+      reason: 'Collect real profile-mode frame data',
+    );
     final frames = <FrameTiming>[];
     void recordFrames(List<FrameTiming> values) => frames.addAll(values);
     binding.addTimingsCallback(recordFrames);
@@ -41,6 +48,8 @@ void main() {
 
     final result = {
       'runtime': 'Windows Flutter profile, synthetic media/playback',
+      'build_mode': kProfileMode ? 'profile' : 'not-profile',
+      'platform': Platform.operatingSystem,
       'scenario': interaction,
       'frame_count': frames.length,
       'build': summary(frames.map((frame) => frame.buildDuration)),
@@ -50,14 +59,8 @@ void main() {
           'Report distributions; no absolute host-dependent frame budget',
     };
     binding.reportData = result;
-    final report = File(
-      Platform.environment['AUDIO_FIXER_PERF_REPORT'] ??
-          'build/ci/windows/library-performance.json',
-    );
-    await report.parent.create(recursive: true);
-    await report.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(result),
-    );
+    // The official host driver receives reportData and writes the CI artifact;
+    // do not depend on the target app's working directory or environment.
     // ignore: avoid_print
     print('WINDOWS_LIBRARY_PERFORMANCE ${jsonEncode(result)}');
   }, timeout: const Timeout(Duration(minutes: 5)));

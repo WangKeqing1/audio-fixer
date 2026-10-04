@@ -9,6 +9,7 @@ on:
       - 'test/windows*'
       - 'integration_test/windows_runtime_test.dart'
       - 'integration_test/windows_library_performance_test.dart'
+      - 'test_driver/**'
       - 'test/large_library*'
       - 'test/library_index_test.dart'
       - 'test/support/large_library*'
@@ -51,7 +52,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/ci/shared
-          dart format --output=none --set-exit-if-changed lib test tool integration_test
+          dart format --output=none --set-exit-if-changed lib test tool integration_test test_driver
           flutter analyze --no-pub
           flutter test --no-pub --concurrency=2 --reporter expanded --file-reporter json:build/ci/shared/results.jsonl 2>&1 | tee build/ci/shared/tests.txt
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -107,7 +108,7 @@ jobs:
         timeout-minutes: 12
         run: |
           $env:AUDIO_FIXER_PERF_REPORT = Join-Path $PWD 'build/ci/windows/library-performance.json'
-          flutter test integration_test/windows_library_performance_test.dart -d windows --profile --reporter expanded | Tee-Object build/ci/windows/library-performance.txt
+          flutter drive --profile --no-pub --driver=test_driver/windows_library_performance.dart --target=integration_test/windows_library_performance_test.dart -d windows | Tee-Object build/ci/windows/library-performance.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build optimized Windows x64 application
         run: |
