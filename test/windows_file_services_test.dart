@@ -61,7 +61,12 @@ void main() {
       });
 
   setUp(() async {
-    root = await Directory.systemTemp.createTemp('windows-services-test-');
+    final created = await Directory.systemTemp.createTemp(
+      'windows-services-test-',
+    );
+    // Windows TEMP can use an 8.3 alias (RUNNER~1); all fixtures must use
+    // the same canonical root as the production filesystem authority.
+    root = Directory(await created.resolveSymbolicLinks());
     support = await Directory(p.join(root.path, 'support')).create();
     music = await Directory(p.join(root.path, '音乐 #100% 🎵')).create();
     exports = await Directory(p.join(root.path, 'exports')).create();

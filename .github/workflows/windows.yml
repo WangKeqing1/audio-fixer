@@ -78,6 +78,7 @@ jobs:
           architecture: x64
           cache: false
       - name: Restore locked packages and record toolchain
+        id: restore
         run: |
           New-Item -ItemType Directory -Force build/ci/windows | Out-Null
           flutter --version --machine | Set-Content build/ci/windows/flutter-version.json
@@ -92,6 +93,7 @@ jobs:
           flutter test --no-pub @tests test/audio_preview_service_test.dart --reporter expanded | Tee-Object build/ci/windows/tests.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run real Windows application and platform integration checks
+        if: ${{ !cancelled() && steps.restore.outcome == 'success' }}
         timeout-minutes: 12
         run: |
           flutter test integration_test/windows_runtime_test.dart -d windows --reporter expanded | Tee-Object build/ci/windows/runtime.txt

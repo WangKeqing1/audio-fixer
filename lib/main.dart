@@ -21,17 +21,26 @@ import 'features/library/library_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Use one canonical support path for every Windows service. TEMP/profile
+  // providers may contain valid 8.3 aliases; staging must match its allowlist.
+  Future<Directory> supportDirectory() async {
+    final directory = await getApplicationSupportDirectory();
+    if (!Platform.isWindows) return directory;
+    await directory.create(recursive: true);
+    return Directory(await directory.resolveSymbolicLinks());
+  }
+
   Directory? sourceCache;
   try {
-    final support = await getApplicationSupportDirectory();
+    final support = await supportDirectory();
     sourceCache = Directory('${support.path}/source-cache');
   } catch (_) {
     // Cache persistence is optional. Still launch the app so the catalog can
     // display its own recoverable storage error instead of a blank startup.
   }
-  final artworkStore = LocalArtworkStore(getApplicationSupportDirectory);
+  final artworkStore = LocalArtworkStore(supportDirectory);
   final windowsAccess = Platform.isWindows
-      ? WindowsFileAccess(getApplicationSupportDirectory)
+      ? WindowsFileAccess(supportDirectory)
       : null;
   final windowsLibrary = windowsAccess == null
       ? null
@@ -39,27 +48,23 @@ Future<void> main() async {
   runApp(
     AudioFixerApp(
       controller: LibraryController(
-        store: JsonLibraryStore(getApplicationSupportDirectory),
+        store: JsonLibraryStore(supportDirectory),
         picker: SystemAudioPicker(),
         artworkPicker: SystemArtworkPicker(artworkStore),
-        importer: LocalAudioImporter(getApplicationSupportDirectory),
+        importer: LocalAudioImporter(supportDirectory),
         completion: CompletionService(
           sources: createOnlineSources(cacheDirectory: sourceCache),
           translator: Platform.isWindows
               ? null
               : PlatformLyricsTranslator(cacheDirectory: sourceCache),
         ),
-        deviceLibrary:
-            windowsLibrary ??
-            AndroidMusicLibrary(getApplicationSupportDirectory),
+        deviceLibrary: windowsLibrary ?? AndroidMusicLibrary(supportDirectory),
         inventoryBackendFactory: windowsLibrary == null
             ? null
             : () =>
                   WindowsAudioInventoryBackend(windowsLibrary, windowsAccess!),
         exporter: SafeAudioCopyExporter(
-          Platform.isWindows
-              ? getApplicationSupportDirectory
-              : getTemporaryDirectory,
+          Platform.isWindows ? supportDirectory : getTemporaryDirectory,
           channel: windowsAccess == null
               ? const MethodChannel('audio_fixer/device_library')
               : WindowsFileMethodChannel(windowsAccess),
