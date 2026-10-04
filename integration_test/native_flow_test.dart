@@ -75,6 +75,16 @@ Future<void> _searchLibrary(WidgetTester tester, String query) async {
   await tester.scrollUntilVisible(search, -220, scrollable: scroll);
   await tester.pumpAndSettle();
   expect(search.hitTestable(), findsOneWidget);
+  if (tester.widget<TextField>(search).controller!.text.isNotEmpty) {
+    // Use the app's actual clear button. Injecting an empty editing value can
+    // be overwritten by the live Android IME's previous editing session.
+    final clear = find.descendant(of: list, matching: find.byTooltip('清除搜索'));
+    expect(clear.hitTestable(), findsOneWidget);
+    await tester.tap(clear.hitTestable());
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(search).controller!.text, isEmpty);
+  }
+  if (query.isEmpty) return;
   await tester.tap(search.hitTestable());
   await tester.pumpAndSettle();
   await tester.enterText(search, query);
