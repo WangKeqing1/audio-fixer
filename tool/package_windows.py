@@ -37,7 +37,7 @@ def main():
     assert smoke['started'] is True
     version = re.search(r'^version:\s*([^+\s]+)', (ROOT / 'pubspec.yaml').read_text(encoding='utf-8'), re.M).group(1)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    readme = f'''Audio Fixer {version} - Windows x64 便携版\n\n1. 将整个 ZIP 解压到一个文件夹，再双击 audio_fixer.exe。\n2. 必须保留旁边的 DLL 和 data 文件夹，不能只移动 exe。\n3. 右上角文件夹按钮添加音乐目录，可扫描子文件夹。\n4. 自动检索元数据、封面和歌词后逐字段审核，再保存原文件或导出副本。\n5. 原文件保存前保留恢复备份并校验；有恢复提醒时先处理，不要手动删除应用数据。\n\nWindows 10/11 x64。使用 Windows 系统解码器试听，个别格式或缺少媒体组件时会提示不支持。Windows 版仍获取来源已有中文译文，暂不提供 Android ML Kit 本机机器翻译。\n本包未进行代码签名，Windows 可能显示未知发布者提示。无安装器、无管理员权限要求。\n应用缓存与任务存于用户的应用支持目录。使用时不会上传音频；在线查询会发送歌名、歌手、专辑和时长。\n\n源码提交：{commit}\n仓库：https://github.com/WangKeqing1/audio-fixer\n'''
+    readme = f'''Audio Fixer {version} - Windows x64 便携版\n\n1. 将整个 ZIP 解压到一个文件夹，再双击 audio_fixer.exe。\n2. 必须保留旁边的 DLL 和 data 文件夹，不能只移动 exe。\n3. 右上角文件夹按钮添加音乐目录，可扫描子文件夹。\n4. 选择音乐，查看已预选的可靠补全建议，再一次应用；已有资料和有分歧的结果默认保留。也可多选后统一预览并保存。\n5. 原文件保存前保留恢复备份并校验；有恢复提醒时先处理，不要手动删除应用数据。\n\nWindows 10/11 x64。使用 Windows 系统解码器试听，个别格式或缺少媒体组件时会提示不支持。Windows 版仍获取来源已有中文译文，暂不提供 Android ML Kit 本机机器翻译。\n本包未进行代码签名，Windows 可能显示未知发布者提示。无安装器、无管理员权限要求。\n应用缓存与任务存于用户的应用支持目录。使用时不会上传音频；在线查询会发送歌名、歌手、专辑和时长。\n\n源码提交：{commit}\n仓库：https://github.com/WangKeqing1/audio-fixer\n'''
     (RELEASE / '使用说明.txt').write_text(readme, encoding='utf-8-sig')
     files = sorted(p for p in RELEASE.rglob('*') if p.is_file() and p.suffix.lower() not in {'.pdb', '.exp', '.lib'} and p.name != 'build-manifest.json')
     manifest = {

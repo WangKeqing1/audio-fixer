@@ -64,6 +64,27 @@ class _OfflineFixtureSource implements MetadataSource {
   }
 }
 
+Future<void> _searchLibrary(WidgetTester tester, String query) async {
+  final list = find.byKey(const PageStorageKey('library-scroll-view'));
+  final scroll = find
+      .descendant(of: list, matching: find.byType(Scrollable))
+      .first;
+  final search = find.descendant(of: list, matching: find.byType(TextField));
+  // A native IME can retain a previous editing session while the list has
+  // scrolled. Return to the real visible search control before each edit.
+  await tester.scrollUntilVisible(search, -220, scrollable: scroll);
+  await tester.pumpAndSettle();
+  expect(search.hitTestable(), findsOneWidget);
+  await tester.tap(search.hitTestable());
+  await tester.pumpAndSettle();
+  await tester.enterText(search, query);
+  await tester.pumpAndSettle();
+  expect(tester.widget<TextField>(search).controller!.text, query);
+  await tester.testTextInput.receiveAction(TextInputAction.search);
+  await tester.pumpAndSettle();
+  expect(tester.widget<TextField>(search).controller!.text, query);
+}
+
 Future<void> _verifyInitialCover(
   WidgetTester tester,
   LibraryController controller,
@@ -77,10 +98,7 @@ Future<void> _verifyInitialCover(
   expect(track.detailsLoaded, isFalse);
   expect(track.artworkPath, isNull);
   final list = find.byKey(const PageStorageKey('library-scroll-view'));
-  final search = find.byType(TextField).first;
-  await tester.enterText(search, _fileName);
-  FocusManager.instance.primaryFocus?.unfocus();
-  await tester.pumpAndSettle();
+  await _searchLibrary(tester, _fileName);
   final cover = find.byKey(ValueKey('library-artwork-${track.id}'));
   await tester.scrollUntilVisible(
     cover,
@@ -123,9 +141,7 @@ Future<void> _verifyInitialCover(
     (item) => item.fileName == 'native_duration_60000.wav',
   );
   expect(await library.readArtworkThumbnail(noCover), isNull);
-  await tester.enterText(search, noCover.fileName);
-  FocusManager.instance.primaryFocus?.unfocus();
-  await tester.pumpAndSettle();
+  await _searchLibrary(tester, noCover.fileName);
   final emptyCover = find.byKey(ValueKey('library-artwork-${noCover.id}'));
   await tester.scrollUntilVisible(
     emptyCover,
@@ -140,9 +156,7 @@ Future<void> _verifyInitialCover(
     findsNothing,
   );
   expect(controller.trackById(noCover.id)!.detailsLoaded, isFalse);
-  await tester.enterText(search, '');
-  FocusManager.instance.primaryFocus?.unfocus();
-  await tester.pumpAndSettle();
+  await _searchLibrary(tester, '');
 }
 
 Future<void> _waitFor(
@@ -878,8 +892,7 @@ void main() {
       expect(track.detailsLoaded, isFalse);
 
       await phase('read_details');
-      await tester.enterText(find.byType(TextField).first, _fileName);
-      await tester.pumpAndSettle();
+      await _searchLibrary(tester, _fileName);
       final title = find.text(track.displayTitle);
       await tester.scrollUntilVisible(
         title,
@@ -981,9 +994,7 @@ void main() {
       expect(controller.trackById(track.id)!.isInstrumental, isTrue);
       await controller.refreshLibrary();
       expect(controller.trackById(track.id)!.isInstrumental, isTrue);
-      await tester.enterText(find.byType(TextField).first, _fileName);
-      FocusManager.instance.primaryFocus?.unfocus();
-      await tester.pumpAndSettle();
+      await _searchLibrary(tester, _fileName);
       final restoredTitle = find.text(track.displayTitle);
       await tester.scrollUntilVisible(
         restoredTitle,
