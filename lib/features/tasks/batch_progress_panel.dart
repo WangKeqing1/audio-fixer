@@ -4,8 +4,15 @@ import '../../core/models/batch_operation.dart';
 import '../library/library_controller.dart';
 
 class BatchProgressPanel extends StatelessWidget {
-  const BatchProgressPanel({super.key, required this.controller});
+  const BatchProgressPanel({
+    super.key,
+    required this.controller,
+    this.showStopAction = true,
+    this.showRetryAction = true,
+  });
   final LibraryController controller;
+  final bool showStopAction;
+  final bool showRetryAction;
 
   @override
   Widget build(BuildContext context) {
@@ -34,13 +41,15 @@ class BatchProgressPanel extends StatelessWidget {
               const SizedBox(height: 8),
             ],
             Semantics(liveRegion: true, child: Text(batch.summary)),
-            if (batch.isRunning)
+            if (batch.isRunning && showStopAction)
               TextButton.icon(
                 onPressed: batch.stopRequested ? null : controller.stopBatch,
                 icon: const Icon(Icons.stop_circle_outlined),
                 label: Text(batch.stopRequested ? '等待当前歌曲完成…' : '停止后续歌曲'),
               ),
-            if (!batch.isRunning && controller.hasRetryableBatchFailures)
+            if (!batch.isRunning &&
+                showRetryAction &&
+                controller.hasRetryableBatchFailures)
               OutlinedButton.icon(
                 key: const ValueKey('retry-batch-failures'),
                 onPressed: controller.canOperate

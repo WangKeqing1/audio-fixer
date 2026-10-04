@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/completion_task.dart';
 import '../tasks/bulk_action_panel.dart';
+import '../tasks/recommended_batch_review_page.dart';
 import 'library_controller.dart';
 
 /// A sibling of the song scroll view, so actions never move with the list.
@@ -32,6 +33,21 @@ class LibrarySelectionToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final reviewable = controller.tasks
+        .where(
+          (task) =>
+              selectedIds.contains(task.trackId) &&
+              controller.isTaskCurrent(task) &&
+              task.suggestions.isNotEmpty,
+        )
+        .length;
+    final ready = controller.tasks
+        .where(
+          (task) =>
+              selectedIds.contains(task.trackId) &&
+              controller.reviewSuggestionsFor(task).isNotEmpty,
+        )
+        .length;
     final approved = controller.tasks
         .where(
           (task) =>
@@ -40,7 +56,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
               controller.approvedSuggestionsFor(task).isNotEmpty,
         )
         .length;
-    final canWrite = controller.canOperate && approved > 0;
+    final canWrite = controller.canOperate && reviewable > 0;
     return Material(
       key: toolbarKey,
       color: colors.surfaceContainer,
@@ -121,11 +137,13 @@ class LibrarySelectionToolbar extends StatelessWidget {
                     child: FilledButton(
                       key: const ValueKey('bulk-save-original'),
                       onPressed: canWrite
-                          ? () => controller.saveSelectedCandidates(
-                              trackIds: selectedIds,
+                          ? () => reviewBatchChanges(
+                              context,
+                              controller,
+                              Set<String>.of(selectedIds),
                             )
                           : null,
-                      child: const Text('保存原文件', textAlign: TextAlign.center),
+                      child: const Text('查看并应用', textAlign: TextAlign.center),
                     ),
                   ),
                   PopupMenuButton<String>(
@@ -134,9 +152,11 @@ class LibrarySelectionToolbar extends StatelessWidget {
                     enabled: controller.canOperate,
                     onSelected: (action) {
                       if (action == 'export') {
-                        controller.saveSelectedCandidates(
+                        reviewBatchChanges(
+                          context,
+                          controller,
+                          Set<String>.of(selectedIds),
                           exportCopies: true,
-                          trackIds: selectedIds,
                         );
                       } else if (action == 'review') {
                         onOpenTasks?.call();
@@ -154,7 +174,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
                           key: const ValueKey('open-tasks'),
                           value: 'review',
                           enabled: onOpenTasks != null,
-                          child: const Text('前往任务确认资料'),
+                          child: const Text('查看处理结果'),
                         ),
                     ],
                   ),
@@ -163,7 +183,7 @@ class LibrarySelectionToolbar extends StatelessWidget {
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  '已确认 $approved 首 · 仅保存已确认资料',
+                  '可应用 $ready 首 · 已确认 $approved 首',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),

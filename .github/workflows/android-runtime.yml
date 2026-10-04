@@ -2,7 +2,7 @@ name: Audio Fixer Android native runtime
 
 on:
   push:
-    branches: [main, dev/audio-fixer-quality]
+    branches: [main, dev/audio-fixer-quality, feat/library-cover-instrumental]
   pull_request:
   workflow_dispatch:
 

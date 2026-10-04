@@ -34,6 +34,7 @@ class CoverArtArchiveSource implements MetadataSource, SourceConnectionTester {
     if (cover == null) return const [];
     return [
       FieldSuggestion(
+        provenance: SuggestionProvenance.verifiedRecording,
         field: AudioField.artwork,
         value: cover.imageUrl,
         source: name,

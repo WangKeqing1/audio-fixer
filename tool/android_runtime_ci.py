@@ -24,7 +24,7 @@ from android_runtime_fixtures import generate_library_fixtures
 from validate_audio import compare, inspect
 
 PACKAGE = "com.audiofixer.audio_fixer.qa.v030"
-APP_LABEL = "Audio Fixer QA 0.3"
+APP_LABEL = "Audio Fixer QA 0.6"
 SOURCE_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_fixture.mp3"
 UNAPPROVED_DEVICE = "/sdcard/Music/AudioFixerSynthetic/native_unapproved.mp3"
 EXPORT_DEVICE = "/sdcard/Download/native_fixture-fixed.mp3"
@@ -507,7 +507,7 @@ class AndroidRuntime:
         assert result["source_uri"] != result["export_uri"]
         assert result["original_save_status"] == "savedOriginal"
         assert result["batch_saved_original"] == 1
-        assert result["batch_skipped_unapproved"] == 1
+        assert result["batch_excluded_unapproved"] is True
         fixtures = json.loads((self.output / "library-fixtures/manifest.json").read_text())
         assert fixtures["synthetic_only"] is True
         preview = validate_preview_evidence(result, fixtures)

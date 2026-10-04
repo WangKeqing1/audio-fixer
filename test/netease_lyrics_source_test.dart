@@ -1,5 +1,6 @@
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
@@ -144,6 +145,7 @@ void main() {
       final result = await NeteaseLyricsSource(client)
           .lookup(track(), {AudioField.lyrics});
       expect(result, hasLength(1));
+      expect(result.single.provenance, SuggestionProvenance.verifiedRecording);
       expect(result.single.sourceUrl, 'https://music.163.com/song?id=123');
       expect(result.single.chineseTranslation, '[00:01.000]原创测试译文');
       expect(client.calls, hasLength(2));

@@ -312,6 +312,11 @@ class LrclibSource implements MetadataSource, SourceConnectionTester {
         ? '专辑匹配'
         : '来自其他或未知专辑';
     return FieldSuggestion(
+      provenance:
+          duration.isFinite ||
+              (hasText(search.album) && _albumOrder(candidate, search) == 0)
+          ? SuggestionProvenance.verifiedRecording
+          : SuggestionProvenance.unverified,
       field: AudioField.lyrics,
       value: candidate.lyrics,
       source: name,

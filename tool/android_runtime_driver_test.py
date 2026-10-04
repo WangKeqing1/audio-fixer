@@ -179,7 +179,7 @@ class DialogDriverTest(unittest.TestCase):
 
     def original_consent(self):
         package = 'com.android.providers.media.module'
-        title = node('android:id/message', 'Allow Audio Fixer QA 0.3 to modify this audio file?',
+        title = node('android:id/message', 'Allow Audio Fixer QA 0.6 to modify this audio file?',
                      package=package)
         allow = node('android:id/button1', 'Allow', 'android.widget.Button', package=package)
         deny = node('android:id/button2', "Don't allow", 'android.widget.Button', package=package)
@@ -203,7 +203,7 @@ class DialogDriverTest(unittest.TestCase):
     def test_original_wrong_app_or_delete_request_is_rejected(self):
         title, allow, deny = self.original_consent()
         for text in ['Allow Another App to modify this audio file?',
-                     'Allow Audio Fixer QA 0.3 to delete this audio file?']:
+                     'Allow Audio Fixer QA 0.6 to delete this audio file?']:
             title.set('text', text)
             self.assertFalse(self.runtime.act('original_confirm', [title, allow, deny]))
         self.runtime.tap.assert_not_called()
@@ -370,8 +370,8 @@ class IntegrationSourceContractTest(unittest.TestCase):
                 self.assertNotIn('find.byTooltip("Back")', source)
         main = (root / 'integration_test/native_flow_test.dart').read_text()
         guarded_navigation = """expect(find.byType(TrackDetailPage), findsOneWidget);
-      expect(find.byType(BackButton), findsOneWidget);
-      await tester.tap(find.byType(BackButton));
+      expect(find.byKey(const ValueKey('close-selected-song')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('close-selected-song')));
       await tester.pumpAndSettle();
       expect(find.byType(TrackDetailPage), findsNothing);"""
         self.assertIn(guarded_navigation, main)

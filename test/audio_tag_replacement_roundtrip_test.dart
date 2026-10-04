@@ -136,7 +136,9 @@ void main() {
 
   group('explicit metadata repair roundtrips', () {
     setUpAll(() async {
-      workspace = await Directory('build/test_samples').createTemp('repair_');
+      final parent = await Directory('build/test_samples')
+          .create(recursive: true);
+      workspace = await parent.createTemp('repair_');
       fixtures = Directory(p.join(workspace.path, 'fixtures'));
       final generated = await Process.run('python3', [
         'tool/generate_audio_fixtures.py',

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
@@ -98,6 +101,16 @@ void main() {
     tester,
   ) async {
     phoneSize(tester);
+    final directory = Directory.systemTemp.createTempSync(
+      'library-complete-cover-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final cover = File('${directory.path}/cover.png')
+      ..writeAsBytesSync(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=',
+        ),
+      );
     final controller = testController(
       store: MemoryStore(
         LibrarySnapshot(
@@ -114,7 +127,7 @@ void main() {
               artist: '歌手',
               album: '专辑',
               lyrics: '歌词',
-              artworkPath: '/fixture/cover.jpg',
+              artworkPath: cover.path,
             ),
           ],
         ),
@@ -127,7 +140,8 @@ void main() {
     expect(find.text('待补全 1'), findsOneWidget);
     expect(find.text('读取异常 1'), findsOneWidget);
     expect(find.text('已检查 3 首'), findsOneWidget);
-    expect(find.text('资料完整 1 首'), findsOneWidget);
+    // Cached paths are not counted as a usable cover until actual decoding.
+    expect(find.text('资料完整 0 首'), findsOneWidget);
 
     await tester.tap(find.text('待补全 1'));
     await tester.pumpAndSettle();

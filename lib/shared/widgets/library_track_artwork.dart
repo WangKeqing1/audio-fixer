@@ -12,11 +12,15 @@ class LibraryTrackArtwork extends StatefulWidget {
     required this.track,
     this.cache,
     this.size = 52,
+    this.onError,
+    this.onLoaded,
   });
 
   final AudioTrack track;
   final DeviceArtworkCache? cache;
   final double size;
+  final ValueChanged<String>? onError;
+  final VoidCallback? onLoaded;
 
   @override
   State<LibraryTrackArtwork> createState() => _LibraryTrackArtworkState();
@@ -25,6 +29,7 @@ class LibraryTrackArtwork extends StatefulWidget {
 class _LibraryTrackArtworkState extends State<LibraryTrackArtwork> {
   ArtworkThumbnailRequest? _request;
   Uint8List? _bytes;
+  bool _pathFailed = false;
 
   @override
   void initState() {
@@ -37,7 +42,9 @@ class _LibraryTrackArtworkState extends State<LibraryTrackArtwork> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.cache != widget.cache ||
         oldWidget.track.artworkPath != widget.track.artworkPath ||
+        oldWidget.track.artworkError != widget.track.artworkError ||
         _request?.key != widget.cache?.keyFor(widget.track)) {
+      _pathFailed = false;
       _load();
     }
   }
@@ -49,7 +56,9 @@ class _LibraryTrackArtworkState extends State<LibraryTrackArtwork> {
     final cache = widget.cache;
     if (cache == null ||
         !widget.track.isDeviceTrack ||
-        hasText(widget.track.artworkPath)) {
+        (hasText(widget.track.artworkPath) &&
+            widget.track.artworkError == null &&
+            !_pathFailed)) {
       return;
     }
     final request = cache.request(widget.track);
@@ -69,8 +78,30 @@ class _LibraryTrackArtworkState extends State<LibraryTrackArtwork> {
 
   @override
   Widget build(BuildContext context) => TrackArtwork(
-    path: widget.track.artworkPath,
+    path: _pathFailed || widget.track.artworkError != null
+        ? null
+        : widget.track.artworkPath,
+    placeholderLabel: _pathFailed || widget.track.artworkError != null
+        ? '封面无法显示'
+        : '暂无封面',
+    onLoaded: () {
+      if (!_pathFailed &&
+          widget.track.artworkError == null &&
+          hasText(widget.track.artworkPath)) {
+        widget.onLoaded?.call();
+      }
+    },
+    onError: (message) {
+      widget.onError?.call(message);
+      if (!_pathFailed && hasText(widget.track.artworkPath)) {
+        setState(() {
+          _pathFailed = true;
+          _load();
+        });
+      }
+    },
     bytes: _bytes,
     size: widget.size,
+    validationPending: !widget.track.hasArtwork,
   );
 }

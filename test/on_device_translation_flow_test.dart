@@ -7,6 +7,7 @@ import 'package:audio_fixer/core/services/lyrics_translation_service.dart';
 import 'package:audio_fixer/core/services/metadata_source.dart';
 import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:audio_fixer/features/library/library_controller.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fakes.dart';
@@ -179,6 +180,15 @@ void main() {
       await tester.tap(find.text('补全任务'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('确认 1 项候选'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('预览与来源').first,
+        180,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.text('预览与来源').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('预览与来源').first);
       await tester.pumpAndSettle();
       final action = find.text('使用 Google Translate 本机翻译');
       await tester.ensureVisible(action);

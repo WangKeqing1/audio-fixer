@@ -156,8 +156,8 @@ Future<void> _selectCandidate(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-OutlinedButton _saveButton(WidgetTester tester) =>
-    tester.widget<OutlinedButton>(find.byKey(const ValueKey('export-copy')));
+FilledButton _saveButton(WidgetTester tester) =>
+    tester.widget<FilledButton>(find.byKey(const ValueKey('save-original')));
 
 void main() {
   testWidgets(
@@ -167,13 +167,13 @@ void main() {
       await _openTasks(tester, _controller(exporter: exporter));
       await _openReview(tester, selectCandidates: false);
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
-      expect(find.text('请至少选择一项要写入的资料'), findsOneWidget);
+      expect(find.text('暂时保留原样'), findsOneWidget);
       expect(_saveButton(tester).onPressed, isNull);
       expect(exporter.calls, 0);
       await tester.tap(find.byType(Checkbox));
       await tester.pumpAndSettle();
       expect(_saveButton(tester).onPressed, isNotNull);
-      expect(find.text('请至少选择一项要写入的资料'), findsNothing);
+      expect(find.text('暂时保留原样'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -185,14 +185,14 @@ void main() {
       final controller = _controller(exporter: exporter);
       await _openTasks(tester, controller);
       await _openReview(tester);
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 6));
       await tester.pumpAndSettle();
       expect(find.text('已取消保存，原音频未修改。'), findsOneWidget);
       expect(controller.tasks.single.status, TaskStatus.needsReview);
       exporter.error = '示例校验失败。请检查保存位置后重试。';
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       await tester.pump(const Duration(seconds: 6));
       await tester.pumpAndSettle();
@@ -200,7 +200,7 @@ void main() {
       expect(_saveButton(tester).onPressed, isNotNull);
       exporter.error = null;
       exporter.result = 'content://offline/copy';
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       expect(exporter.calls, 3);
       expect(find.byType(CandidateReviewPage), findsNothing);
@@ -223,8 +223,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('content://offline/saved-copy'), findsOneWidget);
       await _openReview(tester, label: '查看候选资料');
-      expect(find.text('已导出过副本'), findsOneWidget);
-      expect(find.text('再次导出副本（1 项）'), findsOneWidget);
+      expect(find.textContaining('已导出过副本。'), findsOneWidget);
+      expect(find.text('再次导出修复副本（1 项）'), findsOneWidget);
+      await tester.ensureVisible(find.text('查询详情'));
+      await tester.tap(find.text('查询详情'));
+      await tester.pumpAndSettle();
       expect(find.text('content://offline/saved-copy'), findsOneWidget);
       expect(_saveButton(tester).onPressed, isNotNull);
       expect(tester.takeException(), isNull);
@@ -258,12 +261,12 @@ void main() {
     );
     await controller.initialize();
     await tester.pumpAndSettle();
-    expect(find.textContaining('歌曲或候选已更新'), findsOneWidget);
+    expect(find.textContaining('歌曲或查询结果已更新'), findsOneWidget);
     expect(_saveButton(tester).onPressed, isNull);
     await tester.tap(find.text('查看最新结果'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('更新后的示例专辑'));
-    expect(find.text('更新后的示例专辑'), findsOneWidget);
+    await tester.ensureVisible(find.textContaining('更新后的示例专辑'));
+    expect(find.textContaining('更新后的示例专辑'), findsOneWidget);
     expect(_saveButton(tester).onPressed, isNull);
     await _selectCandidate(tester);
     expect(_saveButton(tester).onPressed, isNotNull);
@@ -281,13 +284,13 @@ void main() {
       );
       await _openTasks(tester, controller);
       await _openReview(tester, label: '查看历史候选');
-      expect(find.textContaining('原歌曲已发生变化'), findsOneWidget);
+      expect(find.textContaining('歌曲或查询结果已更新'), findsOneWidget);
       expect(_saveButton(tester).onPressed, isNull);
       await tester.tap(find.text('重新查询'));
       await tester.pumpAndSettle();
       expect(source.calls, 1);
       expect(controller.tasks.single.status, TaskStatus.needsReview);
-      expect(find.textContaining('原歌曲已发生变化'), findsNothing);
+      expect(find.textContaining('歌曲或查询结果已更新'), findsNothing);
       expect(_saveButton(tester).onPressed, isNull);
       await _selectCandidate(tester);
       expect(_saveButton(tester).onPressed, isNotNull);
@@ -306,7 +309,7 @@ void main() {
       expect(find.text('重新查询'), findsNothing);
       expect(find.text('1 首歌曲待确认'), findsNothing);
       await _openReview(tester, label: '查看历史候选');
-      expect(find.textContaining('此歌曲当前不可访问'), findsOneWidget);
+      expect(find.textContaining('歌曲已移除或暂不可访问'), findsOneWidget);
       expect(_saveButton(tester).onPressed, isNull);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
@@ -329,7 +332,7 @@ void main() {
     await _openTasks(tester, _controller(track: track, exporter: exporter));
     expect(find.textContaining('OGG 可预览并确认'), findsOneWidget);
     await _openReview(tester);
-    expect(find.textContaining('OGG 格式当前仅支持预览和确认'), findsOneWidget);
+    expect(find.textContaining('当前格式或设备仅支持预览'), findsOneWidget);
     expect(_saveButton(tester).onPressed, isNull);
     expect(exporter.calls, 0);
     expect(tester.takeException(), isNull);
@@ -349,7 +352,7 @@ void main() {
       );
       await _openTasks(tester, _controller(track: track));
       await _openReview(tester);
-      expect(find.textContaining('此项已有资料，不会覆盖'), findsOneWidget);
+      expect(find.textContaining('专辑现为：已有专辑'), findsOneWidget);
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).onChanged, isNull);
       expect(_saveButton(tester).onPressed, isNull);
@@ -364,14 +367,14 @@ void main() {
       final controller = _controller(exporter: exporter);
       await _openTasks(tester, controller);
       await _openReview(tester);
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pump();
       expect(exporter.calls, 1);
       expect(_saveButton(tester).onPressed, isNull);
       await tester.tap(find.byType(BackButton));
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(CandidateReviewPage), findsOneWidget);
-      expect(find.text('保存期间请留在此页，可在系统保存弹窗中取消。'), findsOneWidget);
+      expect(find.text('正在校验并保存，请稍候…'), findsOneWidget);
       exporter.pending!.complete(null);
       await tester.pumpAndSettle();
       expect(_saveButton(tester).onPressed, isNotNull);
@@ -388,7 +391,7 @@ void main() {
     final exporter = _Exporter()..pending = Completer<String?>();
     await _openTasks(tester, _controller(exporter: exporter));
     await _openReview(tester);
-    await tester.tap(find.text('导出副本（1 项）'));
+    await tester.tap(find.text('导出修复副本（1 项）'));
     await tester.pump();
     Navigator.of(tester.element(find.byType(CandidateReviewPage))).push(
       MaterialPageRoute<void>(
@@ -404,7 +407,7 @@ void main() {
     expect(find.text('稍后打开的新页面'), findsOneWidget);
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();
-    expect(find.text('已导出过副本'), findsOneWidget);
+    expect(find.textContaining('已导出过副本。'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -483,12 +486,12 @@ void main() {
     tester.view.physicalSize = const Size(320, 740);
     await tester.pumpAndSettle();
     await _openReview(tester);
-    await tester.tap(find.text('导出副本（1 项）'));
+    await tester.tap(find.text('导出修复副本（1 项）'));
     await tester.pumpAndSettle();
     expect(find.text('处理结果'), findsOneWidget);
     expect(find.text(exporter.error!), findsWidgets);
     expect(_saveButton(tester).onPressed, isNotNull);
-    expect(find.text('导出副本（1 项）').hitTestable(), findsOneWidget);
+    expect(find.text('导出修复副本（1 项）').hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -504,8 +507,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('没有可确认的候选'));
-    expect(find.text('没有可确认的候选'), findsOneWidget);
+    await tester.ensureVisible(find.text('还没有可用结果'));
+    expect(find.text('还没有可用结果'), findsOneWidget);
     expect(_saveButton(tester).onPressed, isNull);
     expect(tester.takeException(), isNull);
   });

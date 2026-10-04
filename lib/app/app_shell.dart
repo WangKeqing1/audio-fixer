@@ -85,7 +85,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final wide = MediaQuery.sizeOf(context).width >= 720;
+    final wide = MediaQuery.sizeOf(context).width >= 1000;
     final content = controller.isLoading
         ? const Center(child: CircularProgressIndicator())
         : controller.loadError != null
@@ -144,44 +144,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                     ? controller.refreshLibrary
                     : null,
                 icon: const Icon(Icons.refresh),
-              ),
-            if (_selected == 0)
-              IconButton(
-                tooltip: '补全全部缺失信息',
-                onPressed:
-                    controller.canOperate &&
-                        controller.pendingCompletionCount > 0 &&
-                        controller.settings.enabledFields.isNotEmpty
-                    ? () async {
-                        final confirmed = await showDialog<bool>(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            title: Text(
-                              '查询 ${controller.pendingCompletionCount} 首歌曲？',
-                            ),
-                            content: SingleChildScrollView(
-                              child: Text(
-                                '将先检查尚未读取的文件标签，再查询缺失的${controller.settings.enabledFields.map((field) => field.label).join('、')}。\n\n只发送歌名、歌手、专辑和时长，不上传音频。结果需要逐首确认，查询不会修改文件。大音乐库可能耗时较长，可随时停止后续查询。',
-                              ),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text('取消'),
-                              ),
-                              FilledButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('开始查询'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (confirmed != true || !mounted) return;
-                        _selectTab(1);
-                        await controller.complete();
-                      }
-                    : null,
-                icon: const Icon(Icons.auto_fix_high_outlined),
               ),
             const SizedBox(width: 8),
           ],
@@ -245,8 +207,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
               Expanded(
                 child: Row(
                   children: [
-                    if (wide) ...[
-                      NavigationRail(
+                    Offstage(
+                      offstage: !wide,
+                      child: NavigationRail(
                         selectedIndex: _selected,
                         labelType: NavigationRailLabelType.all,
                         onDestinationSelected: _selectTab,
@@ -258,13 +221,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                             ),
                         ],
                       ),
-                      const VerticalDivider(width: 1),
-                    ],
+                    ),
+                    SizedBox(
+                      width: wide ? 1 : 0,
+                      child: const VerticalDivider(width: 1),
+                    ),
                     Expanded(
                       child: Align(
                         alignment: Alignment.topCenter,
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 1000),
+                          constraints: BoxConstraints(
+                            maxWidth: _selected == 0 ? double.infinity : 1200,
+                          ),
                           child: content,
                         ),
                       ),

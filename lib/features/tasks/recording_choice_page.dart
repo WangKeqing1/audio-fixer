@@ -299,7 +299,7 @@ class _RecordingChoicePageState extends State<RecordingChoicePage> {
                     message:
                         '${track == null || !hasText(track.artist) ? '本地歌手缺失，' : ''}'
                         '仅凭歌名和相近时长无法确认录音。同名歌曲、不同专辑或现场版本可能不同；请核对歌手、专辑与时长后选择。'
-                        '\n选择版本仅用于继续检索，资料仍需逐项确认后保存。',
+                        '\n选择版本仅用于继续检索，查看补全建议后再应用。',
                   ),
                   if (reports.isNotEmpty) ...[
                     const SizedBox(height: 16),

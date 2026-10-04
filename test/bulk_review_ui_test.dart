@@ -124,9 +124,9 @@ void main() {
       await _tap(tester, original);
       expect(writer.originals, 1);
       expect(writer.copies, 0);
-      expect(find.text('确认候选资料'), findsOneWidget);
-      expect(find.text('保存到原文件（1 项）'), findsOneWidget);
-      expect(find.text('导出副本（1 项）'), findsOneWidget);
+      expect(find.text('修复预览'), findsOneWidget);
+      expect(find.text('应用建议（1 项）'), findsOneWidget);
+      expect(find.text('导出副本'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -141,7 +141,7 @@ void main() {
       await _tap(tester, find.text('确认 1 项候选').first);
       await _tap(tester, find.byType(Checkbox));
       await _tap(tester, find.byKey(const ValueKey('approve-for-batch')));
-      expect(find.text('确认候选资料'), findsNothing);
+      expect(find.text('修复预览'), findsNothing);
       expect(
         controller.approvedSuggestionsFor(controller.taskForTrack('one')!),
         hasLength(1),
@@ -150,9 +150,14 @@ void main() {
         controller.approvedSuggestionsFor(controller.taskForTrack('two')!),
         isEmpty,
       );
+      await tester.drag(
+        find.byKey(const PageStorageKey('tasks')),
+        const Offset(0, 1200),
+      );
+      await tester.pumpAndSettle();
       await _tap(tester, find.byKey(const ValueKey('select-all-task-tracks')));
       expect(find.text('已选 2 首'), findsOneWidget);
-      expect(find.text('已确认 1 首 · 仅保存已确认资料'), findsOneWidget);
+      expect(find.text('可应用 1 首 · 已确认 1 首'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('fixed-task-selection-toolbar')),
         findsOneWidget,
@@ -188,6 +193,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+      await _tap(tester, find.text('查询详情'));
       await tester.scrollUntilVisible(
         find.byKey(const ValueKey('revoke-approval')),
         -200,

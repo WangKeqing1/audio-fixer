@@ -236,7 +236,7 @@ void main() {
         ),
         isTrue,
       );
-      await _show(tester, find.byType(Checkbox));
+      await _show(tester, find.byType(Checkbox).first);
       expect(
         tester
             .widgetList<Checkbox>(find.byType(Checkbox))

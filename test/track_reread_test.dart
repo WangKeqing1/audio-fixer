@@ -66,6 +66,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(library.detailsCount, 0);
       expect(controller.trackById(cached.id)!.readError, isNull);
+      await tester.ensureVisible(find.text('歌曲与文件详情'));
+      await tester.tap(find.text('歌曲与文件详情'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('重新读取'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('重新读取'));

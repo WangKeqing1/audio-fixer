@@ -428,6 +428,7 @@ class MusicBrainzMetadataSource
       if (!fields.contains(field) || !hasText(value)) return;
       suggestions.add(
         FieldSuggestion(
+          provenance: SuggestionProvenance.verifiedRecording,
           field: field,
           value: value!.trim(),
           source: name,

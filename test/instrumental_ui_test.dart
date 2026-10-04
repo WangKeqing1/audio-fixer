@@ -100,6 +100,14 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('预览与来源').first,
+        180,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.text('预览与来源').first);
+      await tester.tap(find.text('预览与来源').first);
+      await tester.pumpAndSettle();
       final action = find.text('使用 Google Translate 本机翻译');
       await tester.ensureVisible(action);
       await tester.tap(action);
@@ -127,7 +135,21 @@ void main() {
     _phone(tester);
     final track = fixtureTrack();
     final controller = testController(
-      store: MemoryStore(LibrarySnapshot(tracks: [track])),
+      store: MemoryStore(
+        LibrarySnapshot(
+          tracks: [track],
+          tasks: [
+            CompletionTask(
+              trackId: track.id,
+              trackTitle: track.displayTitle,
+              createdAt: DateTime(2026),
+              status: TaskStatus.noMatch,
+              message: '没有找到可用歌词',
+              queriedFields: {AudioField.lyrics},
+            ),
+          ],
+        ),
+      ),
     );
     addTearDown(controller.dispose);
     await controller.initialize();
@@ -150,7 +172,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.tracks.single.isInstrumental, isFalse);
     expect(controller.tracks.single.missingFields, contains(AudioField.lyrics));
-    expect(find.text('设为纯音乐'), findsOneWidget);
+    if (find
+        .byKey(const ValueKey('mark-instrumental-option'))
+        .evaluate()
+        .isEmpty) {
+      await tester.ensureVisible(find.text('其他修复方式'));
+      await tester.tap(find.text('其他修复方式'));
+      await tester.pumpAndSettle();
+    }
+    expect(
+      find.byKey(const ValueKey('mark-instrumental-option')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

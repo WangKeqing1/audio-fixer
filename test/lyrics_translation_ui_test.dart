@@ -61,13 +61,21 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).last);
       await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('预览与来源').first,
+        180,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.text('预览与来源').first);
+      await tester.tap(find.text('预览与来源').first);
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.byType(Switch));
       await tester.pumpAndSettle();
       expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
       await tester.tap(find.byType(Switch));
       await tester.pumpAndSettle();
       expect(find.text('不加翻译，仅保存原歌词'), findsOneWidget);
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       expect(exporter.selected.single.value, '[00:01.000]Synthetic original');
       expect(exporter.selected.single.includeChineseTranslation, isFalse);

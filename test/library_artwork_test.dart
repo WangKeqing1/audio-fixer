@@ -48,6 +48,11 @@ void main() {
   testWidgets(
     'initial library shows embedded art and missing-art placeholder without tag reads',
     (tester) async {
+      // This case checks two mounted cover rows, independent of header height.
+      tester.view.physicalSize = const Size(1000, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final present = fixtureDeviceTrack(id: '1');
       final absent = fixtureDeviceTrack(id: '2');
       final device = ArtworkDeviceLibrary()

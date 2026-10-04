@@ -63,7 +63,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('确认 2 项候选'));
       await tester.pumpAndSettle();
-      expect(find.text('确认候选资料'), findsOneWidget);
+      expect(find.text('修复预览'), findsOneWidget);
       expect(
         tester
             .widgetList<Checkbox>(find.byType(Checkbox))
@@ -80,16 +80,16 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).last);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       expect(exporter.selected.single.field, AudioField.lyrics);
-      expect(find.text('确认候选资料'), findsOneWidget);
+      expect(find.text('修复预览'), findsOneWidget);
       expect(controller.tasks.single.status, TaskStatus.needsReview);
       exporter.result = 'content://test/new-copy';
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出修复副本（1 项）'));
       await tester.pumpAndSettle();
       expect(exporter.calls, 2);
-      expect(find.text('确认候选资料'), findsNothing);
+      expect(find.text('修复预览'), findsNothing);
       expect(controller.tasks.single.status, TaskStatus.exported);
       expect(controller.tracks.single.lyrics, isNull);
       expect(tester.takeException(), isNull);
@@ -101,10 +101,11 @@ void main() {
   ) async {
     final controller = testController(
       store: MemoryStore(LibrarySnapshot(tracks: [fixtureTrack()])),
+      completion: CompletionService(sources: [NoResultMetadataSource()]),
     );
     await tester.pumpWidget(AudioFixerApp(controller: controller));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('补全全部缺失信息'));
+    await tester.tap(find.byKey(const ValueKey('query-visible-tracks')));
     await tester.pumpAndSettle();
     expect(find.text('查询 1 首歌曲？'), findsOneWidget);
     expect(controller.tasks, isEmpty);

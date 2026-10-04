@@ -350,7 +350,7 @@ Future<Map<String, Object?>> _verifyAudioPreview(
     'detail navigation',
   );
   expect((await _nativePreviewState())['status'], 'stopped');
-  await tester.tap(find.byType(BackButton));
+  await tester.tap(find.byKey(const ValueKey('close-selected-song')));
   await tester.pumpAndSettle();
   await playRow(controller.trackById(first.id)!);
 
@@ -762,6 +762,24 @@ Future<LibraryController> _verifyLibraryFilters(
   return controller;
 }
 
+Future<void> _tapMissingOnly(WidgetTester tester) async {
+  final action = find.byKey(const ValueKey('complete-missing-only'));
+  final scroll = find
+      .descendant(
+        of: find.byType(TrackDetailPage),
+        matching: find.byType(Scrollable),
+      )
+      .first;
+  if (action.evaluate().isEmpty) {
+    final disclosure = find.text('其他修复方式');
+    await tester.scrollUntilVisible(disclosure, 180, scrollable: scroll);
+    await tester.tap(disclosure);
+    await tester.pumpAndSettle();
+  }
+  await tester.scrollUntilVisible(action, 180, scrollable: scroll);
+  await tester.tap(action.hitTestable());
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -891,7 +909,7 @@ void main() {
       // Missing search results do not imply instrumental music. The user must
       // explicitly mark it, and only the app catalog should change.
       source.returnNoMatch = true;
-      await tester.tap(find.text('补全缺失信息'));
+      await _tapMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
@@ -1006,7 +1024,7 @@ void main() {
       await checkpoint('instrumental_unmarked_ready');
       source.returnNoMatch = false;
 
-      await tester.tap(find.text('补全缺失信息'));
+      await _tapMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
@@ -1034,12 +1052,12 @@ void main() {
       );
       await tester.tap(find.byType(Checkbox).first);
       await tester.pumpAndSettle();
-      expect(find.text('保存到原文件（1 项）'), findsOneWidget);
-      expect(find.text('导出副本（1 项）'), findsOneWidget);
+      expect(find.text('应用建议（1 项）'), findsOneWidget);
+      expect(find.text('导出副本'), findsOneWidget);
       await checkpoint('review_ready');
 
       await phase('save_cancel');
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出副本'));
       await _waitFor(
         tester,
         () => !controller.isBusy && controller.notice == '已取消保存，原音频未修改。',
@@ -1052,7 +1070,7 @@ void main() {
       await checkpoint('cancelled_ready');
 
       await phase('save_confirm');
-      await tester.tap(find.text('导出副本（1 项）'));
+      await tester.tap(find.text('导出副本'));
       await _waitFor(
         tester,
         () =>
@@ -1085,7 +1103,7 @@ void main() {
       );
       // A new lookup requires fresh explicit review. The primary original-save
       // action must keep the review open when Android write consent is denied.
-      await tester.tap(find.text('补全缺失信息'));
+      await _tapMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
@@ -1170,8 +1188,8 @@ void main() {
       // evidence also shows reviewed counts and the final batch result panel.
       // pageBack() matches the English 'Back' tooltip, not this Chinese UI.
       expect(find.byType(TrackDetailPage), findsOneWidget);
-      expect(find.byType(BackButton), findsOneWidget);
-      await tester.tap(find.byType(BackButton));
+      expect(find.byKey(const ValueKey('close-selected-song')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('close-selected-song')));
       await tester.pumpAndSettle();
       expect(find.byType(TrackDetailPage), findsNothing);
       await tester.tap(find.text('补全任务'));
@@ -1188,7 +1206,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.selectedTrackIds, {track.id, unapproved.id});
       expect(find.text('已选 2 首'), findsOneWidget);
-      expect(find.text('已确认 1 首 · 仅保存已确认资料'), findsOneWidget);
+      expect(find.text('可应用 1 首 · 已确认 1 首'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('fixed-task-selection-toolbar')),
         findsOneWidget,
@@ -1198,10 +1216,14 @@ void main() {
         findsOneWidget,
       );
       await checkpoint('bulk_review_ready');
-      await phase('original_confirm');
       await tester.tap(
         find.byKey(const ValueKey('bulk-save-original')).hitTestable(),
       );
+      await tester.pumpAndSettle();
+      expect(find.text('查看本次修改'), findsOneWidget);
+      expect(controller.isBusy, isFalse);
+      await phase('original_confirm');
+      await tester.tap(find.byKey(const ValueKey('apply-reviewed-batch')));
       await _waitFor(
         tester,
         () =>
@@ -1211,10 +1233,10 @@ void main() {
         'real original write consent, backup, replacement, and read-back',
       );
       expect(controller.batchOperation!.kind, BatchOperationKind.saveOriginal);
-      expect(controller.batchOperation!.totalCount, 2);
-      expect(controller.batchOperation!.completedCount, 2);
+      expect(controller.batchOperation!.totalCount, 1);
+      expect(controller.batchOperation!.completedCount, 1);
       expect(controller.batchOperation!.savedOriginalCount, 1);
-      expect(controller.batchOperation!.skippedCount, 1);
+      expect(controller.batchOperation!.skippedCount, 0);
       expect(controller.batchOperation!.failedCount, 0);
       expect(controller.batchOperation!.isRunning, isFalse);
       final savedOriginal = controller.taskForTrack(track.id)!;
@@ -1318,7 +1340,7 @@ void main() {
         TaskStatus.savedOriginal,
       );
       expect(persisted.batchOperation!.savedOriginalCount, 1);
-      expect(persisted.batchOperation!.skippedCount, 1);
+      expect(persisted.batchOperation!.skippedCount, 0);
       await File('${support.path}/native_runtime_result.json').writeAsString(
         jsonEncode({
           'passed': true,
@@ -1359,7 +1381,15 @@ void main() {
           'original_save_status': savedOriginal.status.name,
           'unapproved_source_uri': unapproved.contentUri,
           'batch_saved_original': controller.batchOperation!.savedOriginalCount,
-          'batch_skipped_unapproved': controller.batchOperation!.skippedCount,
+          'batch_excluded_unapproved':
+              !controller.batchOperation!.items.any(
+                (item) => item.trackId == unapproved.id,
+              ) &&
+              controller
+                  .approvedSuggestionsFor(
+                    controller.taskForTrack(unapproved.id)!,
+                  )
+                  .isEmpty,
           'cover_sha256': coverHash,
           'expected_tags': {'lyrics': _lyrics},
           'checks': [

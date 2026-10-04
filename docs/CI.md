@@ -55,7 +55,7 @@ cannot silently expand this package list. The approved main terms are
 ## Results and limits
 
 The output is `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`. CI verifies
-`com.audiofixer.audio_fixer.qa.v030`, the **Audio Fixer QA 0.3** label, the pubspec version
+`com.audiofixer.audio_fixer.qa.v030`, the **Audio Fixer QA 0.6** label, the pubspec version
 with `-qa` suffix, the ARM64 split version code, and the single `arm64-v8a` ABI. It
 also checks that the APK is **not debuggable**, verifies its signature and Android
 Debug test signer, and records its SHA-256 and size.

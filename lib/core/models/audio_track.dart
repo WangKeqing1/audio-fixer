@@ -77,6 +77,8 @@ class AudioTrack {
     this.isInstrumental = false,
     this.artworkPath,
     this.artworkSha256,
+    this.artworkValidated = false,
+    this.artworkError,
     this.readError,
     this.contentUri,
     this.dateModifiedMs,
@@ -115,6 +117,19 @@ class AudioTrack {
   final String? artworkPath;
   // Snapshot of extracted bytes, independent of a subsequently refreshed cache.
   final String? artworkSha256;
+  // Presentation validity is separate from tag presence. A missing/corrupt
+  // cache never proves the embedded picture is absent and never permits a
+  // silent replacement of the original artwork.
+  final bool artworkValidated;
+  final String? artworkError;
+  bool get hasArtwork =>
+      hasText(artworkPath) && artworkValidated && artworkError == null;
+  bool get artworkNeedsCheck =>
+      (hasText(artworkPath) ||
+          hasText(artworkSha256) ||
+          hasText(artworkError)) &&
+      !hasArtwork;
+
   final String? readError;
   final String? contentUri;
   final int? dateModifiedMs;
@@ -165,6 +180,8 @@ class AudioTrack {
             .where(
               (field) =>
                   !(field == AudioField.lyrics && isInstrumental) &&
+                  !(field == AudioField.artwork &&
+                      (hasText(artworkSha256) || hasText(artworkError))) &&
                   !hasText(valueOf(field)),
             )
             .toSet()
@@ -192,6 +209,9 @@ class AudioTrack {
     required String? lyrics,
     required String? artworkPath,
     Object? artworkSha256 = _unchangedTag,
+    bool? artworkValidated,
+    Object? artworkError = _unchangedTag,
+    bool? detailsLoaded,
     String? readError,
   }) => AudioTrack(
     id: id,
@@ -238,10 +258,31 @@ class AudioTrack {
     artworkSha256: identical(artworkSha256, _unchangedTag)
         ? this.artworkSha256
         : artworkSha256 as String?,
+    artworkValidated:
+        artworkValidated ??
+        (artworkPath == this.artworkPath ? this.artworkValidated : false),
+    artworkError: identical(artworkError, _unchangedTag)
+        ? (artworkPath == this.artworkPath ? this.artworkError : null)
+        : artworkError as String?,
     readError: readError,
-    detailsLoaded: true,
+    detailsLoaded: detailsLoaded ?? true,
     tagReadVersion: tagReadVersion ?? this.tagReadVersion,
   );
+
+  AudioTrack withArtworkValidation({required bool valid, String? error}) =>
+      withDetails(
+        title: title,
+        artist: artist,
+        album: album,
+        year: year,
+        durationMs: durationMs,
+        lyrics: lyrics,
+        artworkPath: artworkPath,
+        artworkValidated: valid,
+        artworkError: error,
+        detailsLoaded: detailsLoaded,
+        readError: readError,
+      );
 
   AudioTrack withReadError(String error) => withDetails(
     title: title,
@@ -279,6 +320,8 @@ class AudioTrack {
     isInstrumental: value,
     artworkPath: artworkPath,
     artworkSha256: artworkSha256,
+    artworkValidated: artworkValidated,
+    artworkError: artworkError,
     readError: readError,
     contentUri: contentUri,
     dateModifiedMs: dateModifiedMs,
@@ -313,6 +356,8 @@ class AudioTrack {
     'isInstrumental': isInstrumental,
     'artworkPath': artworkPath,
     'artworkSha256': artworkSha256,
+    'artworkValidated': artworkValidated,
+    'artworkError': artworkError,
     'readError': readError,
     'contentUri': contentUri,
     'dateModifiedMs': dateModifiedMs,
@@ -351,6 +396,8 @@ class AudioTrack {
     isInstrumental: json['isInstrumental'] as bool? ?? false,
     artworkPath: json['artworkPath'] as String?,
     artworkSha256: json['artworkSha256'] as String?,
+    artworkValidated: json['artworkValidated'] as bool? ?? false,
+    artworkError: json['artworkError'] as String?,
     readError: json['readError'] as String?,
     contentUri: json['contentUri'] as String?,
     dateModifiedMs: json['dateModifiedMs'] as int?,

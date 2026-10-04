@@ -1,4 +1,5 @@
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
 import 'package:audio_fixer/core/services/sources/lrclib_source.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -55,6 +56,16 @@ Map<String, dynamic> _record({
 
 void main() {
   test(
+    'title and artist alone do not grant recommendation provenance',
+    () async {
+      final result = await LrclibSource(_FakeJsonApiClient([_record()]))
+          .lookup(_track(durationMs: 0, album: null), {AudioField.lyrics});
+      expect(result, hasLength(1));
+      expect(result.single.provenance, SuggestionProvenance.unverified);
+    },
+  );
+
+  test(
     'equally matched instrumental search results veto vocal lyrics',
     () async {
       final client = _FakeJsonApiClient([
@@ -77,6 +88,7 @@ void main() {
       final result = await LrclibSource(client)
           .lookup(_track(), {AudioField.lyrics});
       expect(result, hasLength(1));
+      expect(result.single.provenance, SuggestionProvenance.verifiedRecording);
     },
   );
 

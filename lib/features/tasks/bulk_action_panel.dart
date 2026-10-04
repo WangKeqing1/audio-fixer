@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/completion_task.dart';
 import '../library/library_controller.dart';
+import 'recommended_batch_review_page.dart';
 
 Future<void> confirmBatchQuery(
   BuildContext context,
@@ -37,7 +38,7 @@ Future<void> confirmBatchQuery(
                     : (value) => setDialogState(() => missingOnly = value),
               ),
               const Text(
-                '只发送歌名、歌手、专辑和时长，不上传音频。\n\n查询不会修改文件，也不会自动勾选候选。重新查询会替换所选歌曲的旧候选并清除之前的确认，请逐首确认后再批量保存。可随时停止后续歌曲。',
+                '只发送歌名、歌手、专辑和时长，不上传音频。\n\n查询不会修改文件。查看结果时会预选可靠且无冲突的缺失项；已有资料和不确定项保留原值。重新查询会替换旧候选并清除之前的确认，可随时停止后续歌曲。',
               ),
             ],
           ),
@@ -64,7 +65,7 @@ Future<void> confirmBatchQuery(
   }
 }
 
-/// All write actions here consume already-confirmed candidates only.
+/// Opens the same explicit batch review used by the library toolbar.
 class BulkActionPanel extends StatelessWidget {
   const BulkActionPanel({
     super.key,
@@ -78,6 +79,14 @@ class BulkActionPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final selected = controller.selectedTrackIds;
     if (selected.isEmpty) return const SizedBox.shrink();
+    final reviewable = controller.tasks
+        .where(
+          (task) =>
+              selected.contains(task.trackId) &&
+              controller.isTaskCurrent(task) &&
+              task.suggestions.isNotEmpty,
+        )
+        .length;
     final approved = controller.tasks
         .where(
           (task) =>
@@ -107,7 +116,7 @@ class BulkActionPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
-            const Text('仅保存逐项确认过的资料；未确认、已保存或不可用的歌曲将跳过。'),
+            const Text('先看一眼本次修改，再统一应用；已有资料和有分歧的候选不会默认替换。'),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
@@ -115,11 +124,15 @@ class BulkActionPanel extends StatelessWidget {
               children: [
                 FilledButton.icon(
                   key: const ValueKey('bulk-save-original'),
-                  onPressed: controller.canOperate && approved > 0
-                      ? () => controller.saveSelectedCandidates()
+                  onPressed: controller.canOperate && reviewable > 0
+                      ? () => reviewBatchChanges(
+                          context,
+                          controller,
+                          Set<String>.of(selected),
+                        )
                       : null,
                   icon: const Icon(Icons.save_outlined),
-                  label: const Text('批量保存到原文件'),
+                  label: const Text('查看并应用'),
                 ),
                 OutlinedButton.icon(
                   key: const ValueKey('bulk-query-selected'),
@@ -138,8 +151,11 @@ class BulkActionPanel extends StatelessWidget {
                 ),
                 TextButton.icon(
                   key: const ValueKey('bulk-export-copies'),
-                  onPressed: controller.canOperate && approved > 0
-                      ? () => controller.saveSelectedCandidates(
+                  onPressed: controller.canOperate && reviewable > 0
+                      ? () => reviewBatchChanges(
+                          context,
+                          controller,
+                          Set<String>.of(selected),
                           exportCopies: true,
                         )
                       : null,

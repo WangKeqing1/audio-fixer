@@ -27,6 +27,9 @@ void main() {
       expect(find.text('歌曲资料'), findsOneWidget);
       expect(library.detailsCount, 1);
       expect(controller.tracks.single.lyrics, '文件内嵌歌词');
+      await tester.ensureVisible(find.text('歌词'));
+      await tester.tap(find.text('歌词'));
+      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('文件内嵌歌词'),
         350,
@@ -39,7 +42,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('文件内嵌歌词'), findsOneWidget);
-      await tester.tap(find.text('自动检索并修复'));
+      await tester.tap(find.byKey(const ValueKey('automatic-repair')));
       await tester.pumpAndSettle();
       expect(controller.tasks, isEmpty);
       expect(controller.notice, contains('在线来源'));
@@ -48,7 +51,7 @@ void main() {
         250,
         scrollable: find.byType(Scrollable).first,
       );
-      expect(find.text('重试自动检索'), findsOneWidget);
+      expect(find.byKey(const ValueKey('automatic-repair')), findsOneWidget);
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       await tester.tap(find.text('补全任务'));

@@ -84,7 +84,7 @@ class TasksPage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '自动检索 → 逐项确认 → 保存到原文件\n可多选批量处理，也可单独导出副本。仅保存勾选的修改，替换已有值会明确标注。',
+                  '看一眼修复结果，应用建议。已有资料默认保留。',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -153,7 +153,7 @@ class TasksPage extends StatelessWidget {
                   const EmptyState(
                     icon: Icons.playlist_add_check_outlined,
                     title: '还没有补全任务',
-                    description: '从音乐库自动检索歌曲资料，再在这里逐项确认元数据、封面与歌词候选。',
+                    description: '从音乐库选择歌曲，找到结果后即可预览并应用。',
                   )
                 else
                   for (final task in controller.tasks)
@@ -233,23 +233,32 @@ class TasksPage extends StatelessWidget {
                             ),
                             const SizedBox(height: 12),
                             if (task.sourceReports.isNotEmpty)
-                              SourceQueryStatusPanel(
-                                reports: task.sourceReports,
-                                summary:
-                                    task.status == TaskStatus.skipped ||
-                                        task.status == TaskStatus.outdated ||
-                                        task.status ==
-                                            TaskStatus.savedOriginal ||
-                                        task.status == TaskStatus.exported
-                                    ? task.message
-                                    : null,
-                                hasCandidates:
-                                    task.suggestions.isNotEmpty ||
-                                    task.recordingCandidates.isNotEmpty,
+                              ExpansionTile(
+                                key: PageStorageKey(
+                                  'task-source-details-${task.trackId}',
+                                ),
+                                tilePadding: EdgeInsets.zero,
+                                title: Text(
+                                  controller
+                                          .recommendedSuggestionsFor(task)
+                                          .isNotEmpty
+                                      ? '${controller.recommendedSuggestionsFor(task).length} 项建议补全 · 查看查询详情'
+                                      : '查看查询详情',
+                                ),
+                                children: [
+                                  SourceQueryStatusPanel(
+                                    reports: task.sourceReports,
+                                    hasCandidates:
+                                        task.suggestions.isNotEmpty ||
+                                        task.recordingCandidates.isNotEmpty,
+                                  ),
+                                ],
                               )
                             else
                               Text(
                                 task.message,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                                 style: theme.textTheme.bodyMedium?.copyWith(
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),

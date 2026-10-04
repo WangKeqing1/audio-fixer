@@ -178,9 +178,9 @@ void main() {
       await tester.pumpAndSettle();
       final edit = find.byKey(const ValueKey('edit-metadata'));
       await _show(tester, edit);
-      expect(tester.widget<OutlinedButton>(edit).onPressed, isNotNull);
+      expect(tester.widget<ListTile>(edit).onTap, isNotNull);
       final query = find.byKey(const ValueKey('query-metadata-repair'));
-      expect(tester.widget<OutlinedButton>(query).onPressed, isNotNull);
+      expect(tester.widget<ListTile>(query).onTap, isNotNull);
       await tester.tap(edit);
       await tester.pumpAndSettle();
       expect(find.byType(MetadataEditorPage), findsOneWidget);
@@ -218,8 +218,8 @@ void main() {
       expect(writer.copies, 0);
       await _show(tester, find.byType(Checkbox));
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
-      expect(find.textContaining('将替换已有资料 · 歌名'), findsOneWidget);
-      expect(find.text('当前：旧歌名'), findsOneWidget);
+      expect(find.text('歌名 · 新歌名'), findsOneWidget);
+      expect(find.text('歌名现为：旧歌名'), findsOneWidget);
       await tester.tap(find.byType(Checkbox));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('save-original')));
@@ -572,20 +572,33 @@ void main() {
         tester,
         CandidateReviewPage(task: task, controller: controller),
       );
-      await _show(
-        tester,
+      final details = find.text('预览与来源');
+      await _show(tester, details.first);
+      await tester.tap(details.first);
+      await tester.pumpAndSettle();
+      expect(
         find.byWidgetPredicate(
           (widget) => widget is Image && widget.image is FileImage,
         ),
+        findsWidgets,
       );
+      final remote = find.byKey(
+        PageStorageKey(
+          'candidate-details-artwork-不可信来源-${'https://untrusted.example/cover.jpg'.hashCode}',
+        ),
+      );
+      await _show(tester, remote);
+      await tester.tap(
+        find.descendant(of: remote, matching: find.text('预览与来源')),
+      );
+      await tester.pumpAndSettle();
       expect(
         find.byWidgetPredicate(
           (widget) => widget is Image && widget.image is NetworkImage,
         ),
         findsNothing,
       );
-      await _show(tester, find.text('来源：不可信来源\n补入缺失资料'));
-      await tester.pumpAndSettle();
+      expect(find.text('来源：不可信来源'), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(find.text('封面预览加载失败'), findsWidgets);
       expect(tester.takeException(), isNull);

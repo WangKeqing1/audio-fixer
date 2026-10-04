@@ -1,4 +1,5 @@
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/services/sources/cover_art_archive_source.dart';
 import 'package:audio_fixer/core/services/sources/json_api_client.dart';
 import 'package:audio_fixer/core/services/sources/musicbrainz_source.dart';
@@ -79,6 +80,10 @@ void main() {
     final suggestions = await source.lookup(_track(), {AudioField.artwork});
 
     expect(suggestions, hasLength(1));
+    expect(
+      suggestions.single.provenance,
+      SuggestionProvenance.verifiedRecording,
+    );
     expect(
       suggestions.single.value,
       'https://coverartarchive.org/release/front-500.jpg',

@@ -261,10 +261,7 @@ void main() {
     await tester.tap(find.text('其他修复方式'));
     await tester.pumpAndSettle();
     for (final key in ['edit-metadata', 'query-metadata-repair']) {
-      expect(
-        tester.widget<OutlinedButton>(find.byKey(ValueKey(key))).onPressed,
-        isNull,
-      );
+      expect(tester.widget<ListTile>(find.byKey(ValueKey(key))).onTap, isNull);
     }
     await tester.pumpWidget(const SizedBox.shrink());
   });

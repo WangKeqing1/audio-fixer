@@ -131,13 +131,12 @@ Future<void> _show(
   Finder target, {
   double delta = 180,
 }) async {
-  await tester.scrollUntilVisible(
-    target,
-    delta,
-    scrollable: find.byType(Scrollable).first,
-    maxScrolls: 50,
-  );
-  await tester.ensureVisible(target);
+  final scroll = find.byType(Scrollable).first;
+  for (var attempt = 0; target.evaluate().isEmpty && attempt < 50; attempt++) {
+    await tester.drag(scroll, Offset(0, -delta));
+    await tester.pumpAndSettle();
+  }
+  await tester.ensureVisible(target.first);
   await tester.pumpAndSettle();
 }
 
@@ -242,6 +241,10 @@ void main() {
           tester,
           find.byKey(const ValueKey('automatic-repair-result')),
         );
+        expect(find.byType(SourceQueryStatusPanel), findsNothing);
+        await _show(tester, find.text('查询来源与详情'));
+        await tester.tap(find.text('查询来源与详情'));
+        await tester.pumpAndSettle();
         expect(find.byType(SourceQueryStatusPanel), findsOneWidget);
         expect(
           find.text('离线自动检索源 · ${failed ? '查询未完成' : '未找到匹配'}'),

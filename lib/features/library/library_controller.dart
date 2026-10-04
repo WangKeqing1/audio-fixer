@@ -10,10 +10,12 @@ import '../../core/models/audio_field_validation.dart';
 import '../../core/models/batch_operation.dart';
 import '../../core/models/completion_task.dart';
 import '../../core/models/recording_candidate.dart';
+import '../../core/models/recommended_changes.dart';
 import '../../core/models/source_query_report.dart';
 import '../../core/services/audio_importer.dart';
 import '../../core/services/audio_inventory_service.dart';
 import '../../core/services/artwork_picker.dart';
+import '../../core/services/artwork_validation.dart';
 import '../../core/services/audio_preview_service.dart';
 import '../../core/services/audio_tag_reader.dart';
 import '../../core/services/completion_service.dart';
@@ -415,6 +417,7 @@ class LibraryController extends ChangeNotifier {
     try {
       await _recoverExport();
       _snapshot = await store.load();
+      _resetCachedArtworkValidation();
       batchOperation = _snapshot.batchOperation;
       if (batchOperation?.isRunning ?? false) {
         final uncertainIds =
@@ -456,7 +459,77 @@ class LibraryController extends ChangeNotifier {
     // initial recovery probe. Resume/refresh observes its durable notice too.
     await _recoverExport();
     await _syncDeviceLibrary();
+    _resetCachedArtworkValidation();
   });
+
+  void _resetCachedArtworkValidation() {
+    // A persisted path is not proof that its cache still exists. Do not decode
+    // the entire library on startup/resume: only mounted image widgets report
+    // successful display. Hidden cached covers stay explicitly unverified.
+    _snapshot = LibrarySnapshot(
+      tracks: _snapshot.tracks
+          .map(
+            (track) => hasText(track.artworkPath)
+                ? track.withArtworkValidation(valid: false)
+                : track,
+          )
+          .toList(),
+      tasks: _snapshot.tasks,
+      settings: _snapshot.settings,
+      recoveredFromBackup: _snapshot.recoveredFromBackup,
+      batchOperation: _snapshot.batchOperation,
+    );
+  }
+
+  void reportArtworkLoaded(String id, String? path) {
+    final track = trackById(id);
+    if (track == null ||
+        !hasText(path) ||
+        track.artworkPath != path ||
+        track.hasArtwork ||
+        track.artworkError != null) {
+      return;
+    }
+    _snapshot = LibrarySnapshot(
+      tracks: _snapshot.tracks
+          .map(
+            (item) =>
+                item.id == id ? item.withArtworkValidation(valid: true) : item,
+          )
+          .toList(),
+      tasks: _snapshot.tasks,
+      settings: _snapshot.settings,
+      recoveredFromBackup: _snapshot.recoveredFromBackup,
+      batchOperation: _snapshot.batchOperation,
+    );
+    _notify();
+  }
+
+  /// A late image failure only changes presentation evidence. Do not clear the
+  /// original path/hash, invalidate a tag snapshot, or approve a replacement.
+  void reportArtworkFailure(String id, String? path, String message) {
+    final track = trackById(id);
+    if (track == null ||
+        !hasText(path) ||
+        track.artworkPath != path ||
+        track.artworkError == message) {
+      return;
+    }
+    _snapshot = LibrarySnapshot(
+      tracks: _snapshot.tracks
+          .map(
+            (item) => item.id == id
+                ? item.withArtworkValidation(valid: false, error: message)
+                : item,
+          )
+          .toList(),
+      tasks: _snapshot.tasks,
+      settings: _snapshot.settings,
+      recoveredFromBackup: _snapshot.recoveredFromBackup,
+      batchOperation: _snapshot.batchOperation,
+    );
+    _notify();
+  }
 
   Future<void> checkSourceConnections() => _operate(() async {
     for (final source in completion.sources) {
@@ -582,7 +655,8 @@ class LibraryController extends ChangeNotifier {
     } else {
       return track.withReadError('此音频来源暂不能重新读取标签，请从系统音乐库重新选择。');
     }
-    return updated.withInstrumental(track.isInstrumental);
+    return (updated.hasArtwork ? updated : await validateTrackArtwork(updated))
+        .withInstrumental(track.isInstrumental);
   }
 
   Future<void> readDetails(String id, {bool force = false}) =>
@@ -678,6 +752,7 @@ class LibraryController extends ChangeNotifier {
               : '已在本应用设为纯音乐，跳过歌词。${remaining.map((field) => field.label).join('、')}仍待补全，可重新查询。',
           suggestions: suggestions,
           approvedSuggestions: approved,
+          reviewSelectionMade: task.reviewSelectionMade,
           queriedFields: task.queriedFields.difference({AudioField.lyrics}),
           isRepair: task.isRepair,
           searchMetadata: task.searchMetadata,
@@ -909,6 +984,7 @@ class LibraryController extends ChangeNotifier {
                 field: entry.key,
                 value: entry.value,
                 source: '手动编辑',
+                provenance: SuggestionProvenance.manual,
                 matchDescription: '由你手动选择或输入，尚未写入音频。',
                 replaceExisting: hasText(track.valueOf(entry.key)),
               ),
@@ -1183,9 +1259,10 @@ class LibraryController extends ChangeNotifier {
                       item.missingFields.intersection(settings.enabledFields))
                   .difference(item.isInstrumental ? {AudioField.lyrics} : {});
           final queryTrack = searchTrack ?? item;
+          final querySearch = TrackSearch.fromTrack(queryTrack);
           if (confirmedRecording == null &&
               requested.isNotEmpty &&
-              !hasText(TrackSearch.fromTrack(queryTrack).artist) &&
+              (!hasText(querySearch.artist) || querySearch.artistIsInferred) &&
               completion.sources.any(
                 (source) => source is RecordingDiscoverySource,
               )) {
@@ -1201,7 +1278,13 @@ class LibraryController extends ChangeNotifier {
                   : TaskStatus.noMatch,
               message: [
                 discovered.candidates.isNotEmpty
-                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。${hasText(item.artist) && searchMetadata.containsKey('artist') ? '本次未用原歌手标签筛选，' : '缺少歌手标签，'}请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
+                    ? '已找到 ${discovered.candidates.length} 个可能的歌曲版本。${querySearch.artistIsInferred
+                          ? '歌手与歌名来自文件名推测，尚未确认，'
+                          : hasText(item.artist) && searchMetadata.containsKey('artist')
+                          ? '本次未用原歌手标签筛选，'
+                          : '缺少歌手标签，'}请先选择正确的歌手和专辑，再获取该版本的资料；尚未选择或修改任何字段。'
+                    : querySearch.artistIsInferred
+                    ? '按文件名推测的歌手、歌名与时长检索，尚未找到可供确认的歌曲版本。原标签保持不变，可以调整检索条件后重试。'
                     : '仅按歌名与时长检索，尚未找到可供确认的歌曲版本。可以调整检索条件后重试。',
                 ...discovered.diagnostics,
               ].join('\n'),
@@ -1267,6 +1350,71 @@ class LibraryController extends ChangeNotifier {
                 message: discovered.candidates.isNotEmpty
                     ? '找到 ${discovered.candidates.length} 个可能的录音版本，已有歌手仍参与核对。请确认歌手、专辑与时长，再获取该版本资料；尚未选择或修改任何字段。'
                     : '未找到可直接采用的资料或可确认的录音版本，请查看各来源结果，也可调整检索条件。已有资料保留。',
+                recordingCandidates: discovered.candidates,
+                sourceReports: reports,
+              );
+            }
+          }
+          // Failed providers are never retried via a weaker query. A clean
+          // no-match may expose an explicitly unconfirmed filename alternative;
+          // require a recording choice before any fields can be suggested.
+          final filenameHint =
+              searchMetadata.isEmpty && confirmedRecording == null
+              ? TrackSearch.filenameFallback(item)
+              : null;
+          if (filenameHint != null &&
+              requested.isNotEmpty &&
+              task.suggestions.isEmpty &&
+              task.recordingCandidates.isEmpty) {
+            final discoveryNames = completion.sources
+                .whereType<RecordingDiscoverySource>()
+                .map((source) => source.name)
+                .toSet();
+            final unmatchedNames = task.sourceReports
+                .where(
+                  (report) =>
+                      discoveryNames.contains(report.sourceName) &&
+                      report.outcome == SourceQueryOutcome.noMatch,
+                )
+                .map((report) => report.sourceName)
+                .toSet();
+            if (unmatchedNames.isNotEmpty) {
+              final hintTrack = AudioTrack.fromJson({
+                ...item.toJson(),
+                'title': filenameHint.title,
+                'artist': filenameHint.artist,
+                'album': null,
+              });
+              final discovered = await completion.discoverRecordings(
+                hintTrack,
+                sourceNames: unmatchedNames,
+              );
+              final reports = [
+                ...task.sourceReports.where(
+                  (report) => !unmatchedNames.contains(report.sourceName),
+                ),
+                ...discovered.sourceReports.where(
+                  (report) => unmatchedNames.contains(report.sourceName),
+                ),
+              ];
+              task = CompletionTask(
+                trackId: item.id,
+                trackTitle: item.displayTitle,
+                createdAt: DateTime.now(),
+                status: discovered.candidates.isNotEmpty
+                    ? TaskStatus.needsReview
+                    : reports.any(
+                        (report) =>
+                            report.outcome == SourceQueryOutcome.failed ||
+                            report.outcome == SourceQueryOutcome.partial,
+                      )
+                    ? TaskStatus.failed
+                    : TaskStatus.noMatch,
+                message: [
+                  '原标签未匹配，已按文件名推测检索“${filenameHint.artist} / ${filenameHint.title}”。'
+                      '这不是已确认的歌曲身份；请核对歌手、专辑和时长后选择版本。原资料保持不变。',
+                  ...discovered.diagnostics,
+                ].join('\n'),
                 recordingCandidates: discovered.candidates,
                 sourceReports: reports,
               );
@@ -1470,6 +1618,31 @@ class LibraryController extends ChangeNotifier {
     return List.unmodifiable(current.approvedSuggestions);
   }
 
+  List<FieldSuggestion> recommendedSuggestionsFor(CompletionTask task) {
+    if (!isTaskCurrent(task)) return const [];
+    final track = trackById(task.trackId);
+    final current = taskForTrack(task.trackId);
+    if (track == null || current == null) return const [];
+    return RecommendedChanges.evaluate(track, current).suggestions;
+  }
+
+  /// Explicit previous choices take precedence, including deliberate omissions.
+  /// Recommendations are local review defaults and do not approve candidates.
+  List<FieldSuggestion> reviewSuggestionsFor(CompletionTask task) {
+    final approved = approvedSuggestionsFor(task);
+    final current = taskForTrack(task.trackId);
+    return approved.isNotEmpty || current?.reviewSelectionMade == true
+        ? approved
+        : recommendedSuggestionsFor(task);
+  }
+
+  bool isReviewedSelectionCurrent(ReviewedTaskSelection selection) {
+    final task = taskForTrack(selection.task.trackId);
+    return task != null &&
+        isTaskCurrent(selection.task) &&
+        _validCandidates(task, selection.suggestions);
+  }
+
   CompletionTask _withReview(
     CompletionTask task, {
     List<FieldSuggestion>? approved,
@@ -1491,6 +1664,7 @@ class LibraryController extends ChangeNotifier {
     sourceReports: task.sourceReports,
     confirmedRecording: task.confirmedRecording,
     approvedSuggestions: approved ?? task.approvedSuggestions,
+    reviewSelectionMade: approved != null || task.reviewSelectionMade,
     writeError: error,
   );
 
@@ -1533,6 +1707,7 @@ class LibraryController extends ChangeNotifier {
         createdAt: current.createdAt,
         status: TaskStatus.needsReview,
         message: '已撤销确认，请重新核对候选资料。文件未修改。',
+        reviewSelectionMade: true,
         suggestions: current.suggestions,
         exportedCopyUri: current.exportedCopyUri,
         queriedFields: current.queriedFields,
@@ -1593,15 +1768,65 @@ class LibraryController extends ChangeNotifier {
     exportCopies: exportCopies,
   );
 
+  /// The final review action authorizes exactly the displayed snapshot. It
+  /// never approves other candidates or reads a newer task's default choices.
+  Future<void> saveReviewedBatch(
+    Iterable<ReviewedTaskSelection> selections, {
+    bool exportCopies = false,
+  }) {
+    final frozen = <String, ReviewedTaskSelection>{
+      for (final selection in selections)
+        selection.task.trackId: ReviewedTaskSelection(
+          task: selection.task,
+          suggestions: selection.suggestions,
+        ),
+    };
+    return _saveBatch(
+      frozen.keys.toSet(),
+      exportCopies: exportCopies,
+      reviewed: Map.unmodifiable(frozen),
+    );
+  }
+
   Future<void> _saveBatch(
     Set<String> ids, {
     required bool exportCopies,
+    Map<String, ReviewedTaskSelection>? reviewed,
   }) => _operate(() async {
     if (!await _refreshForExclusions(trackIds: ids)) return;
+    List<FieldSuggestion> choicesFor(CompletionTask? task) {
+      if (task == null) return const [];
+      if (reviewed == null) return approvedSuggestionsFor(task);
+      final selection = reviewed[task.trackId];
+      return selection != null && isReviewedSelectionCurrent(selection)
+          ? selection.suggestions
+          : const [];
+    }
+
     final targets = tracks.where((track) => ids.contains(track.id)).toList();
     if (targets.isEmpty) {
       _announce('请先选择歌曲。');
       return;
+    }
+    if (reviewed != null) {
+      // Apply is an explicit approval of this exact displayed snapshot. Keep
+      // that bounded choice for failed-item retries, never while just viewing.
+      final valid = <String, List<FieldSuggestion>>{
+        for (final target in targets)
+          if (choicesFor(taskForTrack(target.id)).isNotEmpty)
+            target.id: choicesFor(taskForTrack(target.id)),
+      };
+      if (valid.isNotEmpty) {
+        await _commit(
+          tasks: tasks
+              .map(
+                (task) => valid.containsKey(task.trackId)
+                    ? _withReview(task, approved: valid[task.trackId]!)
+                    : task,
+              )
+              .toList(),
+        );
+      }
     }
     await _startBatch(
       exportCopies
@@ -1613,7 +1838,7 @@ class LibraryController extends ChangeNotifier {
     try {
       final eligible = targets.where((track) {
         final task = taskForTrack(track.id);
-        return task != null && approvedSuggestionsFor(task).isNotEmpty;
+        return choicesFor(task).isNotEmpty;
       }).toList();
       if (!exportCopies &&
           eligible.isNotEmpty &&
@@ -1655,15 +1880,15 @@ class LibraryController extends ChangeNotifier {
         if (_batchStopRequested || _disposed) break;
         final item = targets[index];
         final task = taskForTrack(item.id);
-        final approved = task == null
-            ? <FieldSuggestion>[]
-            : approvedSuggestionsFor(task);
+        final approved = choicesFor(task);
         if (task == null || approved.isEmpty) {
           _setBatchItem(
             item.id,
             BatchItemStatus.skipped,
             task?.status == TaskStatus.savedOriginal
                 ? '原文件已保存，不重复写入。'
+                : reviewed != null
+                ? '本次预览中的资料已变化或不可用，请重新查看后再应用。'
                 : '尚无已确认的有效资料，请逐项确认候选后再保存。',
           );
           await _commit();
@@ -1674,7 +1899,7 @@ class LibraryController extends ChangeNotifier {
         _setBatchItem(item.id, BatchItemStatus.running, '正在准备、保存并校验');
         await _commit();
         final result = await _writeCandidates(
-          task,
+          reviewed?[item.id]?.task ?? task,
           approved,
           exportCopy: exportCopies,
           directory: directory,
@@ -1840,6 +2065,7 @@ class LibraryController extends ChangeNotifier {
         approvedSuggestions: exportCopy
             ? current.approvedSuggestions
             : const [],
+        reviewSelectionMade: current.reviewSelectionMade,
       );
       try {
         await _commit(

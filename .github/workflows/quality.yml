@@ -2,7 +2,7 @@ name: Audio Fixer quality
 
 on:
   push:
-    branches: [main, dev/audio-fixer-quality]
+    branches: [main, dev/audio-fixer-quality, feat/library-cover-instrumental]
   pull_request:
 
 permissions:
@@ -221,7 +221,7 @@ jobs:
           test -s "$apk"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > build/ci/apk-badging.txt
           grep -q "^package: name='com.audiofixer.audio_fixer.qa.v030' " build/ci/apk-badging.txt
-          grep -q "^application-label:'Audio Fixer QA 0.3'$" build/ci/apk-badging.txt
+          grep -q "^application-label:'Audio Fixer QA 0.6'$" build/ci/apk-badging.txt
           grep -q "^native-code: 'arm64-v8a'$" build/ci/apk-badging.txt
           if grep -q '^application-debuggable' build/ci/apk-badging.txt; then
             echo '::error::The optimized QA APK must not be debuggable.'
@@ -251,7 +251,7 @@ jobs:
               'checkout_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'run_id': os.environ['GITHUB_RUN_ID'],
               'package_id': attributes['name'],
-              'label': 'Audio Fixer QA 0.3',
+              'label': 'Audio Fixer QA 0.6',
               'version_name': attributes['versionName'],
               'version_code': attributes['versionCode'],
               'abi': 'arm64-v8a',

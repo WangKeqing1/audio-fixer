@@ -76,7 +76,7 @@ android {
         if (audioFixerQa) {
             applicationIdSuffix = ".qa.v030"
             versionNameSuffix = "-qa"
-            manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.3"
+            manifestPlaceholders["audioFixerLabel"] = "Audio Fixer QA 0.6"
         }
     }
     buildTypes.named("release") {

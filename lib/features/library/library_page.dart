@@ -3,11 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/models/audio_track.dart';
+import '../../core/models/completion_task.dart';
 import '../../core/services/device_artwork_cache.dart';
 import '../../core/services/device_music_library.dart';
 import '../../core/services/audio_preview_service.dart';
-import '../../shared/formatters.dart';
 import '../../shared/widgets/empty_state.dart';
+import '../../shared/widgets/pane_entrance.dart';
 import '../../shared/widgets/notice_panel.dart';
 import '../../shared/widgets/library_track_artwork.dart';
 import 'library_controller.dart';
@@ -53,6 +54,8 @@ class LibraryPage extends StatefulWidget {
 
 class _LibraryPageState extends State<LibraryPage> {
   final _search = TextEditingController();
+  final _listScroll = ScrollController();
+  String? _activeTrackId;
   _LibraryFilter _filter = _LibraryFilter.all;
   bool _selectionMode = false;
   bool _openingDetails = false;
@@ -89,6 +92,7 @@ class _LibraryPageState extends State<LibraryPage> {
     widget.controller.removeListener(_stopHiddenPreview);
     unawaited(widget.controller.preview.stop());
     _search.dispose();
+    _listScroll.dispose();
     _artworkCache?.dispose();
     super.dispose();
   }
@@ -103,7 +107,15 @@ class _LibraryPageState extends State<LibraryPage> {
 
   void _viewChanged(VoidCallback change) {
     _navigationRevision++;
-    setState(change);
+    setState(() {
+      change();
+      if (_activeTrackId != null &&
+          !widget.controller.tracks.any(
+            (track) => track.id == _activeTrackId && _matchesView(track),
+          )) {
+        _activeTrackId = null;
+      }
+    });
     widget.controller.retainSelection(
       widget.controller.tracks.where(_matchesView).map((track) => track.id),
     );
@@ -137,12 +149,7 @@ class _LibraryPageState extends State<LibraryPage> {
           (item) => item.id == track.id && _matchesView(item),
         ) &&
         widget.controller.preview.errorMessage == null) {
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute<void>(
-          builder: (_) =>
-              TrackDetailPage(track: track, controller: widget.controller),
-        ),
-      );
+      setState(() => _activeTrackId = track.id);
     }
     if (mounted) setState(() => _openingDetails = false);
   }
@@ -256,263 +263,457 @@ class _LibraryPageState extends State<LibraryPage> {
           (track) =>
               track.detailsLoaded &&
               track.readError == null &&
-              track.missingFields.isEmpty,
+              track.missingFields.isEmpty &&
+              track.artworkError == null &&
+              !track.artworkNeedsCheck,
         )
         .length;
-    final horizontal = MediaQuery.sizeOf(context).width < 360 ? 16.0 : 24.0;
+    final horizontal = MediaQuery.sizeOf(context).width < 360 ? 12.0 : 20.0;
+    final activeTrack = _activeTrackId == null
+        ? null
+        : controller.trackById(_activeTrackId!);
 
     return LayoutBuilder(
-      builder: (context, constraints) => Column(
-        children: [
-          Expanded(
-            child: CustomScrollView(
-              key: const PageStorageKey('library-scroll-view'),
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              slivers: [
-                SliverPadding(
-                  padding: EdgeInsets.fromLTRB(horizontal, 8, horizontal, 16),
-                  sliver: SliverToBoxAdapter(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (controller.libraryError != null) ...[
-                          Semantics(
-                            liveRegion: true,
-                            child: NoticePanel(
-                              icon: Icons.sync_problem_outlined,
-                              title: '刷新未完成，已保留上次的音乐库',
-                              message: controller.libraryError!,
-                              isError: true,
-                              action: OutlinedButton.icon(
-                                onPressed: controller.canOperate
-                                    ? controller.refreshLibrary
-                                    : null,
-                                icon: const Icon(Icons.refresh, size: 18),
-                                label: const Text('重试刷新'),
+      builder: (context, constraints) {
+        final split =
+            constraints.maxWidth >= 820 &&
+            MediaQuery.textScalerOf(context).scale(14) < 24;
+        final showList = split || activeTrack == null;
+        final listWidth = split
+            ? (constraints.maxWidth * .43).clamp(330.0, 620.0)
+            : constraints.maxWidth;
+        return Row(
+          key: const ValueKey('library-adaptive-layout'),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Offstage(
+              offstage: !showList,
+              child: SizedBox(
+                width: listWidth,
+                child: TickerMode(
+                  enabled: showList && widget.isActive,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: CustomScrollView(
+                          key: const PageStorageKey('library-scroll-view'),
+                          controller: _listScroll,
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          slivers: [
+                            SliverPadding(
+                              padding: EdgeInsets.fromLTRB(
+                                horizontal,
+                                8,
+                                horizontal,
+                                16,
+                              ),
+                              sliver: SliverToBoxAdapter(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (controller.libraryError != null) ...[
+                                      Semantics(
+                                        liveRegion: true,
+                                        child: NoticePanel(
+                                          icon: Icons.sync_problem_outlined,
+                                          title: '刷新未完成，已保留上次的音乐库',
+                                          message: controller.libraryError!,
+                                          isError: true,
+                                          action: OutlinedButton.icon(
+                                            onPressed: controller.canOperate
+                                                ? controller.refreshLibrary
+                                                : null,
+                                            icon: const Icon(
+                                              Icons.refresh,
+                                              size: 18,
+                                            ),
+                                            label: const Text('重试刷新'),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                    ],
+                                    _LibraryOverview(
+                                      total: allTracks.length,
+                                      checked: checked,
+                                      complete: complete,
+                                      isDeviceLibrary:
+                                          controller.usesDeviceLibrary,
+                                      isFolderLibrary:
+                                          controller.usesFolderLibrary,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: TextField(
+                                            controller: _search,
+                                            textInputAction:
+                                                TextInputAction.search,
+                                            onChanged: (_) =>
+                                                _viewChanged(() {}),
+                                            onSubmitted: (_) =>
+                                                FocusScope.of(context)
+                                                    .unfocus(),
+                                            decoration: InputDecoration(
+                                              hintText: '搜索歌曲、歌手、专辑…',
+                                              prefixIcon: const Icon(
+                                                Icons.search,
+                                              ),
+                                              suffixIcon: _search.text.isEmpty
+                                                  ? null
+                                                  : IconButton(
+                                                      tooltip: '清除搜索',
+                                                      onPressed: () =>
+                                                          _viewChanged(
+                                                            _search.clear,
+                                                          ),
+                                                      icon: const Icon(
+                                                        Icons.close,
+                                                      ),
+                                                    ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        IconButton(
+                                          key: const ValueKey(
+                                            'library-exclusion-summary',
+                                          ),
+                                          tooltip:
+                                              controller.excludedTrackCount > 0
+                                              ? '音乐库选项 · 已隐藏 ${controller.excludedTrackCount} 首'
+                                              : '音乐库选项：排除文件夹 / 短音频',
+                                          onPressed: () => openLibraryFilters(
+                                            context,
+                                            controller,
+                                          ),
+                                          icon: const Icon(Icons.tune_outlined),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 4,
+                                      children: [
+                                        for (final filter
+                                            in _LibraryFilter.values)
+                                          FilterChip(
+                                            label: Text(
+                                              '${filter.label} ${counts[filter]}',
+                                            ),
+                                            selected: filter == _filter,
+                                            onSelected: (_) => _viewChanged(
+                                              () => _filter = filter,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    if (_filter ==
+                                        _LibraryFilter.unchecked) ...[
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        '尚未读取完整文件标签，点开歌曲后检查。待检查不代表资料缺失。',
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: theme
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                              height: 1.5,
+                                            ),
+                                      ),
+                                    ],
+                                    if (!selectionMode) ...[
+                                      const SizedBox(height: 12),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 4,
+                                        children: [
+                                          TextButton.icon(
+                                            key: const ValueKey(
+                                              'toggle-library-selection',
+                                            ),
+                                            onPressed: controller.canOperate
+                                                ? () => setState(
+                                                    () => _selectionMode = true,
+                                                  )
+                                                : null,
+                                            icon: const Icon(Icons.checklist),
+                                            label: const Text('多选'),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                    const SizedBox(height: 12),
+                                    Semantics(
+                                      header: true,
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              query.isNotEmpty
+                                                  ? '搜索结果'
+                                                  : '歌曲列表',
+                                              style: theme.textTheme.titleSmall,
+                                            ),
+                                          ),
+                                          Text(
+                                            '${tracks.length} 首',
+                                            style: theme.textTheme.bodySmall
+                                                ?.copyWith(
+                                                  color: theme
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 16),
-                        ],
-                        _LibraryOverview(
-                          total: allTracks.length,
-                          checked: checked,
-                          complete: complete,
-                          isDeviceLibrary: controller.usesDeviceLibrary,
-                          isFolderLibrary: controller.usesFolderLibrary,
-                        ),
-                        if (controller.usesFolderLibrary) ...[
-                          const SizedBox(height: 8),
-                          const Text(
-                            '点击右上角文件夹按钮添加音乐位置。默认 Music 文件夹只读浏览；选择该文件夹后，可审核并保存原文件。',
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        LibraryExclusionSummary(controller: controller),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: _search,
-                          textInputAction: TextInputAction.search,
-                          onChanged: (_) => _viewChanged(() {}),
-                          onSubmitted: (_) => FocusScope.of(context).unfocus(),
-                          decoration: InputDecoration(
-                            hintText: '搜索歌曲、歌手、专辑…',
-                            prefixIcon: const Icon(Icons.search),
-                            suffixIcon: _search.text.isEmpty
-                                ? null
-                                : IconButton(
-                                    tooltip: '清除搜索',
-                                    onPressed: () =>
-                                        _viewChanged(_search.clear),
-                                    icon: const Icon(Icons.close),
+                            if (tracks.isEmpty)
+                              SliverToBoxAdapter(
+                                child: EmptyState(
+                                  icon: Icons.search_off_outlined,
+                                  title: allTracks.isEmpty
+                                      ? '歌曲已被排除规则隐藏'
+                                      : query.isEmpty
+                                      ? '这个分类里还没有歌曲'
+                                      : '没有找到匹配的歌曲',
+                                  description: allTracks.isEmpty
+                                      ? '原文件仍在设备中。调整排除规则即可重新显示。'
+                                      : query.isEmpty
+                                      ? '可以切换分类，查看音乐库中的其他歌曲。'
+                                      : '试试其他歌名、歌手、专辑或文件名，也可以清除筛选查看全部歌曲。',
+                                  action: OutlinedButton.icon(
+                                    onPressed: allTracks.isEmpty
+                                        ? () => openLibraryFilters(
+                                            context,
+                                            controller,
+                                          )
+                                        : _resetSearch,
+                                    icon: const Icon(
+                                      Icons.filter_alt_off_outlined,
+                                    ),
+                                    label: Text(
+                                      allTracks.isEmpty ? '调整排除规则' : '查看全部歌曲',
+                                    ),
                                   ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 4,
-                          children: [
-                            for (final filter in _LibraryFilter.values)
-                              FilterChip(
-                                label: Text(
-                                  '${filter.label} ${counts[filter]}',
                                 ),
-                                selected: filter == _filter,
-                                onSelected: (_) =>
-                                    _viewChanged(() => _filter = filter),
+                              )
+                            else
+                              SliverPadding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: horizontal,
+                                ),
+                                sliver: SliverList.builder(
+                                  itemCount: tracks.length,
+                                  itemBuilder: (context, index) {
+                                    final track = tracks[index];
+                                    return Padding(
+                                      padding: const EdgeInsets.only(bottom: 8),
+                                      child: _TrackTile(
+                                        track: track,
+                                        task: controller.taskForTrack(track.id),
+                                        active: track.id == _activeTrackId,
+                                        preview: controller.preview,
+                                        previewCanActivate: () =>
+                                            _currentNavigationToken != null,
+                                        previewEnabled:
+                                            widget.isActive &&
+                                            !_openingDetails &&
+                                            controller.canReadDeviceLibrary,
+                                        artworkCache: _artworkCache,
+                                        onArtworkError: (message) =>
+                                            controller.reportArtworkFailure(
+                                              track.id,
+                                              track.artworkPath,
+                                              message,
+                                            ),
+                                        onArtworkLoaded: () =>
+                                            controller.reportArtworkLoaded(
+                                              track.id,
+                                              track.artworkPath,
+                                            ),
+                                        selectionMode: selectionMode,
+                                        selected: controller.selectedTrackIds
+                                            .contains(track.id),
+                                        onSelectionChanged:
+                                            controller.canOperate
+                                            ? () => controller
+                                                  .toggleTrackSelection(
+                                                    track.id,
+                                                  )
+                                            : null,
+                                        onTap:
+                                            !controller.canOperate ||
+                                                _openingDetails
+                                            ? null
+                                            : () => _openTrack(track),
+                                      ),
+                                    );
+                                  },
+                                ),
                               ),
+                            const SliverToBoxAdapter(
+                              child: SizedBox(height: 24),
+                            ),
                           ],
                         ),
-                        if (_filter == _LibraryFilter.unchecked) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            '尚未读取完整文件标签，点开歌曲后检查。待检查不代表资料缺失。',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                              height: 1.5,
-                            ),
-                          ),
-                        ],
-                        if (!selectionMode) ...[
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
+                      ),
+                      ConstrainedBox(
+                        key: const ValueKey('fixed-library-bottom-controls'),
+                        constraints: BoxConstraints(
+                          maxHeight: constraints.maxHeight * 0.6,
+                        ),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              TextButton.icon(
-                                key: const ValueKey('toggle-library-selection'),
-                                onPressed: controller.canOperate
-                                    ? () =>
-                                          setState(() => _selectionMode = true)
-                                    : null,
-                                icon: const Icon(Icons.checklist),
-                                label: const Text('多选'),
+                              AudioPreviewPlayer(
+                                preview: controller.preview,
+                                canActivate: () =>
+                                    _currentNavigationToken != null,
+                                enabled:
+                                    widget.isActive &&
+                                    !_openingDetails &&
+                                    controller.canReadDeviceLibrary,
+                                bottomSafeArea: !selectionMode,
                               ),
-                              TextButton.icon(
-                                key: const ValueKey('query-visible-tracks'),
-                                onPressed:
-                                    controller.canOperate &&
-                                        visibleIds.isNotEmpty &&
-                                        controller
-                                            .completion
-                                            .availableFields
-                                            .isNotEmpty
-                                    ? () => confirmBatchQuery(
-                                        context,
-                                        controller,
-                                        visibleIds,
-                                        onStart: widget.onOpenTasks,
-                                      )
-                                    : null,
-                                icon: const Icon(Icons.manage_search),
-                                label: const Text('自动检索当前列表'),
-                              ),
-                            ],
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        Semantics(
-                          header: true,
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  query.isNotEmpty ? '搜索结果' : '歌曲列表',
-                                  style: theme.textTheme.titleSmall,
+                              if (!selectionMode)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    20,
+                                    8,
+                                    20,
+                                    12,
+                                  ),
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: FilledButton.icon(
+                                      style: activeTrack != null
+                                          ? FilledButton.styleFrom(
+                                              backgroundColor: theme
+                                                  .colorScheme
+                                                  .secondaryContainer,
+                                              foregroundColor: theme
+                                                  .colorScheme
+                                                  .onSecondaryContainer,
+                                            )
+                                          : null,
+                                      key: const ValueKey(
+                                        'query-visible-tracks',
+                                      ),
+                                      onPressed:
+                                          controller.canOperate &&
+                                              visibleIds.isNotEmpty &&
+                                              controller
+                                                  .completion
+                                                  .availableFields
+                                                  .isNotEmpty
+                                          ? () => confirmBatchQuery(
+                                              context,
+                                              controller,
+                                              visibleIds,
+                                              onStart: widget.onOpenTasks,
+                                            )
+                                          : null,
+                                      icon: const Icon(
+                                        Icons.auto_fix_high_outlined,
+                                      ),
+                                      label: Text(
+                                        activeTrack != null
+                                            ? '批量补全'
+                                            : query.isNotEmpty ||
+                                                  _filter != _LibraryFilter.all
+                                            ? '补全这 ${tracks.length} 首'
+                                            : '补全歌曲资料',
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                              ),
-                              Text(
-                                '${tracks.length} 首',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
+                              if (selectionMode)
+                                LibrarySelectionToolbar(
+                                  controller: controller,
+                                  visibleIds: visibleIds,
+                                  selectedIds: selectedVisibleIds,
+                                  allVisibleSelected: allVisibleSelected,
+                                  onEnd: () {
+                                    controller.clearSelection();
+                                    setState(() => _selectionMode = false);
+                                  },
+                                  onOpenTasks: widget.onOpenTasks,
                                 ),
-                              ),
                             ],
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                if (tracks.isEmpty)
-                  SliverToBoxAdapter(
-                    child: EmptyState(
-                      icon: Icons.search_off_outlined,
-                      title: allTracks.isEmpty
-                          ? '歌曲已被排除规则隐藏'
-                          : query.isEmpty
-                          ? '这个分类里还没有歌曲'
-                          : '没有找到匹配的歌曲',
-                      description: allTracks.isEmpty
-                          ? '原文件仍在设备中。调整排除规则即可重新显示。'
-                          : query.isEmpty
-                          ? '可以切换分类，查看音乐库中的其他歌曲。'
-                          : '试试其他歌名、歌手、专辑或文件名，也可以清除筛选查看全部歌曲。',
-                      action: OutlinedButton.icon(
-                        onPressed: allTracks.isEmpty
-                            ? () => openLibraryFilters(context, controller)
-                            : _resetSearch,
-                        icon: const Icon(Icons.filter_alt_off_outlined),
-                        label: Text(allTracks.isEmpty ? '调整排除规则' : '查看全部歌曲'),
-                      ),
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: EdgeInsets.symmetric(horizontal: horizontal),
-                    sliver: SliverList.builder(
-                      itemCount: tracks.length,
-                      itemBuilder: (context, index) {
-                        final track = tracks[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _TrackTile(
-                            track: track,
-                            preview: controller.preview,
-                            previewCanActivate: () =>
-                                _currentNavigationToken != null,
-                            previewEnabled:
-                                widget.isActive &&
-                                !_openingDetails &&
-                                controller.canReadDeviceLibrary,
-                            artworkCache: _artworkCache,
-                            selectionMode: selectionMode,
-                            selected: controller.selectedTrackIds.contains(
-                              track.id,
-                            ),
-                            onSelectionChanged: controller.canOperate
-                                ? () =>
-                                      controller.toggleTrackSelection(track.id)
-                                : null,
-                            onTap: !controller.canOperate || _openingDetails
-                                ? null
-                                : () => _openTrack(track),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                const SliverToBoxAdapter(child: SizedBox(height: 24)),
-              ],
-            ),
-          ),
-          ConstrainedBox(
-            key: const ValueKey('fixed-library-bottom-controls'),
-            constraints: BoxConstraints(maxHeight: constraints.maxHeight * 0.6),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  AudioPreviewPlayer(
-                    preview: controller.preview,
-                    canActivate: () => _currentNavigationToken != null,
-                    enabled:
-                        widget.isActive &&
-                        !_openingDetails &&
-                        controller.canReadDeviceLibrary,
-                    bottomSafeArea: !selectionMode,
-                  ),
-                  if (selectionMode)
-                    LibrarySelectionToolbar(
-                      controller: controller,
-                      visibleIds: visibleIds,
-                      selectedIds: selectedVisibleIds,
-                      allVisibleSelected: allVisibleSelected,
-                      onEnd: () {
-                        controller.clearSelection();
-                        setState(() => _selectionMode = false);
-                      },
-                      onOpenTasks: widget.onOpenTasks,
-                    ),
-                ],
               ),
             ),
+            SizedBox(
+              width: split ? 1 : 0,
+              child: const VerticalDivider(width: 1),
+            ),
+            if (split || activeTrack != null)
+              Expanded(
+                child: activeTrack != null
+                    ? PaneEntrance(
+                        key: ValueKey('song-enter-${activeTrack.id}'),
+                        child: TrackDetailPage(
+                          key: ValueKey('selected-song-${activeTrack.id}'),
+                          track: activeTrack,
+                          controller: controller,
+                          embedded: true,
+                          isActive: widget.isActive,
+                          onClose: () => setState(() => _activeTrackId = null),
+                        ),
+                      )
+                    : const _SelectSongPrompt(),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _SelectSongPrompt extends StatelessWidget {
+  const _SelectSongPrompt();
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.album_outlined,
+            size: 64,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(height: 20),
+          Text(
+            '让每一首歌更完整',
+            style: Theme.of(context).textTheme.headlineSmall,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '选一首歌，找回封面、歌词和资料。\n确认以后，再保存。',
+            textAlign: TextAlign.center,
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _LibraryOverview extends StatelessWidget {
@@ -534,66 +735,36 @@ class _LibraryOverview extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: colors.primaryContainer,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isFolderLibrary
-                      ? '音乐文件夹'
-                      : isDeviceLibrary
-                      ? '系统音乐库'
-                      : '我的音乐收藏',
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: colors.onPrimaryContainer,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '$total 首歌曲',
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    color: colors.onPrimaryContainer,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 4,
-                  children: [
-                    for (final label in ['已检查 $checked 首', '资料完整 $complete 首'])
-                      Text(
-                        label,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.onPrimaryContainer,
-                        ),
-                      ),
-                  ],
-                ),
-              ],
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '我的音乐',
+          style: theme.textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w600,
           ),
-          if (MediaQuery.textScalerOf(context).scale(14) < 21) ...[
-            const SizedBox(width: 12),
-            ExcludeSemantics(
-              child: Icon(
-                Icons.library_music_outlined,
-                size: 40,
-                color: colors.onPrimaryContainer,
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 12,
+          runSpacing: 4,
+          children: [
+            Text('$total 首歌曲', style: theme.textTheme.bodyMedium),
+            Text(
+              '已检查 $checked 首',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+            Text(
+              '资料完整 $complete 首',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
               ),
             ),
           ],
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -601,6 +772,8 @@ class _LibraryOverview extends StatelessWidget {
 class _TrackTile extends StatelessWidget {
   const _TrackTile({
     required this.track,
+    required this.task,
+    required this.active,
     required this.preview,
     required this.previewEnabled,
     required this.previewCanActivate,
@@ -608,13 +781,19 @@ class _TrackTile extends StatelessWidget {
     required this.selectionMode,
     required this.selected,
     this.artworkCache,
+    this.onArtworkError,
+    this.onArtworkLoaded,
     this.onSelectionChanged,
   });
   final AudioTrack track;
+  final CompletionTask? task;
+  final bool active;
   final AudioPreviewController preview;
   final bool previewEnabled;
   final bool Function() previewCanActivate;
   final DeviceArtworkCache? artworkCache;
+  final ValueChanged<String>? onArtworkError;
+  final VoidCallback? onArtworkLoaded;
   final VoidCallback? onTap;
   final bool selectionMode;
   final bool selected;
@@ -624,10 +803,27 @@ class _TrackTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final (statusIcon, statusText, statusColor) = track.readError != null
+    final result = task?.status;
+    final (
+      statusIcon,
+      statusText,
+      statusColor,
+    ) = result == TaskStatus.needsReview || result == TaskStatus.readyToSave
+        ? (Icons.auto_awesome_outlined, '找到资料 · 待确认', colors.primary)
+        : result == TaskStatus.savedOriginal || result == TaskStatus.exported
+        ? (
+            Icons.check_circle_outline,
+            result == TaskStatus.savedOriginal ? '已保存' : '已导出副本',
+            colors.primary,
+          )
+        : track.readError != null
         ? (Icons.error_outline, '标签读取异常', colors.error)
         : !track.detailsLoaded
         ? (Icons.schedule_outlined, '待检查文件标签', colors.onSurfaceVariant)
+        : track.artworkError != null
+        ? (Icons.broken_image_outlined, '封面无法显示', colors.error)
+        : track.artworkNeedsCheck
+        ? (Icons.image_search_outlined, '封面待验证', colors.onSurfaceVariant)
         : track.missingFields.isNotEmpty
         ? (
             Icons.auto_fix_high_outlined,
@@ -638,12 +834,16 @@ class _TrackTile extends StatelessWidget {
     return Semantics(
       button: true,
       enabled: onTap != null,
+      selected: active || selected,
       child: Card(
+        key: ValueKey('song-tile-${track.id}'),
+        color: active ? colors.secondaryContainer : colors.surfaceContainerLow,
+        clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: selectionMode ? onSelectionChanged : onTap,
           onLongPress: onSelectionChanged,
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: Row(
               children: [
                 if (selectionMode)
@@ -660,6 +860,8 @@ class _TrackTile extends StatelessWidget {
                     key: ValueKey('library-artwork-${track.id}'),
                     track: track,
                     cache: artworkCache,
+                    onError: onArtworkError,
+                    onLoaded: onArtworkLoaded,
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -677,7 +879,7 @@ class _TrackTile extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${hasText(track.artist) ? track.artist : '歌手未知'} · ${track.extension} · ${formatDuration(track.durationMs)}${track.isInstrumental ? ' · 纯音乐' : ''}',
+                        '${hasText(track.artist) ? track.artist : '歌手未知'}${hasText(track.album) ? ' · ${track.album}' : ''}${track.isInstrumental ? ' · 纯音乐' : ''}',
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(

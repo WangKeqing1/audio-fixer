@@ -18,7 +18,13 @@ class CandidateReviewPage extends StatefulWidget {
     super.key,
     required this.task,
     required this.controller,
+    this.embedded = false,
+    this.onFinished,
+    this.onBack,
   });
+  final bool embedded;
+  final VoidCallback? onFinished;
+  final VoidCallback? onBack;
   final CompletionTask task;
   final LibraryController controller;
 
@@ -38,7 +44,7 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
   @override
   void initState() {
     super.initState();
-    final approved = widget.controller.approvedSuggestionsFor(widget.task);
+    final approved = widget.controller.reviewSuggestionsFor(widget.task);
     for (final candidate in widget.task.suggestions) {
       final matches = approved.where(candidate.permits);
       if (matches.isNotEmpty) {
@@ -79,7 +85,16 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     // Never dismiss a newer route if the save finishes while another screen
     // is on top of this one.
     if (saved && route?.isCurrent == true) {
-      Navigator.of(context).pop();
+      if (widget.onFinished != null) {
+        widget.onFinished!();
+      } else if (!widget.embedded) {
+        Navigator.of(context).pop();
+      } else {
+        setState(() {
+          _exporting = false;
+          _exportNotice = widget.controller.notice;
+        });
+      }
       return;
     }
     setState(() {
@@ -105,7 +120,13 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     final latest = widget.controller.taskForTrack(track.id);
     if (latest == null || !widget.controller.isTaskCurrent(latest)) return;
     if (latest.suggestions.isEmpty) {
-      Navigator.of(context).pop();
+      if (widget.embedded) {
+        widget.onBack?.call();
+      } else {
+        Navigator.of(context).pop();
+      }
+    } else if (widget.embedded) {
+      widget.onBack?.call();
     } else {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
@@ -224,6 +245,159 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
     }
   }
 
+  void _toggle(FieldSuggestion candidate, bool checked) {
+    setState(() {
+      if (checked) {
+        _selected[candidate.field] = candidate;
+      } else if (_selected[candidate.field] == candidate) {
+        _selected.remove(candidate.field);
+      }
+    });
+  }
+
+  String _previewValue(FieldSuggestion candidate) {
+    if (candidate.field == AudioField.artwork) return '专辑图片';
+    if (candidate.field == AudioField.lyrics) {
+      final lyrics = candidate.lyricsContent!;
+      return lyrics.hasChineseTranslation ? '原文与中文翻译' : '原文';
+    }
+    return candidate.value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  Widget _candidateRow(
+    FieldSuggestion candidate,
+    AudioTrack? track, {
+    required bool enabled,
+    required bool recommended,
+  }) {
+    final theme = Theme.of(context);
+    final old = track?.valueOf(candidate.field);
+    final hasOld = hasText(old);
+    final allowed =
+        enabled &&
+        hasText(candidate.value) &&
+        (!hasOld || candidate.replaceExisting) &&
+        !(track?.isInstrumental == true &&
+            candidate.field == AudioField.lyrics);
+    final checked = _selected[candidate.field] == candidate;
+    final others = widget.task.suggestions
+        .where((item) => item.field == candidate.field)
+        .map((item) => item.value)
+        .toSet();
+    final String contextLabel;
+    if (hasOld) {
+      contextLabel = candidate.field == AudioField.artwork
+          ? '默认保留当前封面'
+          : '${candidate.field.label}现为：${old!.replaceAll(RegExp(r'\s+'), ' ')}';
+    } else if (others.length > 1) {
+      contextLabel = '有不同结果，请选一个';
+    } else if (recommended) {
+      contextLabel = '补上缺少的${candidate.field.label}';
+    } else {
+      contextLabel = '确认后才会使用';
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CheckboxListTile(
+          key: ValueKey(
+            'candidate-${candidate.field.name}-${candidate.source}-${candidate.value.hashCode}',
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+          controlAffinity: ListTileControlAffinity.trailing,
+          value: checked,
+          onChanged: allowed
+              ? (value) => _toggle(candidate, value == true)
+              : null,
+          title: Text(
+            '${candidate.field.label} · ${_previewValue(candidate)}',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleSmall,
+          ),
+          subtitle: Text(
+            contextLabel,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        ExpansionTile(
+          key: PageStorageKey(
+            'candidate-details-${candidate.field.name}-${candidate.source}-${candidate.value.hashCode}',
+          ),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          visualDensity: VisualDensity.compact,
+          title: Text('预览与来源', style: theme.textTheme.labelMedium),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (candidate.field == AudioField.artwork)
+              _ArtworkPreview(value: candidate.value, size: 160)
+            else if (candidate.field == AudioField.lyrics)
+              _LyricsPreview(
+                candidate: candidate,
+                includeTranslation:
+                    _translationChoices[candidate] ??
+                    widget.controller.settings.includeChineseTranslation,
+                onPrepareTranslation:
+                    allowed && widget.controller.completion.translator != null
+                    ? () => _prepareTranslation(candidate)
+                    : null,
+                onChanged: allowed
+                    ? (value) =>
+                          setState(() => _translationChoices[candidate] = value)
+                    : null,
+              )
+            else
+              SelectableText(
+                candidate.value,
+                key: PageStorageKey(
+                  'candidate-value-${candidate.field.name}-${candidate.value.hashCode}',
+                ),
+              ),
+            if (hasOld) ...[
+              const SizedBox(height: 12),
+              Text(
+                '当前${candidate.field.label}',
+                style: theme.textTheme.labelMedium,
+              ),
+              if (candidate.field == AudioField.artwork)
+                TrackArtwork(path: track?.artworkPath, size: 72)
+              else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 140),
+                  child: SingleChildScrollView(
+                    primary: false,
+                    child: SelectableText(
+                      old!,
+                      key: PageStorageKey(
+                        'current-text-${candidate.field.name}-${old.hashCode}',
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+            const SizedBox(height: 12),
+            Text('来源：${candidate.source}', style: theme.textTheme.bodySmall),
+            if (hasText(candidate.matchDescription))
+              Text(
+                candidate.matchDescription!,
+                style: theme.textTheme.bodySmall,
+              ),
+            if (hasText(candidate.sourceUrl))
+              SelectableText(
+                candidate.sourceUrl!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+          ],
+        ),
+        const Divider(height: 1),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.controller,
@@ -231,15 +405,11 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
       final controller = widget.controller;
       final track = controller.trackById(widget.task.trackId);
       final current = controller.taskForTrack(widget.task.trackId);
-      final isManualRepair = widget.task.suggestions.any(
-        (candidate) => candidate.source == '手动编辑',
-      );
       final isStale = !controller.isTaskCurrent(widget.task);
       final result =
           current != null && current.createdAt == widget.task.createdAt
           ? current
           : widget.task;
-      final theme = Theme.of(context);
       final selected = _selected.values
           .where(
             (candidate) =>
@@ -255,480 +425,456 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
             ),
           )
           .toList();
-      final String? unavailableReason;
-      if (track == null) {
-        unavailableReason = '此歌曲当前不可访问，可能已移除或需要重新授权。请返回音乐库刷新。';
-      } else if (current?.status == TaskStatus.outdated) {
-        unavailableReason = isManualRepair
-            ? '原歌曲已发生变化，旧修改仅供参考。请返回歌曲资料页重新编辑后再保存。'
-            : '原歌曲已发生变化，旧候选仅供参考。请重新查询后再保存。';
-      } else if (!track.detailsLoaded || track.readError != null) {
-        unavailableReason = '原歌曲的资料需要重新检查。请返回音乐库读取歌曲资料，再重新查询。';
-      } else if (isStale) {
-        unavailableReason = '歌曲或候选已更新，这份结果仅供查看。请打开最新结果后再保存。';
-      } else {
-        unavailableReason = null;
-      }
-      final canReview = unavailableReason == null;
-      final canSaveOriginal =
-          canReview && track != null && controller.canSaveOriginalTrack(track);
-      final canExport =
-          canReview && track != null && controller.canExportTrack(track);
+      final recommended = controller.recommendedSuggestionsFor(widget.task);
+      final mainRecommendations = recommended
+          .where((item) => AudioField.coreFields.contains(item.field))
+          .toList();
+      final extraRecommendations = recommended
+          .where((item) => !AudioField.coreFields.contains(item.field))
+          .toList();
+      final held = widget.task.suggestions
+          .where((candidate) => !recommended.contains(candidate))
+          .toList();
+      final isManual = widget.task.suggestions.any(
+        (item) => item.source == '手动编辑',
+      );
+      final String? unavailableReason = track == null
+          ? '歌曲已移除或暂不可访问，请返回音乐库刷新。'
+          : !track.detailsLoaded || track.readError != null
+          ? '需要重新读取这首歌，再查看修复结果。'
+          : isStale && result.status != TaskStatus.savedOriginal
+          ? '歌曲或查询结果已更新，请查看最新结果。'
+          : null;
+      final canReview = !isStale && unavailableReason == null;
       final canAct =
           controller.canOperate &&
           !_exporting &&
           !_translationWorking &&
-          selected.isNotEmpty;
-      return PopScope(
-        canPop: !_exporting,
-        child: Scaffold(
-          appBar: AppBar(title: const Text('确认候选资料')),
-          body: SafeArea(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 720),
-                child: ListView(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    Text(
-                      widget.task.trackTitle,
-                      style: theme.textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '逐项核对旧值与新值并勾选要保存的资料，默认保存到原文件。候选不会自动选中。',
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    const SizedBox(height: 20),
-                    if (_translationProcessing) ...[
-                      const LinearProgressIndicator(),
-                      const SizedBox(height: 8),
-                      const Text('正在识别语言、等待模型下载或进行本机翻译。可以返回；已确认的模型下载可能继续。'),
-                      const SizedBox(height: 16),
-                    ],
-                    if (_exportNotice != null) ...[
-                      Semantics(
-                        liveRegion: true,
-                        child: NoticePanel(
-                          icon: Icons.info_outline,
-                          title: '处理结果',
-                          message: _exportNotice!,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (unavailableReason != null) ...[
-                      NoticePanel(
-                        icon: Icons.info_outline,
-                        title: '当前无法保存',
-                        message: unavailableReason,
-                        action:
-                            isStale &&
-                                current != null &&
-                                controller.isTaskCurrent(current) &&
-                                current.suggestions.isNotEmpty
-                            ? TextButton(
-                                onPressed: () =>
-                                    Navigator.of(context).pushReplacement(
-                                      MaterialPageRoute<void>(
-                                        builder: (_) => CandidateReviewPage(
-                                          task: current,
-                                          controller: controller,
-                                        ),
-                                      ),
-                                    ),
-                                child: const Text('查看最新结果'),
-                              )
-                            : isStale && track != null && !isManualRepair
-                            ? TextButton(
-                                onPressed:
-                                    controller.canOperate &&
-                                        (widget.task.isRepair
-                                            ? widget
-                                                  .task
-                                                  .queriedFields
-                                                  .isNotEmpty
-                                            : controller
-                                                  .settings
-                                                  .enabledFields
-                                                  .isNotEmpty)
-                                    ? () => _queryAgain(track)
-                                    : null,
-                                child: const Text('重新查询'),
-                              )
-                            : null,
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (canReview && !canSaveOriginal) ...[
-                      NoticePanel(
-                        icon: Icons.info_outline,
-                        title: '此歌曲暂不支持原位保存',
-                        message: canExport
-                            ? !track.isDeviceTrack
-                                  ? '这首歌曲来自旧版导入的应用内副本，仅支持导出新副本。原位保存适用于系统音乐库中的可写音频，不会修改这份旧版副本。'
-                                  : '可以先确认资料，或选择导出副本。原位保存支持可写入的 MP3、FLAC 和 M4A/MP4。'
-                            : '${track?.extension ?? ''} 格式当前仅支持预览和确认。保存支持 MP3、FLAC 和 M4A/MP4，并需要文件写入权限。',
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (result.status == TaskStatus.savedOriginal) ...[
-                      const NoticePanel(
-                        icon: Icons.check_circle_outline,
-                        title: '已保存到原文件',
-                        message: '已保存所确认的修改，未选择的标签与音频内容保留。',
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (controller
-                        .approvedSuggestionsFor(widget.task)
-                        .isNotEmpty) ...[
-                      NoticePanel(
-                        icon: Icons.fact_check_outlined,
-                        title: '资料已确认，等待保存',
-                        message: '可在此保存，也可返回后批量保存。调整勾选后需再次确认；撤销确认会将此歌曲移出待保存范围。',
-                        action: TextButton.icon(
-                          key: const ValueKey('revoke-approval'),
-                          onPressed:
-                              controller.canOperate && !_exporting && canReview
-                              ? () => _save([], revokeOnly: true)
-                              : null,
-                          icon: const Icon(Icons.undo),
-                          label: const Text('撤销确认'),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (result.writeError != null &&
-                        result.writeError != _exportNotice) ...[
-                      NoticePanel(
-                        icon: Icons.error_outline,
-                        title: '上次保存失败',
-                        message: result.writeError!,
-                        isError: true,
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    if (result.status == TaskStatus.exported) ...[
-                      const NoticePanel(
-                        icon: Icons.download_done_outlined,
-                        title: '已导出过副本',
-                        message: '原音频保持不变。再次导出会重新选择保存位置并创建另一份副本。',
-                      ),
-                      if (hasText(result.exportedCopyUri)) ...[
-                        const SizedBox(height: 8),
-                        const Text('上次保存的系统文档位置'),
-                        SelectableText(result.exportedCopyUri!),
-                      ],
-                      const SizedBox(height: 16),
-                    ],
-                    Card(
-                      color: theme.colorScheme.secondaryContainer,
-                      child: const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.verified_user_outlined),
-                            SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                '仅保存勾选的项目。标记「将替换已有资料」的项目会覆盖对应旧值，未勾选的标签保留。\n保存前会再次校验文件。保存到原文件可能需要系统授权；也可另行导出副本。',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    if (result.sourceReports.isNotEmpty)
-                      SourceQueryStatusPanel(
-                        reports: result.sourceReports,
-                        summary:
-                            result.status == TaskStatus.skipped ||
-                                result.status == TaskStatus.outdated ||
-                                result.status == TaskStatus.savedOriginal ||
-                                result.status == TaskStatus.exported
-                            ? result.message
-                            : null,
-                        hasCandidates: result.suggestions.isNotEmpty,
-                      )
-                    else
-                      Text(
-                        result.message,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    if (track != null &&
-                        (track.isInstrumental ||
-                            (canReview &&
-                                !hasText(track.lyrics) &&
-                                result.queriedFields.contains(
-                                  AudioField.lyrics,
-                                ) &&
-                                !result.suggestions.any(
-                                  (item) => item.field == AudioField.lyrics,
-                                )))) ...[
-                      const SizedBox(height: 16),
-                      InstrumentalControl(
-                        track: track,
-                        controller: controller,
-                        enabled: !_exporting && !_translationWorking,
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    if (widget.task.suggestions.isEmpty)
-                      const NoticePanel(
-                        icon: Icons.search_off,
-                        title: '没有可确认的候选',
-                        message: '请返回查看查询结果，或在补全任务中重新查询。',
-                      ),
-                    for (final candidate in widget.task.suggestions)
-                      Card(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            CheckboxListTile(
-                              value:
-                                  (candidate.replaceExisting ||
-                                      !hasText(
-                                        track?.valueOf(candidate.field),
-                                      )) &&
-                                  !(track?.isInstrumental == true &&
-                                      candidate.field == AudioField.lyrics) &&
-                                  _selected[candidate.field] == candidate,
-                              onChanged:
-                                  controller.canOperate &&
-                                      !_exporting &&
-                                      !_translationWorking &&
-                                      canReview &&
-                                      !(track?.isInstrumental == true &&
-                                          candidate.field ==
-                                              AudioField.lyrics) &&
-                                      hasText(candidate.value) &&
-                                      (candidate.replaceExisting ||
-                                          !hasText(
-                                            track?.valueOf(candidate.field),
-                                          ))
-                                  ? (checked) => setState(() {
-                                      if (checked == true) {
-                                        _selected[candidate.field] = candidate;
-                                      } else {
-                                        _selected.remove(candidate.field);
-                                      }
-                                    })
-                                  : null,
-                              title: Text(
-                                candidate.field.label,
-                                style: theme.textTheme.titleMedium,
-                              ),
-                              subtitle: Text(
-                                '来源：${candidate.source}'
-                                '${hasText(track?.valueOf(candidate.field))
-                                    ? candidate.replaceExisting
-                                          ? '\n将替换已有资料 · ${candidate.field.label}'
-                                          : '\n此项已有资料，不会覆盖'
-                                    : '\n补入缺失资料'}',
-                              ),
-                              controlAffinity: ListTileControlAffinity.leading,
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if ((candidate.field == AudioField.lyrics ||
-                                          candidate.field ==
-                                              AudioField.comment) &&
-                                      hasText(track?.valueOf(candidate.field)))
-                                    ExpansionTile(
-                                      tilePadding: EdgeInsets.zero,
-                                      title: Text(
-                                        '查看当前${candidate.field.label}',
-                                      ),
-                                      children: [
-                                        ConstrainedBox(
-                                          constraints: const BoxConstraints(
-                                            maxHeight: 180,
-                                          ),
-                                          child: SingleChildScrollView(
-                                            primary: false,
-                                            child: SelectableText(
-                                              track!.valueOf(candidate.field)!,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    )
-                                  else
-                                    SelectableText(
-                                      '当前：${candidate.field == AudioField.artwork ? (hasText(track?.artworkPath) ? '已有封面' : '无内嵌封面') : (hasText(track?.valueOf(candidate.field)) ? track!.valueOf(candidate.field) : '未读取到')}',
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: theme
-                                                .colorScheme
-                                                .onSurfaceVariant,
-                                          ),
-                                    ),
-                                  if (candidate.field == AudioField.artwork &&
-                                      hasText(track?.artworkPath)) ...[
-                                    const SizedBox(height: 8),
-                                    TrackArtwork(
-                                      path: track!.artworkPath,
-                                      size: 120,
-                                    ),
-                                  ],
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    '↓ ${candidate.replaceExisting && hasText(track?.valueOf(candidate.field)) ? '替换为' : '补入'}',
-                                    style: theme.textTheme.labelLarge,
-                                  ),
-                                  const SizedBox(height: 8),
-                                  if (candidate.field == AudioField.artwork)
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        _ArtworkPreview(value: candidate.value),
-                                        const SizedBox(height: 8),
-                                        const Text(
-                                          '替换正面封面并保留其他类型图片；M4A/MP4 替换首张封面，保留其余图片。',
-                                        ),
-                                      ],
-                                    )
-                                  else if (candidate.field == AudioField.lyrics)
-                                    _LyricsPreview(
-                                      candidate: candidate,
-                                      onPrepareTranslation:
-                                          controller.canOperate &&
-                                              !_exporting &&
-                                              !_translationWorking &&
-                                              canReview &&
-                                              !isManualRepair &&
-                                              track?.isInstrumental != true &&
-                                              controller
-                                                      .completion
-                                                      .translator !=
-                                                  null &&
-                                              !(candidate
-                                                      .lyricsContent
-                                                      ?.hasChineseTranslation ??
-                                                  true)
-                                          ? () => _prepareTranslation(candidate)
-                                          : null,
-                                      includeTranslation:
-                                          _translationChoices[candidate] ??
-                                          controller
-                                              .settings
-                                              .includeChineseTranslation,
-                                      onChanged:
-                                          controller.canOperate &&
-                                              !_exporting &&
-                                              !_translationWorking &&
-                                              track?.isInstrumental != true &&
-                                              canReview
-                                          ? (value) => setState(() {
-                                              _translationChoices[candidate] =
-                                                  value;
-                                            })
-                                          : null,
-                                    )
-                                  else
-                                    SelectableText(
-                                      candidate.value,
-                                      style: theme.textTheme.titleMedium,
-                                    ),
-                                  if (candidate.matchDescription != null) ...[
-                                    const SizedBox(height: 12),
-                                    Text(
-                                      candidate.matchDescription!,
-                                      style: theme.textTheme.bodySmall,
-                                    ),
-                                  ],
-                                  if (candidate.sourceUrl != null) ...[
-                                    const SizedBox(height: 8),
-                                    SelectableText(
-                                      candidate.sourceUrl!,
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(
-                                            color: theme.colorScheme.primary,
-                                          ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    if (controller.isBusy && !_exporting) ...[
-                      const LinearProgressIndicator(),
-                      const SizedBox(height: 12),
-                      Text(controller.progress ?? '正在处理…'),
-                    ],
-                  ],
+          canReview;
+      final canSave = track != null && controller.canSaveOriginalTrack(track);
+      final canExport = track != null && controller.canExportTrack(track);
+      final replacing = selected
+          .where((item) => hasText(track?.valueOf(item.field)))
+          .length;
+      final theme = Theme.of(context);
+      final colors = theme.colorScheme;
+      final approved = controller
+          .approvedSuggestionsFor(widget.task)
+          .isNotEmpty;
+      final proposedCover = _selected[AudioField.artwork];
+      final proposedTitle =
+          _selected[AudioField.title]?.value ?? widget.task.trackTitle;
+      final proposedArtist =
+          _selected[AudioField.artist]?.value ?? track?.artist;
+      final identity = Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (proposedCover != null)
+            SizedBox(
+              width: 72,
+              height: 72,
+              child: _ArtworkPreview(value: proposedCover.value, size: 72),
+            )
+          else
+            TrackArtwork(path: track?.artworkPath, size: 72),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  proposedTitle,
+                  style: theme.textTheme.headlineSmall,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (hasText(proposedArtist)) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    proposedArtist!,
+                    style: theme.textTheme.bodyMedium,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Text(
+                  result.status == TaskStatus.savedOriginal
+                      ? '已修复并校验'
+                      : '看一眼，再应用',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: colors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+      final summary = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          identity,
+          const SizedBox(height: 24),
+          Semantics(
+            liveRegion: true,
+            child: AnimatedSwitcher(
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              child: Align(
+                key: ValueKey('${selected.length}-$replacing'),
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  selected.isEmpty
+                      ? '暂时保留原样'
+                      : replacing > 0
+                      ? '将补全 ${selected.length - replacing} 项，替换 $replacing 项'
+                      : '将补全 ${selected.length} 项',
+                  style: theme.textTheme.titleLarge,
                 ),
               ),
             ),
           ),
-          bottomNavigationBar: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+          const SizedBox(height: 8),
+          Text(
+            replacing > 0 ? '仅替换你选中的资料，其余保持原样。' : '已有资料保留。不同结果或替换项由你决定。',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+          if (recommended.isEmpty &&
+              !isManual &&
+              canAct &&
+              widget.task.suggestions.isNotEmpty &&
+              widget.task.suggestions.every(
+                (item) => item.provenance == SuggestionProvenance.unverified,
+              ) &&
+              controller.completion.sources.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text('这份结果需要重新检查，才能生成可靠的补全建议。'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const ValueKey('refresh-review-recommendations'),
+                onPressed: track != null ? () => _queryAgain(track) : null,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重新检查歌曲'),
+              ),
+            ),
+          ],
+          if (held.isNotEmpty && recommended.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '${held.map((item) => item.field).toSet().length} 项未加入建议',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+          if (_exportNotice != null || result.writeError != null) ...[
+            const SizedBox(height: 16),
+            Semantics(
+              liveRegion: true,
+              child: NoticePanel(
+                icon: Icons.info_outline,
+                title: '处理结果',
+                message: _exportNotice ?? result.writeError!,
+              ),
+            ),
+          ],
+          if (unavailableReason != null) ...[
+            const SizedBox(height: 16),
+            NoticePanel(
+              icon: Icons.info_outline,
+              title: '先更新结果',
+              message: unavailableReason,
+              action: current != null && controller.isTaskCurrent(current)
+                  ? TextButton(
+                      onPressed: widget.embedded
+                          ? widget.onBack
+                          : () => Navigator.of(context).pushReplacement(
+                              MaterialPageRoute<void>(
+                                builder: (_) => CandidateReviewPage(
+                                  task: current,
+                                  controller: controller,
+                                ),
+                              ),
+                            ),
+                      child: const Text('查看最新结果'),
+                    )
+                  : !isManual && track != null && controller.canOperate
+                  ? TextButton(
+                      onPressed: () => _queryAgain(track),
+                      child: const Text('重新查询'),
+                    )
+                  : null,
+            ),
+          ],
+          if (result.status == TaskStatus.exported) ...[
+            const SizedBox(height: 12),
+            const Text('已导出过副本。再次导出会另存一份，原文件保持不变。'),
+          ],
+          if (result.status == TaskStatus.savedOriginal) ...[
+            const SizedBox(height: 16),
+            const NoticePanel(
+              icon: Icons.check_circle_outline,
+              title: '已保存到原文件',
+              message: '所选资料已写入并回读校验。',
+            ),
+          ],
+          if (canReview && !canSave) ...[
+            const SizedBox(height: 16),
+            Text(
+              canExport ? '这首歌可导出新副本，原文件保持不变。' : '当前格式或设备仅支持预览，暂不能保存。',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ],
+      );
+      final changes = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (recommended.isNotEmpty) ...[
+            Text('建议补全', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Material(
+              color: colors.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(16),
+              clipBehavior: Clip.antiAlias,
               child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (_exporting) ...[
-                    const LinearProgressIndicator(),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '保存期间请留在此页，可在系统保存弹窗中取消。',
-                      textAlign: TextAlign.center,
+                  for (final candidate in mainRecommendations)
+                    _candidateRow(
+                      candidate,
+                      track,
+                      enabled: canAct,
+                      recommended: true,
                     ),
-                    const SizedBox(height: 8),
-                  ],
-                  if (canReview && selected.isEmpty) ...[
-                    const Text('请至少选择一项要写入的资料', textAlign: TextAlign.center),
-                    const SizedBox(height: 8),
-                  ],
-                  FilledButton.icon(
-                    key: const ValueKey('save-original'),
-                    onPressed: canAct && canSaveOriginal
-                        ? () => _save(selected)
-                        : null,
-                    icon: const Icon(Icons.save_outlined),
-                    label: Text(
-                      _exporting ? '正在校验并保存…' : '保存到原文件（${selected.length} 项）',
-                    ),
-                  ),
-                  TextButton(
-                    key: const ValueKey('approve-for-batch'),
-                    onPressed: canAct && canReview
-                        ? () => _save(selected, approveOnly: true)
-                        : null,
-                    child: const Text(
-                      '确认所选资料，稍后批量保存',
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    key: const ValueKey('export-copy'),
-                    onPressed: canAct && canExport
-                        ? () => _save(selected, exportCopy: true)
-                        : null,
-                    icon: const Icon(Icons.save_alt),
-                    label: Text(
-                      '${result.status == TaskStatus.exported ? '再次导出副本' : '导出副本'}（${selected.length} 项）',
-                    ),
-                  ),
                 ],
               ),
             ),
+          ],
+          if (extraRecommendations.isNotEmpty)
+            ExpansionTile(
+              key: const PageStorageKey('review-extra-recommendations'),
+              tilePadding: EdgeInsets.zero,
+              title: Text(
+                '另外补全 ${extraRecommendations.length} 项资料',
+                style: theme.textTheme.titleSmall,
+              ),
+              subtitle: Text(
+                extraRecommendations.map((item) => item.field.label).join('、'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              children: [
+                for (final candidate in extraRecommendations)
+                  _candidateRow(
+                    candidate,
+                    track,
+                    enabled: canAct,
+                    recommended: true,
+                  ),
+              ],
+            ),
+          if (held.isNotEmpty) ...[
+            if (recommended.isNotEmpty) const SizedBox(height: 16),
+            ExpansionTile(
+              key: const PageStorageKey('review-held-changes'),
+              tilePadding: EdgeInsets.zero,
+              initiallyExpanded: recommended.isEmpty || isManual,
+              title: Text(
+                isManual
+                    ? '你的修改'
+                    : '需要你决定 · ${held.map((item) => item.field).toSet().length} 项',
+                style: theme.textTheme.titleMedium,
+              ),
+              subtitle: Text(isManual ? '应用前确认本次修改' : '默认保留原样'),
+              children: [
+                for (final candidate in held)
+                  _candidateRow(
+                    candidate,
+                    track,
+                    enabled: canAct,
+                    recommended: false,
+                  ),
+              ],
+            ),
+          ],
+          if (widget.task.suggestions.isEmpty)
+            const NoticePanel(
+              icon: Icons.search_off,
+              title: '还没有可用结果',
+              message: '可以稍后重试，或调整歌名和歌手。',
+            ),
+          if (track != null &&
+              (track.isInstrumental ||
+                  (canReview &&
+                      !hasText(track.lyrics) &&
+                      result.queriedFields.contains(AudioField.lyrics) &&
+                      !result.suggestions.any(
+                        (item) => item.field == AudioField.lyrics,
+                      )))) ...[
+            const SizedBox(height: 16),
+            InstrumentalControl(
+              track: track,
+              controller: controller,
+              enabled: canAct,
+            ),
+          ],
+          ExpansionTile(
+            key: const PageStorageKey('review-query-details'),
+            tilePadding: EdgeInsets.zero,
+            title: const Text('查询详情'),
+            children: [
+              if (result.sourceReports.isNotEmpty)
+                SourceQueryStatusPanel(
+                  reports: result.sourceReports,
+                  hasCandidates: result.suggestions.isNotEmpty,
+                )
+              else
+                Text(result.message),
+              const SizedBox(height: 8),
+              const Text('应用前会再次检查文件，完成后回读校验。系统可能请求写入许可。'),
+              if (hasText(result.exportedCopyUri))
+                SingleChildScrollView(
+                  key: const PageStorageKey('review-export-location-scroll'),
+                  primary: false,
+                  scrollDirection: Axis.horizontal,
+                  child: SelectableText(
+                    result.exportedCopyUri!,
+                    key: const PageStorageKey('review-export-location-text'),
+                  ),
+                ),
+              if (approved)
+                TextButton.icon(
+                  key: const ValueKey('revoke-approval'),
+                  onPressed: canAct ? () => _save([], revokeOnly: true) : null,
+                  icon: const Icon(Icons.undo),
+                  label: const Text('撤销待保存确认'),
+                ),
+            ],
           ),
+        ],
+      );
+      final footer = Material(
+        color: colors.surface,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_exporting ||
+                    _translationProcessing ||
+                    controller.isBusy) ...[
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      _exporting
+                          ? '正在校验并保存，请稍候…'
+                          : controller.progress ?? '正在准备…',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                FilledButton.icon(
+                  key: const ValueKey('save-original'),
+                  onPressed:
+                      canAct && selected.isNotEmpty && (canSave || canExport)
+                      ? () => _save(selected, exportCopy: !canSave)
+                      : null,
+                  icon: Icon(
+                    _exporting ? Icons.hourglass_top : Icons.auto_fix_high,
+                  ),
+                  label: Text(
+                    _exporting
+                        ? '正在应用…'
+                        : !canSave && canExport
+                        ? '${result.status == TaskStatus.exported ? '再次导出' : '导出'}修复副本（${selected.length} 项）'
+                        : '应用${replacing > 0 || isManual ? '所选' : '建议'}（${selected.length} 项）',
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        key: const ValueKey('approve-for-batch'),
+                        onPressed: canAct && selected.isNotEmpty
+                            ? () => _save(selected, approveOnly: true)
+                            : null,
+                        child: const Text('稍后保存', textAlign: TextAlign.center),
+                      ),
+                    ),
+                    if (canSave)
+                      Expanded(
+                        child: TextButton(
+                          key: const ValueKey('export-copy'),
+                          onPressed: canAct && selected.isNotEmpty && canExport
+                              ? () => _save(selected, exportCopy: true)
+                              : null,
+                          child: const Text(
+                            '导出副本',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      final body = SafeArea(
+        bottom: false,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final roomy = constraints.maxWidth >= 900;
+            return ListView(
+              controller: _scrollController,
+              padding: EdgeInsets.all(roomy ? 28 : 16),
+              children: [
+                if (roomy)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(flex: 4, child: summary),
+                      const SizedBox(width: 32),
+                      Expanded(flex: 6, child: changes),
+                    ],
+                  )
+                else ...[
+                  summary,
+                  const SizedBox(height: 24),
+                  changes,
+                ],
+              ],
+            );
+          },
+        ),
+      );
+      return PopScope(
+        canPop: !_exporting,
+        child: Scaffold(
+          appBar: AppBar(
+            automaticallyImplyLeading: !widget.embedded,
+            leading: widget.embedded && widget.onBack != null
+                ? IconButton(
+                    tooltip: '返回歌曲',
+                    onPressed: _exporting ? null : widget.onBack,
+                    icon: const Icon(Icons.arrow_back),
+                  )
+                : null,
+            title: const Text('修复预览'),
+          ),
+          body: body,
+          bottomNavigationBar: footer,
         ),
       );
     },
@@ -736,8 +882,9 @@ class _CandidateReviewPageState extends State<CandidateReviewPage> {
 }
 
 class _ArtworkPreview extends StatefulWidget {
-  const _ArtworkPreview({required this.value});
+  const _ArtworkPreview({required this.value, this.size = 120});
   final String value;
+  final double size;
 
   @override
   State<_ArtworkPreview> createState() => _ArtworkPreviewState();
@@ -777,8 +924,8 @@ class _ArtworkPreviewState extends State<_ArtworkPreview> {
         borderRadius: BorderRadius.circular(12),
         child: Image.file(
           File.fromUri(uri),
-          height: 200,
-          width: 200,
+          height: widget.size,
+          width: widget.size,
           fit: BoxFit.contain,
           semanticLabel: '本机候选封面',
           errorBuilder: (_, _, _) => const SizedBox(
@@ -810,8 +957,8 @@ class _ArtworkPreviewState extends State<_ArtworkPreview> {
           }
           return Image.memory(
             snapshot.data!,
-            height: 200,
-            width: 200,
+            height: widget.size,
+            width: widget.size,
             fit: BoxFit.contain,
             semanticLabel: '在线候选封面',
             errorBuilder: (_, _, _) => const SizedBox(
@@ -844,8 +991,12 @@ class _LyricsPreview extends StatelessWidget {
       constraints: const BoxConstraints(maxHeight: 220),
       child: Scrollbar(
         child: SingleChildScrollView(
+          key: PageStorageKey('lyrics-scroll-${value.hashCode}'),
           primary: false,
-          child: SelectableText(value),
+          child: SelectableText(
+            value,
+            key: PageStorageKey('lyrics-text-${value.hashCode}'),
+          ),
         ),
       ),
     );

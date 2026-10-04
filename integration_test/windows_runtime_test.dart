@@ -194,10 +194,7 @@ void main() {
         expect(appController.trackById(indexed.id)!.readError, isNull);
         expect(find.text(_fixtureFileName), findsWidgets);
         expect(tester.takeException(), isNull);
-        final backLabel = MaterialLocalizations.of(
-          tester.element(find.byType(TrackDetailPage)),
-        ).backButtonTooltip;
-        final backButton = find.byTooltip(backLabel);
+        final backButton = find.byKey(const ValueKey('close-selected-song'));
         expect(backButton, findsOneWidget);
         await tester.tap(backButton);
         await tester.pumpAndSettle();

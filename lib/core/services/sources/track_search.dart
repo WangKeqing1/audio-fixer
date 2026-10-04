@@ -11,21 +11,24 @@ class TrackSearch {
     this.album,
     this.durationSeconds,
     this.normalizationNotes = const [],
+    this.artistIsInferred = false,
   });
   final String title;
   final String? artist;
   final String? album;
   final double? durationSeconds;
   final List<String> normalizationNotes;
+  final bool artistIsInferred;
 
   factory TrackSearch.fromTrack(AudioTrack track) {
     final embeddedTitle = track.title?.trim() ?? '';
     final fileTitle = p.basenameWithoutExtension(track.fileName).trim();
-    final album = hasText(track.album) ? track.album!.trim() : null;
     final notes = <String>[];
+    final artist = _cleanQueryTag(track.artist, '歌手', notes);
+    final album = _cleanQueryTag(track.album, '专辑', notes);
     var name = _SearchName(
       embeddedTitle.isEmpty ? fileTitle : embeddedTitle,
-      artist: track.artist,
+      artist: artist,
       album: album,
       fromFileName: embeddedTitle.isEmpty,
     );
@@ -53,6 +56,37 @@ class TrackSearch {
           ? track.durationMs! / 1000
           : null,
       normalizationNotes: List.unmodifiable(notes.toSet()),
+      artistIsInferred: name.artistIsInferred,
+    );
+  }
+
+  /// A bounded alternative for discovery after a clean no-match. It never
+  /// replaces a clean embedded identity or authorizes a tag change.
+  static TrackSearch? filenameFallback(AudioTrack track) {
+    final name = _SearchName(
+      p.basenameWithoutExtension(track.fileName).trim(),
+      artist: null,
+      album: null,
+      fromFileName: true,
+    );
+    if (!name.artistIsInferred || !hasText(name.artist) || name.title.isEmpty) {
+      return null;
+    }
+    final primary = TrackSearch.fromTrack(track);
+    if (_sameIdentity(primary.title, name.title) &&
+        primary.artist != null &&
+        _sameIdentity(primary.artist!, name.artist!)) {
+      return null;
+    }
+    return TrackSearch(
+      title: name.title,
+      artist: name.artist,
+      durationSeconds: primary.durationSeconds,
+      artistIsInferred: true,
+      normalizationNotes: [
+        '原标签未匹配，按文件名推测另一组检索词；与原标签的差异尚未确认，原资料保持不变',
+        ...name.notes,
+      ],
     );
   }
 
@@ -112,6 +146,9 @@ class _SearchName {
         notes.add('检索时已忽略文件名开头的音轨序号');
       }
     }
+    if (fileLike && !recordingLike && numberedFileName) {
+      _separateBracketArtist();
+    }
     _separateArtist(
       allowInference: fileLike && !recordingLike,
       allowCollectionPrefix: numberedFileName,
@@ -129,6 +166,7 @@ class _SearchName {
 
   String title;
   String? artist;
+  bool artistIsInferred = false;
   final notes = <String>[];
 
   bool _removeAudioExtension() {
@@ -201,6 +239,35 @@ class _SearchName {
     }
   }
 
+  void _separateBracketArtist() {
+    final bracket = _numberedBracketArtist.firstMatch(title);
+    if (bracket == null) return;
+    final credit = bracket.group(1)!.trim();
+    final song = bracket.group(2)!.trim();
+    // A bracketed version/source is not an artist. Do not absorb ambiguous
+    // "[Group] Guest - Song" compilation credits into this narrow pattern.
+    if (_isTechnicalMetadata(credit) ||
+        _metadataLabel.hasMatch(credit) ||
+        _versionWords.hasMatch(credit) ||
+        normalizedIdentity(credit).isEmpty ||
+        normalizedIdentity(song).isEmpty ||
+        _nameSeparator.hasMatch(song)) {
+      return;
+    }
+    if (artist != null && !_sameIdentity(artist!, credit)) {
+      _note('文件名中的括号歌手与现有标签不同，已保留原检索条件，可尝试文件名候选');
+      return;
+    }
+    artistIsInferred = artist == null;
+    artist ??= credit;
+    title = song;
+    _note(
+      artistIsInferred
+          ? '按“(序号) [歌手] 歌名”的文件名格式推测检索词，请核对歌手与歌名'
+          : '检索时已分离文件名中与现有歌手一致的括号内容',
+    );
+  }
+
   void _separateArtist({
     required bool allowInference,
     required bool allowCollectionPrefix,
@@ -269,6 +336,7 @@ class _SearchName {
           !_ambiguousVersionPart(after) &&
           !_isTechnicalMetadata(before)) {
         artist = before;
+        artistIsInferred = true;
         title = after;
         if (inferredCollection) {
           _note('按编号文件名推测开头的【括号内容】是来源，未作专辑使用，请核对歌手');
@@ -292,7 +360,8 @@ final _audioExtension = RegExp(
   r'\.(?:mp3|flac|m4a|aac|wav|ape|alac|ogg|opus|wma|aiff?)$',
   caseSensitive: false,
 );
-final _trackPrefix = RegExp(r'^\d{1,3}\s*[._-]\s*');
+final _trackPrefix = RegExp(r'^(?:\d{1,3}\s*[._-]\s*|[（(]\d{1,3}[）)]\s+)');
+final _numberedBracketArtist = RegExp(r'^\[([^\[\]]+)\]\s+([^\[【(（].*)$');
 final _trailingBracket = RegExp(
   r'\[([^\[\]]*)\]$|\(([^()]*)\)$|【([^【】]*)】$|（([^（）]*)）$',
 );
@@ -329,7 +398,7 @@ final _technicalMetadata = RegExp(
   r'(?:16|24|32)\s*[- ]?bit|\d{2,3}(?:\.\d+)?\s*khz|'
   r'无损(?:音质)?|超高音质|高音质|标准音质|高品质|'
   r'(?:网易云音乐|QQ音乐|酷狗音乐|酷我音乐|咪咕音乐)(?:下载)?|'
-  r'(?:www\.)?(?:music\.163\.com|kugou\.com|kuwo\.cn|y\.qq\.com))'
+  r'(?:www\.)?(?:music\.163\.com|kugou\.com|kuwo\.cn|y\.qq\.com|wusunk\.com))'
   r'[\s,，/|·+_-]*)+$',
   caseSensitive: false,
 );
@@ -363,6 +432,33 @@ bool _isTechnicalMetadata(String text) {
   }
   final source = _sourceLabel.firstMatch(value);
   return source != null && _technicalMetadata.hasMatch(source.group(1)!.trim());
+}
+
+String? _cleanQueryTag(String? raw, String label, List<String> notes) {
+  if (!hasText(raw)) return null;
+  var value = raw!.trim();
+  // Only recognized technical/download markers are removed. Names of unknown
+  // websites and ordinary bracketed artist credits are not guessed away.
+  if (_isTechnicalMetadata(value) &&
+      (_sourceLabel.hasMatch(value) ||
+          _technicalLabel.hasMatch(value) ||
+          _technicalNumber.hasMatch(value) ||
+          value.contains('.'))) {
+    notes.add('检索时已忽略$label标签中的格式或下载来源信息，原标签保留');
+    return null;
+  }
+  while (value.isNotEmpty) {
+    final match = _trailingBracket.firstMatch(value);
+    if (match == null || _insideBrackets(value, match.start)) break;
+    final content = [
+      for (var i = 1; i <= match.groupCount; i++)
+        if (match.group(i) != null) match.group(i)!,
+    ].single;
+    if (!_isTechnicalMetadata(content)) break;
+    value = _beforeSuffix(value, match.start);
+    notes.add('检索时已忽略$label标签中的格式或下载来源后缀，原标签保留');
+  }
+  return hasText(value) ? value : null;
 }
 
 String _beforeSuffix(String text, int start) => text

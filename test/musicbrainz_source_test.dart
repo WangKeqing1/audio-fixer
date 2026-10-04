@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audio_fixer/core/models/audio_track.dart';
+import 'package:audio_fixer/core/models/completion_task.dart';
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/source_query_report.dart';
 import 'package:audio_fixer/core/services/completion_service.dart';
@@ -105,6 +106,10 @@ void main() {
               AudioField.year,
             },
           );
+      expect(
+        result.suggestions.first.provenance,
+        SuggestionProvenance.verifiedRecording,
+      );
       final report = result.sourceReports.single;
       expect(report.outcome, SourceQueryOutcome.partial);
       expect(report.failureKind, SourceFailureKind.rateLimited);

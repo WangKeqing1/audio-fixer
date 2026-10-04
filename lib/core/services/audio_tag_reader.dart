@@ -9,10 +9,20 @@ import 'package:path/path.dart' as p;
 
 import '../models/audio_track.dart';
 import 'standard_audio_tags.dart';
+import 'artwork_validation.dart';
 
 // Only plain Dart values enter the isolate; native streams/handles stay outside.
-Future<AudioTrack> readTrackTags(AudioTrack track, String path, String root) =>
-    Isolate.run(() => _read(track, path, root));
+Future<AudioTrack> readTrackTags(
+  AudioTrack track,
+  String path,
+  String root,
+) async {
+  final read = await Isolate.run(() => _read(track, path, root));
+  if (read.readError != null) return read;
+  // Flutter's image codec belongs to the root isolate. Tag parsing and cache
+  // extraction remain off the UI isolate, and a cover error is not a tag error.
+  return validateTrackArtwork(read);
+}
 
 AudioTrack _read(AudioTrack track, String path, String root) {
   try {
@@ -27,13 +37,16 @@ AudioTrack _read(AudioTrack track, String path, String root) {
 
     String? artworkPath;
     String? artworkSha256;
+    String? artworkError;
     if (metadata.pictures.isNotEmpty) {
       final picture = metadata.pictures.firstWhere(
         (picture) => picture.pictureType == PictureType.coverFront,
         orElse: () => metadata.pictures.first,
       );
-      if (picture.bytes.isNotEmpty) {
-        artworkSha256 = sha256.convert(picture.bytes).toString();
+      artworkSha256 = sha256.convert(picture.bytes).toString();
+      if (picture.bytes.isEmpty) {
+        artworkError = '已读到封面标签，但图片数据为空；请手动更换封面。';
+      } else {
         final directory = Directory(
           p.join(root, track.isDeviceTrack ? 'device_artwork' : 'artwork'),
         );
@@ -70,6 +83,8 @@ AudioTrack _read(AudioTrack track, String path, String root) {
       lyrics: standard.lyrics,
       artworkPath: artworkPath,
       artworkSha256: artworkSha256,
+      artworkValidated: false,
+      artworkError: artworkError,
     );
   } catch (_) {
     return track.withReadError('标签读取失败，文件可能损坏或包含暂不支持的标签。');

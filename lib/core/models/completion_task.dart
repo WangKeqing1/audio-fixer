@@ -18,6 +18,10 @@ enum TaskStatus {
   final String label;
 }
 
+/// Only adapters that have verified recording identity may opt in. Legacy
+/// persisted candidates remain unverified; display prose never grants trust.
+enum SuggestionProvenance { unverified, verifiedRecording, manual }
+
 class FieldSuggestion {
   const FieldSuggestion({
     required this.field,
@@ -31,6 +35,7 @@ class FieldSuggestion {
     this.machineTranslated = false,
     this.translationNotice,
     this.replaceExisting = false,
+    this.provenance = SuggestionProvenance.unverified,
   });
 
   final AudioField field;
@@ -44,6 +49,7 @@ class FieldSuggestion {
   final bool machineTranslated;
   final String? translationNotice;
   final bool replaceExisting;
+  final SuggestionProvenance provenance;
 
   LyricsContent? get lyricsContent => field == AudioField.lyrics
       ? LyricsContent(
@@ -68,6 +74,7 @@ class FieldSuggestion {
       machineTranslated: machineTranslated,
       translationNotice: translationNotice,
       replaceExisting: replaceExisting,
+      provenance: provenance,
     );
   }
 
@@ -90,6 +97,7 @@ class FieldSuggestion {
       translationNotice: notice,
       includeChineseTranslation: includeChineseTranslation,
       replaceExisting: replaceExisting,
+      provenance: provenance,
     ).withChineseTranslation(includeChineseTranslation);
   }
 
@@ -107,6 +115,7 @@ class FieldSuggestion {
       machineTranslated: machineTranslated,
       translationNotice: translationNotice,
       replaceExisting: replace,
+      provenance: provenance,
     );
   }
 
@@ -117,6 +126,7 @@ class FieldSuggestion {
       source == item.source &&
       sourceUrl == item.sourceUrl &&
       replaceExisting == item.replaceExisting &&
+      provenance == item.provenance &&
       (field != AudioField.lyrics
           ? value == item.value
           : lyricsContent!.original == item.lyricsContent!.original &&
@@ -143,6 +153,7 @@ class FieldSuggestion {
     'machineTranslated': machineTranslated,
     'translationNotice': translationNotice,
     'replaceExisting': replaceExisting,
+    'provenance': provenance.name,
   };
 
   factory FieldSuggestion.fromJson(Map<String, dynamic> json) =>
@@ -159,6 +170,10 @@ class FieldSuggestion {
         machineTranslated: json['machineTranslated'] as bool? ?? false,
         translationNotice: json['translationNotice'] as String?,
         replaceExisting: json['replaceExisting'] as bool? ?? false,
+        provenance: SuggestionProvenance.values.firstWhere(
+          (value) => value.name == json['provenance'],
+          orElse: () => SuggestionProvenance.unverified,
+        ),
       );
 }
 
@@ -173,6 +188,7 @@ class CompletionTask {
     this.exportedCopyUri,
     this.queriedFields = const {},
     this.approvedSuggestions = const [],
+    this.reviewSelectionMade = false,
     this.writeError,
     this.isRepair = false,
     this.searchMetadata = const {},
@@ -190,6 +206,10 @@ class CompletionTask {
   final String? exportedCopyUri;
   final Set<AudioField> queriedFields;
   final List<FieldSuggestion> approvedSuggestions;
+
+  /// Remembers a deliberate empty/revoked choice, so review defaults cannot
+  /// silently re-add candidates the user already decided to leave out.
+  final bool reviewSelectionMade;
   final String? writeError;
   final bool isRepair;
   final Map<String, String> searchMetadata;
@@ -208,6 +228,7 @@ class CompletionTask {
     'suggestions': suggestions.map((item) => item.toJson()).toList(),
     'exportedCopyUri': exportedCopyUri,
     'queriedFields': queriedFields.map((field) => field.name).toList(),
+    'reviewSelectionMade': reviewSelectionMade,
     'approvedSuggestions': approvedSuggestions
         .map((item) => item.toJson())
         .toList(),
@@ -249,6 +270,7 @@ class CompletionTask {
         : RecordingCandidate.fromJson(
             Map<String, dynamic>.from(json['confirmedRecording'] as Map),
           ),
+    reviewSelectionMade: json['reviewSelectionMade'] as bool? ?? false,
     approvedSuggestions: (json['approvedSuggestions'] as List? ?? const [])
         .map((item) => FieldSuggestion.fromJson(item as Map<String, dynamic>))
         .toList(),

@@ -165,7 +165,7 @@ class NeteaseLyricsSource
         matchDescription:
             '$titleEvidence；'
             '${search.durationSeconds == null ? '本地时长未知，未核对时长' : '时长相差${(song.duration - search.durationSeconds!).abs().toStringAsFixed(3)}秒（不超过3秒）'}；'
-            '${hasText(search.artist) ? '已有歌手匹配' : '检索未限定歌手，尚未确认录音身份'}；'
+            '${hasText(search.artist) ? '检索歌手匹配' : '检索未限定歌手，尚未确认录音身份'}；'
             '请核对歌手、专辑和版本后选择',
       );
       if (!candidate.isValid) {
@@ -388,6 +388,7 @@ class NeteaseLyricsSource
           if (!fields.contains(field) || !hasText(value)) return;
           suggestions.add(
             FieldSuggestion(
+              provenance: SuggestionProvenance.verifiedRecording,
               field: field,
               value: value,
               source: name,
@@ -567,6 +568,7 @@ class NeteaseLyricsSource
         ? content.chineseTranslation
         : null;
     return FieldSuggestion(
+      provenance: SuggestionProvenance.verifiedRecording,
       field: AudioField.lyrics,
       value: original,
       originalLyrics: original,
