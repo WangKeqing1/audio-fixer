@@ -83,8 +83,12 @@ class DialogDriverTest(unittest.TestCase):
                 self.assertEqual(self.runtime.phase(), "")
 
     def test_background_requires_observed_qa_then_launcher_before_resume(self):
-        self.runtime.hierarchy = Mock(side_effect=[
-            [node(package=PACKAGE)], [node(package='com.android.launcher3')]])
+        self.runtime.resumed_activity = Mock(return_value=
+            PACKAGE + '/com.audiofixer.audio_fixer.MainActivity')
+        self.runtime.focused_window_package = Mock(return_value=PACKAGE)
+        self.runtime.wait_resumed_activity = Mock(side_effect=[
+            'com.android.launcher3/.Launcher',
+            PACKAGE + '/com.audiofixer.audio_fixer.MainActivity'])
         with patch('android_runtime_ci.subprocess.run') as run:
             self.runtime.background_preview()
         self.runtime.adb.assert_any_call('shell', 'input', 'keyevent', 'KEYCODE_HOME')
@@ -93,20 +97,111 @@ class DialogDriverTest(unittest.TestCase):
         self.assertEqual([action['action'] for action in self.runtime.actions],
                          ['home', 'resume_qa_activity'])
         self.assertEqual(run.call_args.kwargs['input'], 'preview_background')
+        self.assertEqual(self.runtime.wait_resumed_activity.call_count, 2)
+        self.assertEqual(self.runtime.actions[0]['observation'], 'activity_and_window_manager')
 
     def test_background_does_not_operate_an_unexpected_foreground_app(self):
-        self.runtime.hierarchy = Mock(return_value=[node(package='unrelated.app')])
+        self.runtime.resumed_activity = Mock(return_value='unrelated.app/.MainActivity')
         with self.assertRaisesRegex(RuntimeError, 'not foreground'):
             self.runtime.background_preview()
         self.runtime.adb.assert_not_called()
 
     def test_background_does_not_claim_a_failed_home_transition(self):
-        self.runtime.hierarchy = Mock(return_value=[node(package=PACKAGE)])
+        self.runtime.resumed_activity = Mock(return_value=
+            PACKAGE + '/com.audiofixer.audio_fixer.MainActivity')
+        self.runtime.focused_window_package = Mock(return_value=PACKAGE)
+        self.runtime.wait_resumed_activity = Mock(side_effect=
+            RuntimeError('Android launcher was not observed after Home'))
         with patch('android_runtime_ci.subprocess.run') as run:
             with self.assertRaisesRegex(RuntimeError, 'launcher was not observed'):
                 self.runtime.background_preview()
         self.runtime.adb.assert_called_once_with('shell', 'input', 'keyevent', 'KEYCODE_HOME')
         run.assert_not_called()
+
+    def test_background_does_not_acknowledge_failed_resume(self):
+        self.runtime.resumed_activity = Mock(return_value=
+            PACKAGE + '/com.audiofixer.audio_fixer.MainActivity')
+        self.runtime.focused_window_package = Mock(return_value=PACKAGE)
+        self.runtime.wait_resumed_activity = Mock(side_effect=[
+            'com.android.launcher3/.Launcher', RuntimeError('QA activity was not resumed')])
+        with patch('android_runtime_ci.subprocess.run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'not resumed'):
+                self.runtime.background_preview()
+        run.assert_not_called()
+        self.assertEqual(len(self.runtime.actions), 1)
+
+    def test_background_rejects_permission_or_ime_overlay(self):
+        self.runtime.resumed_activity = Mock(return_value=
+            PACKAGE + '/com.audiofixer.audio_fixer.MainActivity')
+        for overlay in ('com.android.permissioncontroller', 'com.android.inputmethod.latin', None):
+            with self.subTest(overlay=overlay):
+                self.runtime.focused_window_package = Mock(return_value=overlay)
+                with self.assertRaisesRegex(RuntimeError, 'not foreground'):
+                    self.runtime.background_preview()
+        self.runtime.adb.assert_not_called()
+
+    def test_resumed_activity_ignores_historical_and_paused_records(self):
+        activity = PACKAGE + '/com.audiofixer.audio_fixer.MainActivity'
+        self.runtime.adb.return_value = subprocess.CompletedProcess([], 0, stdout=(
+            '  * Hist #0: ActivityRecord{old u0 unrelated.app/.MainActivity t1}\n'
+            '  topPausingActivity=ActivityRecord{old u0 unrelated.app/.MainActivity t1}\n'
+            f'  topResumedActivity=ActivityRecord{{a u0 {activity} t2}}\n'
+            f'  ResumedActivity: ActivityRecord{{a u0 {activity} t2}}\n'
+            f'  mResumedActivity: ActivityRecord{{a u0 {activity} t2}}\n'))
+        self.assertEqual(self.runtime.resumed_activity(), activity)
+        self.runtime.adb.assert_called_once_with('shell', 'dumpsys', 'activity', 'activities')
+
+    def test_resumed_activity_rejects_missing_or_ambiguous_records(self):
+        for state in ('', 'mResumedActivity: null',
+                      'topResumedActivity=ActivityRecord{a u0 one.app/.Main t1}\n'
+                      'topResumedActivity=ActivityRecord{b u0 two.app/.Main t2}'):
+            with self.subTest(state=state):
+                self.runtime.adb.return_value = subprocess.CompletedProcess([], 0, stdout=state)
+                self.assertIsNone(self.runtime.resumed_activity())
+
+    def test_resumed_wait_is_bounded_and_reobserves_transitions(self):
+        self.runtime.resumed_activity = Mock(side_effect=[None, 'com.android.launcher3/.Launcher'])
+        self.runtime.focused_window_package = Mock(return_value='com.android.launcher3')
+        with patch('android_runtime_ci.time.sleep') as sleep:
+            self.assertEqual(self.runtime.wait_resumed_activity(
+                {'com.android.launcher3/.Launcher'}, 'missing launcher'),
+                'com.android.launcher3/.Launcher')
+        sleep.assert_called_once_with(0.25)
+        self.runtime.resumed_activity = Mock(return_value='unrelated.app/.Main')
+        with patch('android_runtime_ci.time.monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, 'missing launcher'):
+                self.runtime.wait_resumed_activity({'com.android.launcher3/.Launcher'}, 'missing launcher')
+
+    def test_focus_reads_current_window_not_obscured_app(self):
+        self.runtime.adb.return_value = subprocess.CompletedProcess([], 0, stdout=(
+            f'  Window #0 Window{{b u0 {PACKAGE}/com.audiofixer.audio_fixer.MainActivity}}\n'
+            '  mCurrentFocus=Window{a u0 com.android.permissioncontroller/.GrantPermissionsActivity}\n'))
+        self.assertEqual(self.runtime.focused_window_package(), 'com.android.permissioncontroller')
+        self.runtime.adb.assert_called_once_with('shell', 'dumpsys', 'window')
+
+    def test_wait_does_not_accept_resumed_app_behind_an_overlay(self):
+        activity = PACKAGE + '/com.audiofixer.audio_fixer.MainActivity'
+        self.runtime.resumed_activity = Mock(return_value=activity)
+        self.runtime.focused_window_package = Mock(return_value='com.android.permissioncontroller')
+        with patch('android_runtime_ci.time.monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, 'focused_package=com.android.permissioncontroller'):
+                self.runtime.wait_resumed_activity({activity}, 'not foreground')
+
+    def test_hierarchy_never_reads_stale_xml_after_zero_exit_idle_timeout(self):
+        self.runtime.adb.return_value = subprocess.CompletedProcess(
+            [], 0, stdout='', stderr='ERROR: could not get idle state.')
+        with self.assertRaisesRegex(ET.ParseError, 'fresh hierarchy'):
+            self.runtime.hierarchy()
+        self.assertEqual(self.runtime.adb.call_count, 2)
+        self.runtime.adb.assert_any_call('shell', 'rm', '-f', '/sdcard/runtime-window.xml')
+
+    def test_hierarchy_reads_only_confirmed_fresh_dump_with_remote_exit_status(self):
+        self.runtime.adb.side_effect = [
+            subprocess.CompletedProcess([], 0, stdout=''),
+            subprocess.CompletedProcess([], 0, stdout='UI hierchary dumped to: /sdcard/runtime-window.xml'),
+            subprocess.CompletedProcess([], 0, stdout='<hierarchy><node package="android"/></hierarchy>')]
+        self.assertEqual(self.runtime.hierarchy()[0].get('package'), 'android')
+        self.runtime.adb.assert_called_with('shell', '-T', 'cat', '/sdcard/runtime-window.xml')
 
     def test_downloads_toolbar_title_is_never_tapped_as_drawer_root(self):
         toolbar = node('com.android.documentsui:id/toolbar')

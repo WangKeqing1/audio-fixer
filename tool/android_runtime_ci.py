@@ -109,9 +109,44 @@ class AndroidRuntime:
 
     def hierarchy(self) -> list[ET.Element]:
         # Fresh UI evidence supplies every coordinate; never hardcode a tap.
-        self.adb("shell", "uiautomator", "dump", "/sdcard/runtime-window.xml")
-        xml = self.adb("exec-out", "cat", "/sdcard/runtime-window.xml").stdout
+        path = "/sdcard/runtime-window.xml"
+        # uiautomator can exit zero after an idle timeout without writing XML.
+        # Never mistake a prior permission dialog for the current foreground.
+        self.adb("shell", "rm", "-f", path)
+        dumped = self.adb("shell", "uiautomator", "dump", path)
+        if f"dumped to: {path}" not in (dumped.stdout or ""):
+            raise ET.ParseError("uiautomator did not produce a fresh hierarchy")
+        xml = self.adb("shell", "-T", "cat", path).stdout
         return list(ET.fromstring(xml).iter("node"))
+
+    def resumed_activity(self) -> str | None:
+        # ActivityManager reports resumed components without requiring the
+        # continuously updating playback UI to become accessibility-idle.
+        state = self.adb("shell", "dumpsys", "activity", "activities").stdout
+        components = set(re.findall(
+            r"^\s*(?:topResumedActivity|m?ResumedActivity)\s*[:=]\s*"
+            r"ActivityRecord\{[^\n}]*\bu\d+\s+([\w.]+/[\w.$]+)(?=\s|\})",
+            state, re.MULTILINE))
+        return next(iter(components)) if len(components) == 1 else None
+
+    def focused_window_package(self) -> str | None:
+        state = self.adb("shell", "dumpsys", "window").stdout
+        packages = set(re.findall(
+            r"^\s*mCurrentFocus\s*=\s*Window\{[^\n}]*\bu\d+\s+([\w.]+)/",
+            state, re.MULTILINE))
+        return next(iter(packages)) if len(packages) == 1 else None
+
+    def wait_resumed_activity(self, allowed: set[str], description: str) -> str:
+        deadline = time.monotonic() + 10
+        while True:
+            component = self.resumed_activity()
+            focused = self.focused_window_package()
+            if component in allowed and focused == component.split('/', 1)[0]:
+                return component
+            if time.monotonic() >= deadline:
+                raise RuntimeError(description + "; resumed=" + str(component)
+                                   + "; focused_package=" + str(focused))
+            time.sleep(0.25)
 
     def screenshot(self, name: str) -> None:
         assert name in PHASES + CHECKPOINTS + RECOVERY_PHASES + SMOKE_SCREENS
@@ -138,19 +173,26 @@ class AndroidRuntime:
     def background_preview(self) -> None:
         # This flow is scoped to the already-verified disposable QA foreground
         # app. A real Home transition is required, not a Flutter lifecycle mock.
-        if not any(node.get("package") == PACKAGE for node in self.hierarchy()):
+        activity = PACKAGE + "/com.audiofixer.audio_fixer.MainActivity"
+        if (self.resumed_activity() != activity
+                or self.focused_window_package() != PACKAGE):
             raise RuntimeError("QA app is not foreground before preview background test")
         self.adb("shell", "input", "keyevent", "KEYCODE_HOME")
-        nodes = self.hierarchy()
-        if any(node.get("package") == PACKAGE for node in nodes) or not any(
-                node.get("package") in {"com.android.launcher3", "com.google.android.apps.nexuslauncher"}
-                for node in nodes):
-            raise RuntimeError("Android launcher was not observed after Home")
+        launcher = self.wait_resumed_activity({
+            "com.android.launcher3/.Launcher",
+            "com.android.launcher3/com.android.launcher3.Launcher",
+            "com.android.launcher3/.uioverrides.QuickstepLauncher",
+            "com.android.launcher3/com.android.launcher3.uioverrides.QuickstepLauncher",
+        }, "Android launcher was not observed after Home")
         self.actions.append({"phase": "preview_background", "action": "home",
-                             "launcher_observed": True})
-        self.adb("shell", "am", "start", "-W", "-n",
-                 PACKAGE + "/com.audiofixer.audio_fixer.MainActivity")
-        self.actions.append({"phase": "preview_background", "action": "resume_qa_activity"})
+                             "launcher_observed": True,
+                             "launcher_component": launcher,
+                             "observation": "activity_and_window_manager"})
+        self.adb("shell", "am", "start", "-W", "-n", activity)
+        self.wait_resumed_activity({activity}, "QA activity was not resumed after Home")
+        self.actions.append({"phase": "preview_background", "action": "resume_qa_activity",
+                             "resumed_component": activity,
+                             "observation": "activity_and_window_manager"})
         subprocess.run(["adb", "-s", self.serial, "shell", "-T", "run-as", PACKAGE,
                         "tee", "files/native_runtime_ack"], input="preview_background",
                        capture_output=True, text=True, check=True, timeout=15)
