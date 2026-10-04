@@ -109,10 +109,15 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw 'Visual C++ compiler installation not found' }
-          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          $crt = Get-ChildItem "$($redist.FullName)\x64" -Directory -Filter '*CRT' | Select-Object -First 1
-          if (-not $crt) { throw 'Microsoft redistributable runtime not found' }
-          Copy-Item "$($crt.FullName)\*.dll" build/windows/x64/runner/Release/
+          # VS 2026 can nest redistributables under v145 as well as numeric
+          # version directories. Locate the actual official x64 release CRT.
+          $runtime = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -File -Filter 'vcruntime140.dll' |
+            Where-Object { $_.FullName -match '\\x64\\' -and $_.Directory.Name -match '^Microsoft\.VC[0-9]+\.CRT$' } |
+            Sort-Object { $_.VersionInfo.FileVersionRaw } -Descending | Select-Object -First 1
+          if (-not $runtime) { throw 'Microsoft x64 redistributable runtime not found' }
+          $crt = $runtime.Directory.FullName
+          Write-Output "Bundling Microsoft runtime from $crt"
+          Copy-Item "$crt\*.dll" build/windows/x64/runner/Release/
           ./tool/windows_smoke.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package full runnable folder with integrity manifest
