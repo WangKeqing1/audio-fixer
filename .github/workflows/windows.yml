@@ -105,6 +105,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Bundle Microsoft runtime and verify release startup
+        id: release_smoke
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -130,6 +131,17 @@ jobs:
           name: audio-fixer-windows-x64-${{ github.sha }}
           path: build/ci/windows/audio-fixer-*-windows-x64.zip
           compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retain verified release files if ZIP packaging fails
+        if: ${{ failure() && steps.release_smoke.outcome == 'success' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-windows-verified-files-${{ github.sha }}
+          path: |
+            build/windows/x64/runner/Release/**
+            !build/windows/x64/runner/Release/**/*.pdb
+          compression-level: 9
           retention-days: 7
           if-no-files-found: error
       - name: Retain build and verification evidence
