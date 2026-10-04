@@ -1,7 +1,7 @@
 name: audio_fixer
-description: "Android 音频元数据、歌词和封面补全工具的 Flutter 基础框架。"
+description: "Android 与 Windows 音频元数据、歌词和封面补全工具。"
 publish_to: 'none'
-version: 0.4.3+12
+version: 0.5.0+13
 
 environment:
   sdk: ^3.13.2

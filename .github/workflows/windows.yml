@@ -1,0 +1,137 @@
+name: Audio Fixer Windows
+
+on:
+  push:
+    branches: [main, feat/library-cover-instrumental]
+    paths:
+      - 'lib/**'
+      - 'windows/**'
+      - 'test/windows*'
+      - 'integration_test/windows_runtime_test.dart'
+      - 'tool/package_windows.py'
+      - 'tool/windows_smoke.ps1'
+      - 'pubspec.*'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-fixer-windows-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  shared-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+          architecture: x64
+          cache: false
+      - name: Prepare synthetic media tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y python3 ffmpeg
+          flutter pub get --enforce-lockfile
+      - name: Run complete shared and Windows-filesystem regression suite
+        run: |
+          set -o pipefail
+          mkdir -p build/ci/shared
+          dart format --output=none --set-exit-if-changed lib test tool integration_test
+          flutter analyze --no-pub
+          flutter test --no-pub --concurrency=2 --reporter expanded --file-reporter json:build/ci/shared/results.jsonl 2>&1 | tee build/ci/shared/tests.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: audio-fixer-shared-tests-${{ github.sha }}
+          path: build/ci/shared/*
+          retention-days: 7
+          if-no-files-found: warn
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+          architecture: x64
+          cache: false
+      - name: Restore locked packages and record toolchain
+        run: |
+          New-Item -ItemType Directory -Force build/ci/windows | Out-Null
+          flutter --version --machine | Set-Content build/ci/windows/flutter-version.json
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter doctor -v | Tee-Object build/ci/windows/toolchain.txt
+      - name: Analyze code and test Windows filesystem safety
+        run: |
+          flutter analyze --no-pub | Tee-Object build/ci/windows/analyze.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tests = @(Get-ChildItem test/windows*_test.dart | ForEach-Object { $_.FullName })
+          flutter test --no-pub @tests test/audio_preview_service_test.dart --reporter expanded | Tee-Object build/ci/windows/tests.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run real Windows application and platform integration checks
+        timeout-minutes: 12
+        run: |
+          flutter test integration_test/windows_runtime_test.dart -d windows --reporter expanded | Tee-Object build/ci/windows/runtime.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build optimized Windows x64 application
+        run: |
+          flutter build windows --release | Tee-Object build/ci/windows/build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- pubspec.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bundle Microsoft runtime and verify release startup
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual C++ compiler installation not found' }
+          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $crt = Get-ChildItem "$($redist.FullName)\x64" -Directory -Filter '*CRT' | Select-Object -First 1
+          if (-not $crt) { throw 'Microsoft redistributable runtime not found' }
+          Copy-Item "$($crt.FullName)\*.dll" build/windows/x64/runner/Release/
+          ./tool/windows_smoke.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package full runnable folder with integrity manifest
+        run: |
+          python tool/package_windows.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain Windows portable ZIP
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-windows-x64-${{ github.sha }}
+          path: build/ci/windows/audio-fixer-*-windows-x64.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      - name: Retain build and verification evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: audio-fixer-windows-evidence-${{ github.sha }}
+          path: |
+            build/ci/windows/*.txt
+            build/ci/windows/*.json
+          retention-days: 7
+          if-no-files-found: warn

@@ -174,7 +174,9 @@ class _LibraryPageState extends State<LibraryPage> {
         child: EmptyState(
           icon: Icons.library_music_outlined,
           title: '让设备音乐井井有条',
-          description: blocked
+          description: controller.usesFolderLibrary
+              ? '选择音乐文件夹，扫描其中的音频。歌曲保留原位置；确认候选并保存时才会修改文件。'
+              : blocked
               ? '请在系统设置中允许访问音乐和音频。授权后会自动显示系统音乐库。'
               : '允许访问音乐和音频，即可查看歌曲、检查标签并查找缺失资料。无需逐个导入，原文件保留在原位置。',
           action: FilledButton.icon(
@@ -184,7 +186,13 @@ class _LibraryPageState extends State<LibraryPage> {
             icon: Icon(
               blocked ? Icons.settings_outlined : Icons.music_note_outlined,
             ),
-            label: Text(blocked ? '前往设置' : '允许访问音乐'),
+            label: Text(
+              controller.usesFolderLibrary
+                  ? '选择音乐文件夹'
+                  : blocked
+                  ? '前往设置'
+                  : '允许访问音乐',
+            ),
           ),
         ),
       );
@@ -210,12 +218,20 @@ class _LibraryPageState extends State<LibraryPage> {
         padding: const EdgeInsets.only(top: 32, bottom: 32),
         child: EmptyState(
           icon: Icons.library_music_outlined,
-          title: '系统音乐库中还没有歌曲',
-          description: '将音乐保存到手机的 Music 或 Download 文件夹，待系统识别后刷新即可。',
+          title: controller.usesFolderLibrary ? '音乐文件夹中还没有歌曲' : '系统音乐库中还没有歌曲',
+          description: controller.usesFolderLibrary
+              ? '点击文件夹按钮添加存放音乐的位置，包含其子文件夹；不会扫描整块磁盘。'
+              : '将音乐保存到手机的 Music 或 Download 文件夹，待系统识别后刷新即可。',
           action: OutlinedButton.icon(
-            onPressed: controller.canOperate ? controller.refreshLibrary : null,
-            icon: const Icon(Icons.refresh),
-            label: const Text('刷新音乐库'),
+            onPressed: controller.canOperate
+                ? (controller.usesFolderLibrary
+                      ? controller.chooseLibraryFolder
+                      : controller.refreshLibrary)
+                : null,
+            icon: Icon(
+              controller.usesFolderLibrary ? Icons.folder_open : Icons.refresh,
+            ),
+            label: Text(controller.usesFolderLibrary ? '添加音乐文件夹' : '刷新音乐库'),
           ),
         ),
       );
@@ -283,7 +299,14 @@ class _LibraryPageState extends State<LibraryPage> {
                           checked: checked,
                           complete: complete,
                           isDeviceLibrary: controller.usesDeviceLibrary,
+                          isFolderLibrary: controller.usesFolderLibrary,
                         ),
+                        if (controller.usesFolderLibrary) ...[
+                          const SizedBox(height: 8),
+                          const Text(
+                            '点击右上角文件夹按钮添加音乐位置。默认 Music 文件夹只读浏览；选择该文件夹后，可审核并保存原文件。',
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         LibraryExclusionSummary(controller: controller),
                         const SizedBox(height: 16),
@@ -498,12 +521,14 @@ class _LibraryOverview extends StatelessWidget {
     required this.checked,
     required this.complete,
     required this.isDeviceLibrary,
+    this.isFolderLibrary = false,
   });
 
   final int total;
   final int checked;
   final int complete;
   final bool isDeviceLibrary;
+  final bool isFolderLibrary;
 
   @override
   Widget build(BuildContext context) {
@@ -523,7 +548,11 @@ class _LibraryOverview extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isDeviceLibrary ? '系统音乐库' : '我的音乐收藏',
+                  isFolderLibrary
+                      ? '音乐文件夹'
+                      : isDeviceLibrary
+                      ? '系统音乐库'
+                      : '我的音乐收藏',
                   style: theme.textTheme.labelLarge?.copyWith(
                     color: colors.onPrimaryContainer,
                   ),

@@ -78,7 +78,16 @@ class SettingsPage extends StatelessWidget {
                     : null,
               ),
               const _InsetDivider(),
-              OnDeviceTranslationSettings(controller: controller),
+              if (!controller.usesFolderLibrary)
+                OnDeviceTranslationSettings(controller: controller)
+              else
+                const ListTile(
+                  leading: Icon(Icons.translate),
+                  title: Text('本机机器翻译'),
+                  subtitle: Text(
+                    'Windows 版暂不提供 Android 的 ML Kit 模型；仍会获取来源已有中文译文。',
+                  ),
+                ),
               const _InsetDivider(),
               SwitchListTile(
                 title: const Text('专辑封面'),
@@ -165,10 +174,12 @@ class SettingsPage extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        const NoticePanel(
+        NoticePanel(
           icon: Icons.info_outline,
           title: '网易云音乐为实验性来源',
-          message: '使用公开匿名只读接口，不是官方 OpenAPI。接口可能变更或限制访问；失败时保留其他来源。优先获取来源已有中文译文；可启用本机机器翻译补充，不上传整首歌词到翻译服务。',
+          message: controller.usesFolderLibrary
+              ? '使用公开匿名只读接口，不是官方 OpenAPI。接口可能变更或限制访问；失败时保留其他来源。可获取来源已有中文译文，不上传整首歌词到翻译服务。'
+              : '使用公开匿名只读接口，不是官方 OpenAPI。接口可能变更或限制访问；失败时保留其他来源。优先获取来源已有中文译文；可启用本机机器翻译补充，不上传整首歌词到翻译服务。',
         ),
         const SizedBox(height: 12),
         const NoticePanel(
@@ -177,12 +188,13 @@ class SettingsPage extends StatelessWidget {
           message: '检索时仅发送歌名、歌手、专辑和时长。默认自动查询元数据、封面与歌词，也可只补缺失项。来源返回的资料须逐项核对，已有值与候选值会对比显示；确认后保存原文件或导出副本。未选资料保留。原位保存可能需要系统授权。',
         ),
         const SizedBox(height: 28),
-        const NoticePanel(
-          icon: Icons.translate,
-          title: 'Google Translate 本机翻译与隐私',
-          message: '本机模型可在下载后离线翻译。ML Kit SDK 会向 Google 发送设备/应用信息、安装标识、语言配置和使用/性能指标；歌词正文与译文在设备上处理。每个模型约 30 MB，下载由你确认，仅使用 Wi-Fi。',
-        ),
-        const GoogleTranslationDisclaimer(),
+        if (!controller.usesFolderLibrary)
+          const NoticePanel(
+            icon: Icons.translate,
+            title: 'Google Translate 本机翻译与隐私',
+            message: '本机模型可在下载后离线翻译。ML Kit SDK 会向 Google 发送设备/应用信息、安装标识、语言配置和使用/性能指标；歌词正文与译文在设备上处理。每个模型约 30 MB，下载由你确认，仅使用 Wi-Fi。',
+          ),
+        if (!controller.usesFolderLibrary) const GoogleTranslationDisclaimer(),
         const SizedBox(height: 28),
         const _SectionTitle('关于 Audio Fixer'),
         Card(
@@ -194,14 +206,16 @@ class SettingsPage extends StatelessWidget {
                 Text('Audio Fixer', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
-                  '0.4.3 · 检索结果与重试状态',
+                  '0.5.0 · Windows 与 Android',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: colors.onSurfaceVariant,
                   ),
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  '授权后自动读取 Android 系统音乐库。歌曲保留在原位置，刷新时同步新增和移除的歌曲。\n\n查看资料时临时读取文件，结束后清理临时副本；封面与目录缓存在应用内。',
+                  controller.usesFolderLibrary
+                      ? '扫描已添加的音乐文件夹及其子文件夹，歌曲保留在原位置。添加文件夹后可审核并安全保存原文件；写入前保留恢复备份并校验结果。\n\nWindows 版使用系统音频解码器试听，支持情况取决于文件格式和系统组件。'
+                      : '授权后自动读取 Android 系统音乐库。歌曲保留在原位置，刷新时同步新增和移除的歌曲。\n\n查看资料时临时读取文件，结束后清理临时副本；封面与目录缓存在应用内。',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colors.onSurfaceVariant,
                     height: 1.6,

@@ -25,7 +25,11 @@ class AudioInventoryToolCard extends StatelessWidget {
       key: const ValueKey('open-audio-inventory'),
       leading: const Icon(Icons.description_outlined),
       title: const Text('导出音频清单 TXT'),
-      subtitle: const Text('读取系统收录且已授权的音频，生成可自行查看和发送的清单'),
+      subtitle: Text(
+        controller.usesFolderLibrary
+            ? '读取音乐文件夹，生成可自行查看和发送的清单'
+            : '读取系统收录且已授权的音频，生成可自行查看和发送的清单',
+      ),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => Navigator.of(context).push<void>(
         MaterialPageRoute(
@@ -55,7 +59,10 @@ class AudioInventoryToolPage extends StatefulWidget {
 
 class _AudioInventoryToolPageState extends State<AudioInventoryToolPage> {
   late final AudioInventoryService _service =
-      widget.serviceFactory?.call() ?? AudioInventoryService();
+      widget.serviceFactory?.call() ??
+      AudioInventoryService(
+        backend: widget.controller.inventoryBackendFactory?.call(),
+      );
   bool _starting = false;
   bool _authorizing = false;
   bool _permissionRechecked = false;
@@ -145,14 +152,20 @@ class _AudioInventoryToolPageState extends State<AudioInventoryToolPage> {
                     message: '清单包含原文件名、相对目录和存储卷，以及系统索引与文件内常用标签中的歌名、歌手、专辑等字段、时长和大小。文件标签读取失败也会列出，并注明原因。\n\n清单可能透露文件命名和目录结构，发送前请先查看。清单不包含音频内容、歌词全文或封面图片。',
                   ),
                   const SizedBox(height: 12),
-                  const NoticePanel(
+                  NoticePanel(
                     icon: Icons.folder_open_outlined,
-                    title: '覆盖当前授权可见的系统音频',
-                    message: '包含系统媒体库收录的音频，包括被本应用排除的文件夹、60 秒以下短音频，以及未被系统标为“音乐”的音频。读取内部和当前已挂载的外部存储卷。\n\n未被系统收录的文件、其他应用私有目录和没有读取权限的内容可能不在清单内，不能保证覆盖设备上的全部文件。不会更改排除规则或原音频。',
+                    title: controller.usesFolderLibrary
+                        ? '覆盖已添加的音乐文件夹'
+                        : '覆盖当前授权可见的系统音频',
+                    message: controller.usesFolderLibrary
+                        ? '包含已添加音乐文件夹及子文件夹中的音频，也包含被列表筛选排除的文件。不会扫描其他位置，不会改变排除规则或原音频。文件链接、无法读取的位置和不支持的格式可能不在清单内。'
+                        : '包含系统媒体库收录的音频，包括被本应用排除的文件夹、60 秒以下短音频，以及未被系统标为“音乐”的音频。读取内部和当前已挂载的外部存储卷。\n\n未被系统收录的文件、其他应用私有目录和没有读取权限的内容可能不在清单内，不能保证覆盖设备上的全部文件。不会更改排除规则或原音频。',
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    '生成和保存不需要联网。完成后由系统让你选择 TXT 保存位置，不会自动上传或分享。离开此页会取消进行中的操作，并清理应用内的临时清单。',
+                  Text(
+                    controller.usesFolderLibrary
+                        ? '生成和保存不需要联网。完成后选择目标文件夹，会创建新的 TXT 文件，不覆盖已有清单，不自动上传。离开此页会取消操作。'
+                        : '生成和保存不需要联网。完成后由系统让你选择 TXT 保存位置，不会自动上传或分享。离开此页会取消进行中的操作，并清理应用内的临时清单。',
                   ),
                   if (needsPermission) ...[
                     const SizedBox(height: 20),

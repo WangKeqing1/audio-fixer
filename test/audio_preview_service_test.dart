@@ -164,6 +164,23 @@ void main() {
     },
   );
 
+  test('Windows drive paths and file device URIs are local previews', () async {
+    await preview.play(track('win', localPath: r'C:\音乐\a #1.mp3'));
+    expect(
+      backend.plays.last.uri,
+      Uri.file(r'C:\音乐\a #1.mp3', windows: true).toString(),
+    );
+    await preview.play(
+      track('win-uri', contentUri: 'file:///D:/Music/song.mp3'),
+    );
+    expect(backend.plays.last.uri, 'file:///D:/Music/song.mp3');
+    await preview.play(
+      track('network', contentUri: 'file://server/Music/song.mp3'),
+    );
+    expect(preview.status, AudioPreviewStatus.error);
+    expect(backend.plays, hasLength(2));
+  });
+
   test(
     'encodes local file paths and accepts only local content or file URIs',
     () async {

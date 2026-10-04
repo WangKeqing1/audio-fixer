@@ -1,6 +1,26 @@
 # Audio Fixer
 
-使用 Flutter 构建的 Android 音频资料整理工具。用于检查音频标签、自动检索元数据、封面与歌词，并逐项确认后安全保存回原音频，也可导出带有新标签的副本。当前版本 0.4.3。原文件保存先取得 Android 授权，写入前制作恢复备份，再写入并回读校验。
+使用 Flutter 构建的 Android 与 Windows 音频资料整理工具。用于检查音频标签、自动检索元数据、封面与歌词，并逐项确认后安全保存回原音频，也可导出带有新标签的副本。当前版本 0.5.0。原文件保存先取得 Android 授权，写入前制作恢复备份，再写入并回读校验。
+
+## Windows 便携版
+
+支持 Windows 10/11 x64，完整解压 ZIP 后运行 `audio_fixer.exe`，必须保留同目录的 DLL 与 `data`。不需要安装或管理员权限；当前构建未代码签名。
+
+Windows 版使用文件夹音乐库：默认只读浏览用户 Music 文件夹；点击右上角文件夹按钮添加目录后，可扫描其子目录并保存已审核的原文件。不会自动扫描整块磁盘，不跟随文件链接/目录重定向。元数据、封面、歌词的自动检索、逐字段审核、批量处理、试听、纯音乐标记、TXT 清单和安全标签写回共用现有流程。导出时选择目标文件夹并生成新文件，不覆盖已有同名文件。
+
+原文件保存会先验证已审核的临时副本，核对原文件摘要，保留原始备份与恢复记录，再替换并回读；未解决的恢复事项会阻止后续写入。媒体文件仍留在用户所选位置，设置、目录缓存和备份放在当前用户应用支持目录。
+
+试听由 Windows Media Foundation 提供，格式支持取决于系统解码器与媒体组件。Windows 仍可获取来源已有中文译文，暂不提供 Android ML Kit 本机机器翻译。
+
+在配置了 Visual Studio C++ 桌面开发工具的 Windows 上构建：
+
+```powershell
+flutter pub get --enforce-lockfile
+flutter test integration_test/windows_runtime_test.dart -d windows
+flutter build windows --release
+```
+
+Windows 云端流程见 `.github/workflows/windows.yml`：运行平台集成测试、构建优化 x64 EXE、打包微软运行库、验证真实 EXE 创建窗口，并压缩完整目录及 SHA-256 清单。不创建 Release 或自动合并。该测试不替代用户电脑上所有音频格式与驱动的兼容性验证。
 
 ## 已实现
 

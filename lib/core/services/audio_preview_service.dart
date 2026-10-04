@@ -582,7 +582,11 @@ String _localUri(AudioTrack track) {
   final contentUri = track.contentUri;
   if (contentUri != null && contentUri.trim().isNotEmpty) {
     final uri = Uri.tryParse(contentUri);
-    if (uri == null || uri.scheme != 'content' || uri.host.isEmpty) {
+    if (uri == null ||
+        !((uri.scheme == 'content' && uri.host.isNotEmpty) ||
+            (uri.scheme == 'file' &&
+                uri.host.isEmpty &&
+                uri.path.startsWith('/')))) {
       throw const FormatException('无效的本地音频地址');
     }
     return uri.toString();
@@ -590,6 +594,9 @@ String _localUri(AudioTrack track) {
   final path = track.localPath;
   if (path.startsWith('/') && !path.startsWith('//')) {
     return Uri.file(path).toString();
+  }
+  if (RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(path)) {
+    return Uri.file(path, windows: true).toString();
   }
   final uri = Uri.tryParse(path);
   if (uri != null &&

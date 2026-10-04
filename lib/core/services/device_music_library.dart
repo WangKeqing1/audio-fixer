@@ -16,6 +16,11 @@ abstract interface class DeviceMusicLibrary {
   Future<AudioTrack> readDetails(AudioTrack track);
 }
 
+/// Desktop libraries can add a user-selected directory without copying audio.
+abstract interface class FolderMusicLibrary implements DeviceMusicLibrary {
+  Future<bool> chooseFolder();
+}
+
 class AndroidMusicLibrary implements DeviceMusicLibrary, DeviceArtworkSource {
   AndroidMusicLibrary(
     this.directoryProvider, {

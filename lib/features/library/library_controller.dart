@@ -12,6 +12,7 @@ import '../../core/models/completion_task.dart';
 import '../../core/models/recording_candidate.dart';
 import '../../core/models/source_query_report.dart';
 import '../../core/services/audio_importer.dart';
+import '../../core/services/audio_inventory_service.dart';
 import '../../core/services/artwork_picker.dart';
 import '../../core/services/audio_preview_service.dart';
 import '../../core/services/audio_tag_reader.dart';
@@ -32,6 +33,7 @@ class LibraryController extends ChangeNotifier {
     this.deviceLibrary,
     this.exporter,
     this.artworkPicker,
+    this.inventoryBackendFactory,
     AudioPreviewController? preview,
   }) : preview = preview ?? AudioPreviewController();
 
@@ -42,6 +44,7 @@ class LibraryController extends ChangeNotifier {
   final DeviceMusicLibrary? deviceLibrary;
   final AudioCopyExporter? exporter;
   final ArtworkPicker? artworkPicker;
+  final AudioInventoryBackend Function()? inventoryBackendFactory;
   final AudioPreviewController preview;
   LibrarySnapshot _snapshot = const LibrarySnapshot();
   bool _disposed = false;
@@ -337,6 +340,16 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  bool get usesFolderLibrary => deviceLibrary is FolderMusicLibrary;
+
+  Future<void> chooseLibraryFolder() => _operate(() async {
+    final library = deviceLibrary;
+    if (library is! FolderMusicLibrary) return;
+    if (await library.chooseFolder()) {
+      await _syncDeviceLibrary();
+    }
+  });
+
   bool get usesDeviceLibrary => deviceLibrary != null;
   bool get canReadDeviceLibrary =>
       !usesDeviceLibrary || libraryPermission == AudioLibraryPermission.granted;
@@ -495,7 +508,7 @@ class LibraryController extends ChangeNotifier {
       }
       _notify();
       if (!canReadDeviceLibrary) return;
-      progress = '正在读取系统音乐库…';
+      progress = usesFolderLibrary ? '正在扫描音乐文件夹…' : '正在读取系统音乐库…';
       _notify();
       final discovered = await library.querySongs();
       final cached = {for (final track in _snapshot.tracks) track.id: track};

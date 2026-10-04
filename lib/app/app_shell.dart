@@ -128,9 +128,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         appBar: AppBar(
           title: Text(_labels[_selected]),
           actions: [
+            if (_selected == 0 && controller.usesFolderLibrary)
+              IconButton(
+                key: const ValueKey('choose-music-folder'),
+                tooltip: '添加音乐文件夹',
+                onPressed: controller.canOperate
+                    ? controller.chooseLibraryFolder
+                    : null,
+                icon: const Icon(Icons.create_new_folder_outlined),
+              ),
             if (_selected == 0 && controller.usesDeviceLibrary)
               IconButton(
-                tooltip: '刷新系统音乐库',
+                tooltip: controller.usesFolderLibrary ? '刷新音乐文件夹' : '刷新系统音乐库',
                 onPressed: controller.canOperate
                     ? controller.refreshLibrary
                     : null,
