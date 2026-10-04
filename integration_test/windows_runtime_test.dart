@@ -194,7 +194,12 @@ void main() {
         expect(appController.trackById(indexed.id)!.readError, isNull);
         expect(find.text(_fixtureFileName), findsWidgets);
         expect(tester.takeException(), isNull);
-        await tester.pageBack();
+        final backLabel = MaterialLocalizations.of(
+          tester.element(find.byType(TrackDetailPage)),
+        ).backButtonTooltip;
+        final backButton = find.byTooltip(backLabel);
+        expect(backButton, findsOneWidget);
+        await tester.tap(backButton);
         await tester.pumpAndSettle();
         expect(find.byType(TrackDetailPage), findsNothing);
         await appController.preview.stop();
