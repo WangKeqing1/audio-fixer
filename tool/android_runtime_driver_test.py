@@ -17,12 +17,56 @@ from android_runtime_ci import (AndroidRuntime, CHECKPOINTS, PACKAGE, PHASES,
                                 RECOVERY_CHECKPOINTS, validate_preview_evidence)
 from android_runtime_fixtures import BOUNDARY_DURATIONS_MS, generate_library_fixtures
 from android_runtime_evidence import main as prepare_evidence
+from android_runtime_smoke import fresh_hierarchy, settings_page_rendered
 
 
 def node(resource='', text='', kind='android.widget.TextView', **attrs):
     return ET.Element('node', {'resource-id': resource, 'text': text,
                               'class': kind, 'package': 'com.android.documentsui',
                               'enabled': 'true', 'bounds': '[0,0][100,100]', **attrs})
+
+
+class PackagedSettingsTest(unittest.TestCase):
+    def test_smoke_reobserves_unavailable_hierarchy_without_reusing_old_nodes(self):
+        expected = [ET.Element('node', {'package': PACKAGE, 'text': '音乐库排除规则'})]
+        runtime = Mock()
+        runtime.hierarchy.side_effect = [
+            subprocess.CalledProcessError(1, ['adb']),
+            ET.ParseError('No fresh UI hierarchy'), expected]
+        with patch('android_runtime_smoke.time.sleep') as sleep:
+            self.assertIs(fresh_hierarchy(runtime), expected)
+        self.assertEqual(runtime.hierarchy.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_smoke_unavailable_hierarchy_fails_after_bounded_observation(self):
+        runtime = Mock()
+        runtime.hierarchy.side_effect = ET.ParseError('No fresh UI hierarchy')
+        with patch('android_runtime_smoke.time.monotonic', side_effect=[0, 11]), \
+                patch('android_runtime_smoke.time.sleep') as sleep:
+            with self.assertRaisesRegex(ET.ParseError, 'No fresh UI hierarchy'):
+                fresh_hierarchy(runtime)
+        runtime.hierarchy.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_current_above_fold_settings_heading_in_text_or_semantics(self):
+        source = (Path(__file__).resolve().parent.parent /
+                  'lib/features/settings/settings_page.dart').read_text()
+        self.assertIn("_SectionTitle('音乐库排除规则')", source)
+        for attributes in ({'text': '音乐库排除规则'},
+                           {'content-desc': '音乐库排除规则\n本机筛选'}):
+            with self.subTest(attributes=attributes):
+                self.assertTrue(settings_page_rendered([
+                    ET.Element('node', {'package': PACKAGE, **attributes})]))
+
+    def test_unrelated_app_legacy_text_or_library_cannot_pass_settings_check(self):
+        for attributes in ({'package': 'unrelated.app', 'text': '音乐库排除规则'},
+                           {'package': PACKAGE, 'text': '补全内容'},
+                           {'package': PACKAGE, 'content-desc': '歌曲信息'},
+                           {'package': PACKAGE, 'text': '音乐库'},
+                           {'package': PACKAGE, 'text': '打开音乐库排除规则'}):
+            with self.subTest(attributes=attributes):
+                self.assertFalse(settings_page_rendered([ET.Element('node', attributes)]))
+        self.assertFalse(settings_page_rendered([]))
 
 
 class DialogDriverTest(unittest.TestCase):

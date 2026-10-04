@@ -1296,14 +1296,10 @@ void main() {
             .toString(),
         coverHash,
       );
-      await tester.scrollUntilVisible(
-        find.byKey(const ValueKey('batch-progress')),
-        160,
-        scrollable: find.byType(Scrollable).first,
-      );
+      final batchResult = await showNativeSavedBatchResult(tester);
       expect(
         find.descendant(
-          of: find.byKey(const ValueKey('batch-progress')),
+          of: batchResult,
           matching: find.text(controller.batchOperation!.summary),
         ),
         findsOneWidget,

@@ -80,3 +80,24 @@ These groups passed 75 and 73 tests respectively. Identity regression fixtures
 retain the observed metadata field shapes and values, covering the three IDs,
 absent/incomplete detail, provider failure, exact 1-ms duration changes, full
 credit/title/album conflicts, source provenance and no-lyrics-on-conflict.
+
+## Subsequent live lyric acceptance
+
+A bounded follow-through on 2026-10-04 at application commit `1b3f303`
+requested only lyrics through the production adapter for the same explicitly
+selected IDs. Each made exactly one selected-ID detail call followed by one
+lyric call; all six responses had provider code 200.
+
+- 354682: usable original LRC, 990 characters; Chinese-dominant original with
+  no separate usable translation
+- 32235934: usable original LRC, 921 characters, and provider Chinese LRC,
+  765 characters
+- 437605605: usable original LRC, 835 characters, and provider Chinese LRC,
+  729 characters
+
+Both translations passed the existing inclusion/offset checks. Every result
+retained the selected ID as its provenance. No lyric text was printed or
+stored in the evidence; only status, format, counts and public endpoint paths
+were recorded. This verifies provider availability at that time, not the
+identity of any local audio, a future availability guarantee, or a completed
+write to the user's file. The later CI-driver commit did not change app sources.

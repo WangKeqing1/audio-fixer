@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_fixer/app/audio_fixer_app.dart';
 import 'package:audio_fixer/core/models/app_settings.dart';
 import 'package:audio_fixer/core/models/audio_track.dart';
@@ -9,6 +11,7 @@ import 'package:audio_fixer/core/storage/library_store.dart';
 import 'package:audio_fixer/features/library/library_controller.dart';
 import 'package:audio_fixer/features/library/track_detail_page.dart';
 import 'package:audio_fixer/features/tasks/candidate_review_page.dart';
+import 'package:audio_fixer/features/tasks/recommended_batch_review_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -66,7 +69,121 @@ class _CancelledWriter implements AudioCopyExporter, AudioOriginalSaver {
   }
 }
 
+class _PendingOriginalWriter extends _CancelledWriter {
+  final result = Completer<String?>();
+  final writtenIds = <String>[];
+
+  @override
+  Future<String?> saveOriginal(AudioTrack track, List<FieldSuggestion> values) {
+    originals++;
+    writtenIds.add(track.id);
+    return result.future;
+  }
+}
+
 void main() {
+  testWidgets('native saved batch result waits for review route dismissal', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const suggestion = FieldSuggestion(
+      field: AudioField.lyrics,
+      value: 'Offline reviewed native navigation fixture',
+      source: 'Fixture',
+    );
+    final writer = _PendingOriginalWriter();
+    final controller = LibraryController(
+      store: MemoryStore(
+        LibrarySnapshot(
+          tracks: [
+            fixtureTrack(id: 'approved'),
+            fixtureTrack(id: 'unapproved'),
+          ],
+          tasks: [
+            for (final id in ['approved', 'unapproved'])
+              CompletionTask(
+                trackId: id,
+                trackTitle: id,
+                createdAt: DateTime(2026),
+                status: id == 'approved'
+                    ? TaskStatus.readyToSave
+                    : TaskStatus.needsReview,
+                message: 'Offline fixture',
+                suggestions: const [suggestion],
+                approvedSuggestions: id == 'approved'
+                    ? const [suggestion]
+                    : const [],
+                reviewSelectionMade: id == 'approved',
+              ),
+          ],
+        ),
+      ),
+      picker: FakePicker(),
+      importer: FakeImporter(),
+      completion: CompletionService(),
+      exporter: writer,
+    );
+    await tester.pumpWidget(AudioFixerApp(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('补全任务'));
+    await tester.pumpAndSettle();
+    await showNativeTarget(
+      tester,
+      find.byKey(const ValueKey('select-all-task-tracks')),
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('select-all-task-tracks')).hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.selectedTrackIds, {'approved', 'unapproved'});
+    await tester.tap(
+      find.byKey(const ValueKey('bulk-save-original')).hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    final review = find.byType(RecommendedBatchReviewPage);
+    expect(review, findsOneWidget);
+    expect(writer.writtenIds, isEmpty);
+    await tester.tap(
+      find.byKey(const ValueKey('apply-reviewed-batch')).hitTestable(),
+    );
+    await tester.pump();
+    expect(writer.writtenIds, ['approved']);
+    expect(controller.isBusy, isTrue);
+    writer.result.complete('content://fixture/approved');
+    await tester.pump();
+    // The native wait exits once persistence is complete, before the route
+    // animation is drained. Reproduce that state rather than hiding it.
+    expect(controller.isBusy, isFalse);
+    expect(
+      controller.taskForTrack('approved')!.status,
+      TaskStatus.savedOriginal,
+    );
+    expect(review, findsOneWidget);
+    expect(find.byKey(const ValueKey('batch-progress')), findsNWidgets(2));
+    final result = await showNativeSavedBatchResult(tester);
+    expect(review, findsNothing);
+    expect(result.hitTestable(), findsOneWidget);
+    expect(
+      find.descendant(
+        of: result,
+        matching: find.text(controller.batchOperation!.summary),
+      ),
+      findsOneWidget,
+    );
+    expect(controller.batchOperation!.savedOriginalCount, 1);
+    expect(writer.writtenIds, ['approved']);
+    expect(
+      controller.taskForTrack('unapproved')!.status,
+      TaskStatus.needsReview,
+    );
+    expect(controller.taskForTrack('unapproved')!.approvedSuggestions, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'native review checkbox clears fixed footer before explicit approval',
     (tester) async {

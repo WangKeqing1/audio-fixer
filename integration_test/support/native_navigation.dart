@@ -1,4 +1,6 @@
 import 'package:audio_fixer/features/library/track_detail_page.dart';
+import 'package:audio_fixer/features/tasks/recommended_batch_review_page.dart';
+import 'package:audio_fixer/features/tasks/tasks_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -13,6 +15,27 @@ Future<void> showNativeTarget(
   await Scrollable.ensureVisible(tester.element(target), alignment: 0.5);
   await tester.pumpAndSettle();
   expect(target.hitTestable(), findsOneWidget);
+}
+
+Future<Finder> showNativeSavedBatchResult(WidgetTester tester) async {
+  // Successful reviewed saves pop their route. Until that transition settles,
+  // both the departing review and the task page can contain a result panel.
+  await tester.pumpAndSettle();
+  expect(find.byType(RecommendedBatchReviewPage), findsNothing);
+  final tasks = find.byType(TasksPage);
+  expect(tasks, findsOneWidget);
+  final result = find.descendant(
+    of: tasks,
+    matching: find.byKey(const ValueKey('batch-progress')),
+  );
+  await showNativeTarget(
+    tester,
+    result,
+    scrollable: find
+        .descendant(of: tasks, matching: find.byType(Scrollable))
+        .first,
+  );
+  return result;
 }
 
 // Shared with a native-sized widget regression so this exact interaction is

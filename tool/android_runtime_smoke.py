@@ -10,9 +10,29 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
+import xml.etree.ElementTree as ET
 
 from android_runtime_ci import AndroidRuntime, PACKAGE
+
+
+def fresh_hierarchy(runtime):
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            return runtime.hierarchy()
+        except (subprocess.CalledProcessError, ET.ParseError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
+
+
+def settings_page_rendered(nodes) -> bool:
+    return any(node.get('package') == PACKAGE
+               and any('音乐库排除规则' in value.splitlines()
+                       for value in (node.get('text', ''), node.get('content-desc', '')))
+               for node in nodes)
 
 
 def main() -> None:
@@ -41,7 +61,7 @@ def main() -> None:
     # UIAutomator may expose only the Flutter surface if platform semantics is
     # unavailable. Preserve the actual launch screenshot and say so explicitly,
     # rather than inventing a settings tap or changing accessibility settings.
-    nodes = runtime.hierarchy()
+    nodes = fresh_hierarchy(runtime)
     settings = [node for node in nodes if node.get('package') == PACKAGE
                 and node.get('clickable') == 'true'
                 and any(value == '设置' or value.startswith('设置\n')
@@ -50,10 +70,8 @@ def main() -> None:
     if len(settings) == 1:
         runtime.tap(settings[0], 'packaged_settings')
         time.sleep(2)
-        nodes = runtime.hierarchy()
-        settings_rendered = any('补全内容' in (node.get('text', '') + node.get('content-desc', ''))
-                                or '歌曲信息' in (node.get('text', '') + node.get('content-desc', ''))
-                                for node in nodes)
+        nodes = fresh_hierarchy(runtime)
+        settings_rendered = settings_page_rendered(nodes)
         runtime.screenshot('packaged_settings')
         assert settings_rendered, 'Observed settings navigation did not render expected settings text'
     result = {'normal_entrypoint': 'lib/main.dart', 'optimized_release': True,

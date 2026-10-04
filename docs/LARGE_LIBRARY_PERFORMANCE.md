@@ -109,3 +109,31 @@ exercise responsive layout, not physical OS-window dragging. Disk scanning,
 real audio decoding, drivers, GPU-specific behavior and the user's actual
 Windows library still require a Windows run. No native Windows speedup is
 claimed from the Linux results above.
+
+### Completed native Windows CI check
+
+[Run 37217009016](https://github.com/WangKeqing1/audio-fixer/actions/runs/37217009016)
+passed on 2026-10-04 at commit `d5f993fb0b909419b7f7d95e173ca09fa5d4646a`.
+The official integration driver confirmed `build_mode: profile`,
+`platform: windows`, 4,096 tracks, 512 tasks and 103 frame-timing samples.
+The host validated every required workload phase before saving
+`library-performance.json`; a missing, debug or partial report fails the step.
+
+| Native frame metric | p50 | p90 | Maximum |
+| --- | ---: | ---: | ---: |
+| Build | 1.116 ms | 20.998 ms | 67.722 ms |
+| Raster | 0.000 ms | 0.001 ms | 43.165 ms |
+| Total span | 2.460 ms | 22.210 ms | 68.906 ms |
+
+These hosted-runner measurements include slow frames. The near-zero raster
+percentiles do not establish representative GPU performance. They are not a
+claim of universal smoothness or a comparison against the previous Windows
+build. The separate Linux before/after experiment above remains the evidence
+for reduced repeated catalog work. No physical user PC was operated.
+
+The same run passed 904 shared tests, 49 Windows filesystem/preview/driver
+checks and three Windows integration cases. Its actual Windows expanded-source
+case verified a 16-pixel source link, independently preserved 160-pixel offsets
+for original/translated/current lyrics, no unexpected errors, a reachable fixed
+primary action and zero writes from that UI fixture. The optimized release
+started with its native window and was packaged only after these gates passed.
