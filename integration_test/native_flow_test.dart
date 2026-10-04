@@ -24,6 +24,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'support/native_navigation.dart';
+
 // The host generates this media with generate_audio_fixtures.py and handles
 // Android-owned dialogs from fresh UI hierarchies. No MethodChannel is mocked.
 const _fileName = 'native_fixture.mp3';
@@ -786,24 +788,6 @@ Future<LibraryController> _verifyLibraryFilters(
   return controller;
 }
 
-Future<void> _tapMissingOnly(WidgetTester tester) async {
-  final action = find.byKey(const ValueKey('complete-missing-only'));
-  final scroll = find
-      .descendant(
-        of: find.byType(TrackDetailPage),
-        matching: find.byType(Scrollable),
-      )
-      .first;
-  if (action.evaluate().isEmpty) {
-    final disclosure = find.text('其他修复方式');
-    await tester.scrollUntilVisible(disclosure, 180, scrollable: scroll);
-    await tester.tap(disclosure);
-    await tester.pumpAndSettle();
-  }
-  await tester.scrollUntilVisible(action, 180, scrollable: scroll);
-  await tester.tap(action.hitTestable());
-}
-
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -932,7 +916,7 @@ void main() {
       // Missing search results do not imply instrumental music. The user must
       // explicitly mark it, and only the app catalog should change.
       source.returnNoMatch = true;
-      await _tapMissingOnly(tester);
+      await tapNativeMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
@@ -1045,7 +1029,7 @@ void main() {
       await checkpoint('instrumental_unmarked_ready');
       source.returnNoMatch = false;
 
-      await _tapMissingOnly(tester);
+      await tapNativeMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
@@ -1124,7 +1108,7 @@ void main() {
       );
       // A new lookup requires fresh explicit review. The primary original-save
       // action must keep the review open when Android write consent is denied.
-      await _tapMissingOnly(tester);
+      await tapNativeMissingOnly(tester);
       await _waitFor(
         tester,
         () =>
